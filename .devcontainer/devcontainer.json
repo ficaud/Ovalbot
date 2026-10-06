@@ -1,0 +1,25 @@
+{
+  "name": "OvalBot",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "args": {
+      "USERNAME": "devuser",
+      "USER_UID": "1000",
+      "USER_GID": "1000"
+    }
+  },
+  "overrideCommand": false,
+  "updateRemoteUserUID": false,
+  "remoteUser": "devuser",
+  "appPort": [5173, 3000],
+  "forwardPorts": [5173, 3000],
+  "portsAttributes": {
+    "5173": {
+      "label": "SvelteKit (dev)"
+    },
+    "3000": {
+      "label": "Axum (backend)"
+    }
+  }
+}
