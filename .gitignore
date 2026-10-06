@@ -1,2 +1,5 @@
 # Personal dev environment overlay (separate repo `ovalbot-devenv`)
 /my-env/
+
+# Rust build artifacts
+/target
