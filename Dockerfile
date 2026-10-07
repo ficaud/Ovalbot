@@ -32,5 +32,6 @@ RUN useradd --system --uid 10001 ovalbot
 USER ovalbot
 EXPOSE 3000
 ENV DATABASE_URL=sqlite:///data/ovalbot.sqlite
+ENV STATIC_DIR=/app/static
 VOLUME ["/data"]
 CMD ["/usr/local/bin/ovalbot"]
