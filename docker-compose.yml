@@ -1,0 +1,16 @@
+services:
+  ovalbot:
+    image: ghcr.io/ficaud/ovalbot:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      OVALBOT_DB_PATH: /data/ovalbot.sqlite
+    volumes:
+      - ovalbot-data:/data
+    restart: unless-stopped
+
+volumes:
+  ovalbot-data:
