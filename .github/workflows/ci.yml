@@ -50,7 +50,6 @@ jobs:
   build-frontend:
     name: Build frontend
     runs-on: ubuntu-latest
-    if: hashFiles('frontend/package.json') != ''
     steps:
       - name: Checkout code
         uses: actions/checkout@v5

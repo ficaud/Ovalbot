@@ -21,16 +21,15 @@ ENV TZ=UTC
 # ------------------------------------------------------------------
 # 1. System dependencies
 # ------------------------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    pkg-config \
-    git \
-    wget \
-    curl \
-    ca-certificates \
-    libsqlite3-dev \
-    sqlite3 \
-    sudo \
+RUN apt-get update \
+    && packages="build-essential pkg-config git wget curl ca-certificates libsqlite3-dev sqlite3 sudo" \
+    && ok=0 \
+    && for i in 1 2 3 4 5; do \
+        apt-get install -y --no-install-recommends $packages \
+            && { ok=1; break; } \
+            || sleep 15; \
+    done \
+    && test "$ok" -eq 1 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -41,7 +40,7 @@ ENV RUSTUP_HOME=/usr/local/rustup
 ENV CARGO_HOME=/usr/local/cargo
 ENV PATH="${CARGO_HOME}/bin:${PATH}"
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
+RUN curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-delay 5 https://sh.rustup.rs | sh -s -- \
     -y --no-modify-path --default-toolchain stable --profile minimal \
     && rustup component add rustfmt clippy \
     && cargo --version \
@@ -52,7 +51,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
 # ------------------------------------------------------------------
 ENV NODE_MAJOR=24
 
-RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
