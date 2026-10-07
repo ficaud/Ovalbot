@@ -7,7 +7,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      OVALBOT_DB_PATH: /data/ovalbot.sqlite
+      DATABASE_URL: sqlite:///data/ovalbot.sqlite
     volumes:
       - ovalbot-data:/data
     restart: unless-stopped

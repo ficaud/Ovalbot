@@ -31,6 +31,6 @@ COPY --from=frontend /app/frontend/build /app/static
 RUN useradd --system --uid 10001 ovalbot
 USER ovalbot
 EXPOSE 3000
-ENV OVALBOT_DB_PATH=/data/ovalbot.sqlite
+ENV DATABASE_URL=sqlite:///data/ovalbot.sqlite
 VOLUME ["/data"]
 CMD ["/usr/local/bin/ovalbot"]
