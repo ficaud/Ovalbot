@@ -1,12 +1,23 @@
-use axum::{routing::get, Router};
+use ovalbot::state::AppState;
+use ovalbot::{app, db};
 
 #[tokio::main]
-async fn main() {
-    let app = Router::new().route("/", get(|| async { "OvalBot" }));
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "ovalbot=info,tower_http=info".into()),
+        )
+        .init();
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
-        .await
-        .expect("failed to bind port 3000");
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://ovalbot.db".to_string());
+    let pool = db::connect(&database_url).await?;
+    db::migrate(&pool).await?;
 
-    axum::serve(listener, app).await.expect("server error");
+    let state = AppState { pool };
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    tracing::info!("listening on {}", listener.local_addr()?);
+    axum::serve(listener, app(state)).await?;
+    Ok(())
 }
