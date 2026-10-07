@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      - name: Lint in dev container
+        uses: devcontainers/ci@v0.3
+        with:
+          push: never
+          runCmd: |
+            cargo fmt --check
+            cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      - name: Run tests in dev container
+        uses: devcontainers/ci@v0.3
+        with:
+          push: never
+          runCmd: cargo test
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      - name: Build backend in dev container
+        uses: devcontainers/ci@v0.3
+        with:
+          push: never
+          runCmd: cargo build --release
+
+  build-frontend:
+    name: Build frontend
+    runs-on: ubuntu-latest
+    if: hashFiles('frontend/package.json') != ''
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      - name: Build frontend in dev container
+        uses: devcontainers/ci@v0.3
+        with:
+          push: never
+          runCmd: cd frontend && npm ci && npm run build
