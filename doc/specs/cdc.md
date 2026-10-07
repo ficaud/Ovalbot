@@ -100,6 +100,7 @@
 | Logo/icône | pièce jointe | OK |
 | Technologies | Rust (backend) + Svelte (frontend) | OK |
 | Compatible mobile | Design responsive / mobile-first obligatoire | OK |
+| Langue | Site entièrement en anglais dans un premier temps (UI, code, commentaires) | OK |
 
 > [!todo] RAPPEL — Idée complémentaire
 > Envisager **Gluetun** comme VPN pour le bot (déjà noté dans tes idées).
@@ -120,12 +121,35 @@
 
 ---
 
+## Qualité & tests
+
+- **Tests unitaires obligatoires** : chaque fonction métier réalisée (auth, règles de liste d'attente, hachage, sessions, endpoints) doit être couverte par des tests unitaires (`cargo test`).
+- La CI exécute `cargo test` sur chaque branche et chaque PR ; un build non vert bloque le merge.
+- Linting strict : `cargo fmt --check` + `cargo clippy -- -D warnings`.
+
+## CI/CD & déploiement
+
+| Étape | Déclencheur | Contenu | Déploie |
+|---|---|---|---|
+| `ci.yml` | `push` toutes branches + `pull_request` | format, clippy, tests unitaires, build backend/frontend | Non |
+| `deploy.yml` | tag `v*` sur `main` + `workflow_dispatch` | build image Docker multi-arch (arm64) → push GHCR | Oui |
+
+- **Modèle trunk-based** : `main` est protégée (PR + checks verts obligatoires). Les branches de fonctionnalité ne déploient jamais ; seule `main` (via un tag) publie une image.
+- **Versionnement SemVer** : source de vérité = `version` dans `Cargo.toml`. Un tag `vX.Y.Z` publie l'image `ghcr.io/ficaud/ovalbot:X.Y.Z` (+ `latest`, `:<sha>`).
+- **Registre** : GitHub Container Registry (GHCR).
+- **Rollback** : re-pointer le Pi vers un tag d'image précédent.
+
+## Version affichée
+
+- Sur **tout le site**, la version d'OvalBot est affichée de façon **discrète**, en **transparence** sur un côté (coin d'écran).
+- Source : `version` du `Cargo.toml`, exposée par l'endpoint `GET /api/version`, récupérée par le frontend.
+
 ## Synthèse des rappels / à clarifier
 
-- [ ] Modèle de données (entités & relations)
+- [x] Modèle de données (entités & relations) — voir `phase1.md`
 - [ ] Tranches de prix (Phase 4)
 - [ ] Sécurité & légal : Idée 1 vs Idée 2 (Phase 4)
 - [ ] Service e-mail (explorer auto-hébergement Raspberry Pi)
-- [ ] Hébergement & SGBD (où tourne le site, quelle BDD)
-- [ ] Passage "attente" → "actif"
+- [x] Hébergement & SGBD — Raspberry Pi 4/5 (arm64) + SQLite
+- [x] Passage "attente" → "actif" — activation auto à la libération d'une place + manuelle (admin)
 - [ ] Parcours utilisateur end-to-end à détailler

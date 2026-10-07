@@ -59,6 +59,8 @@ Table `sessions` :
 | Hébergement | **Raspberry Pi 4/5 (arm64)** — serveur local, pas d'exposition publique au départ |
 | Déploiement | **Docker Compose** (1 service `ovalbot` en Phase 1, multi-arch arm64, volume pour la base) |
 | Servir le front | Build SvelteKit (`adapter-static`) servi par Axum |
+| Cookies | **`axum-extra`** (feature `cookie`) — sessions serveur, jeton opaque |
+| Migrations | **`sqlx::migrate!()`** embarquées au runtime + **`sqlx-cli`** (sqlite) en dev pour générer les fichiers |
 
 > [!info] Déploiement
 > Build **Docker multi-stage** (build SvelteKit → build Rust → image runtime minimale), image **arm64** via `buildx`. La base SQLite est persistée sur un **volume Docker**. Le Compose n'expose qu'un service `ovalbot` en Phase 1 ; les services `bot` + `gluetun` (VPN) viendront s'ajouter en Phase 4.
@@ -82,6 +84,7 @@ Table `sessions` :
 | `POST` | `/api/login` | public | Connexion, crée la ligne `sessions` et pose le cookie httpOnly |
 | `POST` | `/api/logout` | connecté | Déconnexion, supprime la session en base + expire le cookie |
 | `GET` | `/api/me` | connecté | Infos du compte courant |
+| `GET` | `/api/version` | public | Version de l'application (issue de `Cargo.toml`) |
 | `GET` | `/api/admin/users` | admin | Liste des comptes |
 | `POST` | `/api/admin/users/:id/activate` | admin | Activer manuellement un compte en attente |
 | `DELETE` | `/api/admin/users/:id` | admin | Supprimer un compte (libère une place) |
@@ -99,6 +102,13 @@ Table `sessions` :
 - Couleurs du **Stade Rochelais** : jaune `#FFD500` / noir.
 - Logo : `doc/assets/logo.png`.
 - **Compatible mobile obligatoire** (design responsive / mobile-first).
+- **Langue** : le site est **entièrement en anglais** dans un premier temps (même règle pour le code et les commentaires).
+- **Version affichée** : sur tout le site, affichage discret de la version d'OvalBot, en transparence sur un côté (via `GET /api/version`).
+
+## Qualité & tests
+
+- **Tests unitaires obligatoires** pour chaque fonction métier réalisée (hachage, liste d'attente, activation auto, sessions, endpoints).
+- La CI exécute `cargo test` sur chaque branche/PR ; build non vert = merge bloqué.
 
 ## Hors périmètre (reporté)
 
