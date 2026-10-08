@@ -42,9 +42,20 @@ ENV PATH="${CARGO_HOME}/bin:${PATH}"
 
 RUN curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-delay 5 https://sh.rustup.rs | sh -s -- \
     -y --no-modify-path --default-toolchain stable --profile minimal \
-    && rustup component add rustfmt clippy \
+    && rustup component add rustfmt clippy rust-src \
     && cargo --version \
     && rustc --version
+
+# ------------------------------------------------------------------
+# 2b. Pre-fetch Rust dependencies (so cargo/rust-analyzer run offline)
+# ------------------------------------------------------------------
+# The registry under CARGO_HOME is root-owned at this stage; the entrypoint
+# chowns it to the runtime user so cargo can write at runtime.
+WORKDIR /tmp/prefetch
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src && echo "fn main() {}" > src/main.rs \
+    && cargo fetch \
+    && rm -rf src
 
 # ------------------------------------------------------------------
 # 3. Node.js LTS (NodeSource) for the SvelteKit frontend

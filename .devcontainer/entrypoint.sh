@@ -44,6 +44,11 @@ fi
 # Make sure home directory has correct ownership
 chown -R "$MOUNT_UID:$MOUNT_GID" "/home/$USERNAME" 2>/dev/null || true
 
+# Make the cargo registry writable by the runtime user. It is populated
+# (root-owned) by the image build's `cargo fetch`; without this, cargo and
+# rust-analyzer fail with "Permission denied" when fetching dependencies.
+chown -R "$MOUNT_UID:$MOUNT_GID" /usr/local/cargo 2>/dev/null || true
+
 # ---- Ensure the effective user has passwordless sudo -------------------
 EFFECTIVE_USER="$(getent passwd "$MOUNT_UID" | cut -d: -f1)"
 if [ -n "$EFFECTIVE_USER" ] && [ "$EFFECTIVE_USER" != "$USERNAME" ]; then
