@@ -59,6 +59,16 @@ Open a shell with `devcontainer exec --workspace-folder . zsh` or
 ./my-env/down.sh                 # stop the container
 ```
 
+To start the container without rebuilding the images (uses the existing
+`ovalbot-personal` image):
+
+```bash
+export OVALBOT_HOST_UID="$(id -u)" OVALBOT_HOST_GID="$(id -g)"
+devcontainer up --workspace-folder . --override-config my-env/devcontainer.override.json
+devcontainer exec --workspace-folder . /workspaces/OvalBot/my-env/link.sh
+devcontainer exec --workspace-folder . zsh
+```
+
 ## Testing
 
 ### Option A — simulated production (backend serves the built frontend)
