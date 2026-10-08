@@ -1,11 +1,8 @@
 services:
   ovalbot:
-    image: ghcr.io/ficaud/ovalbot:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/ficaud/ovalbot:${OVALBOT_VERSION:-latest}
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:3000"
     environment:
       DATABASE_URL: sqlite:///data/ovalbot.sqlite
     volumes:
