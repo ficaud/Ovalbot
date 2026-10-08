@@ -29,6 +29,7 @@ COPY --from=builder /app/target/release/ovalbot /usr/local/bin/ovalbot
 COPY --from=builder /app/target/release/create_admin /usr/local/bin/create_admin
 COPY --from=frontend /app/frontend/build /app/static
 RUN useradd --system --uid 10001 ovalbot
+RUN mkdir -p /data && chown -R ovalbot:ovalbot /data
 USER ovalbot
 EXPOSE 3000
 ENV DATABASE_URL=sqlite:///data/ovalbot.sqlite
