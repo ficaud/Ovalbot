@@ -1,7 +1,7 @@
 use sqlx::SqlitePool;
 
 use crate::error::AppError;
-use crate::models::Status;
+use crate::models::{Status, User};
 
 pub const ACTIVE_LIMIT: i64 = 10;
 
@@ -13,17 +13,26 @@ pub fn status_for(active_count: i64) -> Status {
     }
 }
 
-pub async fn promote_next_waiting(pool: &SqlitePool) -> Result<(), AppError> {
+pub async fn promote_next_waiting(pool: &SqlitePool) -> Result<Option<User>, AppError> {
     let now = crate::time::now();
-    sqlx::query(
-        "UPDATE users SET status = 'active', activated_at = ? \
-         WHERE id = (SELECT id FROM users WHERE status = 'waiting' \
-         ORDER BY created_at ASC, id ASC LIMIT 1)",
+    let user = sqlx::query_as::<_, User>(
+        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at \
+         FROM users WHERE status = 'waiting' ORDER BY created_at ASC, id ASC LIMIT 1",
     )
-    .bind(&now)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
-    Ok(())
+
+    let Some(user) = user else {
+        return Ok(None);
+    };
+
+    sqlx::query("UPDATE users SET status = 'active', activated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(user.id)
+        .execute(pool)
+        .await?;
+
+    Ok(Some(user))
 }
 
 #[cfg(test)]

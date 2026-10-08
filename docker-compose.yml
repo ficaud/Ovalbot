@@ -5,6 +5,9 @@ services:
       - "${PORT:-3000}:3000"
     environment:
       DATABASE_URL: sqlite:///data/ovalbot.sqlite
+      RESEND_ENABLED: ${RESEND_ENABLED:-false}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM: ${RESEND_FROM:-OvalBot <onboarding@resend.dev>}
     volumes:
       - ovalbot-data:/data
     restart: unless-stopped

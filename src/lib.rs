@@ -2,6 +2,7 @@ pub mod auth;
 pub mod db;
 pub mod email;
 pub mod error;
+pub mod mailer;
 pub mod models;
 pub mod routes;
 pub mod state;

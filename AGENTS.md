@@ -68,3 +68,13 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - Symptom : `gd` in Neovim returned "No results found for `lsp_definitions`"; rust-analyzer started but failed to load the workspace.
 - Root cause : `CARGO_HOME=/usr/local/cargo` (root-owned, empty registry) → `cargo metadata` → `Permission denied`; plus `rust-src` missing (minimal profile).
 - Fix : `.devcontainer/Dockerfile` adds `rust-src` component + `cargo fetch` prefetch; `.devcontainer/entrypoint.sh` chowns `/usr/local/cargo` to the runtime user.
+
+### 2026-10-08 — Phase 1.5 welcome email (done)
+- Spec : `doc/specs/phase1.5.md`. Goal: send a welcome email on every transition to `active` (direct register, auto-promotion, manual activation).
+- Provider : **Resend** via HTTP API (`POST https://api.resend.com/emails`), `reqwest` (rustls, no openssl) + `async-trait`.
+- New module `src/mailer.rs` : trait `Mailer`, `ResendMailer`, `NoopMailer`, `from_env()`, `send_welcome_if_unsent()` (best-effort + dedup).
+- Migration `0003_add_welcome_email_sent_at.sql` : `users.welcome_email_sent_at` (anti-doublon). `User` model updated, all `query_as::<_, User>` SELECTs now include the column.
+- `AppState` gains `mailer: Arc<dyn Mailer>`; `promote_next_waiting` now returns `Option<User>` (was `Result<()>`) so the caller can send the email.
+- Env vars : `RESEND_ENABLED` (default `false` → Noop), `RESEND_API_KEY`, `RESEND_FROM`. Added to `docker-compose.yml`.
+- Tests : 2 new mailer unit tests (dedup + failure leaves marker unset) → `cargo test` 12 green, clippy `-D warnings` + `fmt --check` green.
+- Remaining (later) : final email copy (subject/body placeholders), verified domain in Resend.

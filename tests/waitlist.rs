@@ -30,7 +30,7 @@ async fn promote_activates_oldest_waiting(pool: SqlitePool) {
     promote_next_waiting(&pool).await.unwrap();
 
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, status, role, created_at, activated_at \
+        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at \
          FROM users WHERE email = ?",
     )
     .bind("waiting@example.com")

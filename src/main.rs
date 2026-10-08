@@ -1,3 +1,4 @@
+use ovalbot::mailer;
 use ovalbot::state::AppState;
 use ovalbot::{app, db};
 
@@ -15,7 +16,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = db::connect(&database_url).await?;
     db::migrate(&pool).await?;
 
-    let state = AppState { pool };
+    let state = AppState {
+        pool,
+        mailer: mailer::from_env(),
+    };
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     tracing::info!("listening on {}", listener.local_addr()?);
     axum::serve(listener, app(state)).await?;

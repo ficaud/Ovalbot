@@ -9,6 +9,7 @@ use time::Duration;
 use crate::auth::{generate_session_token, hash_password, verify_password, AuthUser};
 use crate::email::Email;
 use crate::error::AppError;
+use crate::mailer::send_welcome_if_unsent;
 use crate::models::{Status, User, UserView};
 use crate::state::AppState;
 use crate::waitlist::status_for;
@@ -69,7 +70,17 @@ pub async fn register(
     .await;
 
     match result {
-        Ok(_) => {}
+        Ok(res) => {
+            if status == Status::Active {
+                send_welcome_if_unsent(
+                    state.mailer.as_ref(),
+                    &state.pool,
+                    res.last_insert_rowid(),
+                    email.as_str(),
+                )
+                .await;
+            }
+        }
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
             return Err(AppError::EmailTaken);
         }
@@ -90,7 +101,7 @@ pub async fn login(
 ) -> Result<Response, AppError> {
     let email = Email::parse(&body.email)?;
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, status, role, created_at, activated_at FROM users WHERE email = ?",
+        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at FROM users WHERE email = ?",
     )
     .bind(email.as_str())
     .fetch_optional(&state.pool)

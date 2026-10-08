@@ -44,6 +44,7 @@ pub struct User {
     pub role: Role,
     pub created_at: String,
     pub activated_at: Option<String>,
+    pub welcome_email_sent_at: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]

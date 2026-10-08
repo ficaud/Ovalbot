@@ -4,6 +4,7 @@ use axum::Json;
 
 use crate::auth::AdminUser;
 use crate::error::AppError;
+use crate::mailer::send_welcome_if_unsent;
 use crate::models::{Role, User, UserView};
 use crate::state::AppState;
 use crate::waitlist::promote_next_waiting;
@@ -13,7 +14,7 @@ pub async fn list_users(
     _admin: AdminUser,
 ) -> Result<Json<Vec<UserView>>, AppError> {
     let users = sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, status, role, created_at, activated_at FROM users ORDER BY id",
+        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at FROM users ORDER BY id",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -34,6 +35,11 @@ pub async fn activate_user(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+    let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = ?")
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await?;
+    send_welcome_if_unsent(state.mailer.as_ref(), &state.pool, id, &email).await;
     Ok(StatusCode::OK)
 }
 
@@ -43,7 +49,7 @@ pub async fn delete_user(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, AppError> {
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, status, role, created_at, activated_at FROM users WHERE id = ?",
+        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at FROM users WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(&state.pool)
@@ -64,6 +70,9 @@ pub async fn delete_user(
         .execute(&state.pool)
         .await?;
 
-    promote_next_waiting(&state.pool).await?;
+    let promoted = promote_next_waiting(&state.pool).await?;
+    if let Some(user) = promoted {
+        send_welcome_if_unsent(state.mailer.as_ref(), &state.pool, user.id, &user.email).await;
+    }
     Ok(StatusCode::OK)
 }
