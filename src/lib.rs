@@ -5,6 +5,7 @@ pub mod email;
 pub mod error;
 pub mod mailer;
 pub mod models;
+pub mod notifications;
 pub mod routes;
 pub mod state;
 pub mod time;
@@ -17,7 +18,9 @@ use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
-use crate::routes::{admin, auth as auth_routes, calendar as calendar_routes};
+use crate::routes::{
+    admin, auth as auth_routes, calendar as calendar_routes, notifications as notifications_routes,
+};
 use crate::state::AppState;
 
 pub fn app(state: AppState) -> Router {
@@ -34,6 +37,11 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/teams/{team}/matches",
             get(calendar_routes::team_matches),
+        )
+        .route("/api/notifications", get(notifications_routes::list))
+        .route(
+            "/api/notifications/{match_id}",
+            post(notifications_routes::subscribe).delete(notifications_routes::unsubscribe),
         )
         .route("/api/admin/users", get(admin::list_users))
         .route("/api/admin/users/{id}/activate", post(admin::activate_user))

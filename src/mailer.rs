@@ -12,9 +12,17 @@ pub enum MailError {
     Api(String),
 }
 
+#[derive(Debug, Clone)]
+pub struct MatchAlert {
+    pub team: String,
+    pub opponent: String,
+    pub kickoff: String,
+}
+
 #[async_trait]
 pub trait Mailer: Send + Sync {
     async fn send_welcome(&self, email: &str) -> Result<(), MailError>;
+    async fn send_match_alert(&self, email: &str, alert: &MatchAlert) -> Result<(), MailError>;
 }
 
 const WELCOME_SUBJECT: &str = "Welcome to OvalBot";
@@ -26,7 +34,7 @@ const WELCOME_HTML: &str = "<p>Your OvalBot account is now active.</p>\
 <p>You can now log in and view the Stade Rochelais home matches.</p>";
 
 #[derive(Serialize)]
-struct WelcomeEmail<'a> {
+struct OutgoingEmail<'a> {
     from: &'a str,
     to: &'a str,
     subject: &'a str,
@@ -49,17 +57,20 @@ impl ResendMailer {
             from,
         }
     }
-}
 
-#[async_trait]
-impl Mailer for ResendMailer {
-    async fn send_welcome(&self, email: &str) -> Result<(), MailError> {
-        let payload = WelcomeEmail {
+    async fn send(
+        &self,
+        email: &str,
+        subject: &str,
+        html: &str,
+        text: &str,
+    ) -> Result<(), MailError> {
+        let payload = OutgoingEmail {
             from: &self.from,
             to: email,
-            subject: WELCOME_SUBJECT,
-            html: WELCOME_HTML,
-            text: WELCOME_TEXT,
+            subject,
+            html,
+            text,
         };
         let response = self
             .client
@@ -75,11 +86,36 @@ impl Mailer for ResendMailer {
     }
 }
 
+#[async_trait]
+impl Mailer for ResendMailer {
+    async fn send_welcome(&self, email: &str) -> Result<(), MailError> {
+        self.send(email, WELCOME_SUBJECT, WELCOME_HTML, WELCOME_TEXT)
+            .await
+    }
+
+    async fn send_match_alert(&self, email: &str, alert: &MatchAlert) -> Result<(), MailError> {
+        let subject = format!("Match scheduled: {} vs {}", alert.team, alert.opponent);
+        let text = format!(
+            "Good news! {} vs {} has been scheduled for {}.",
+            alert.team, alert.opponent, alert.kickoff
+        );
+        let html = format!(
+            "<p>Good news! <strong>{} vs {}</strong> has been scheduled for {}.</p>",
+            alert.team, alert.opponent, alert.kickoff
+        );
+        self.send(email, &subject, &html, &text).await
+    }
+}
+
 pub struct NoopMailer;
 
 #[async_trait]
 impl Mailer for NoopMailer {
     async fn send_welcome(&self, _email: &str) -> Result<(), MailError> {
+        Ok(())
+    }
+
+    async fn send_match_alert(&self, _email: &str, _alert: &MatchAlert) -> Result<(), MailError> {
         Ok(())
     }
 }
@@ -145,12 +181,32 @@ mod tests {
 
     use super::*;
 
-    struct RecordingMailer(Mutex<Vec<String>>);
+    struct RecordingMailer {
+        welcome: Mutex<Vec<String>>,
+        alerts: Mutex<Vec<(String, MatchAlert)>>,
+    }
+
+    impl RecordingMailer {
+        fn new() -> Self {
+            Self {
+                welcome: Mutex::new(Vec::new()),
+                alerts: Mutex::new(Vec::new()),
+            }
+        }
+    }
 
     #[async_trait]
     impl Mailer for RecordingMailer {
         async fn send_welcome(&self, email: &str) -> Result<(), MailError> {
-            self.0.lock().unwrap().push(email.to_string());
+            self.welcome.lock().unwrap().push(email.to_string());
+            Ok(())
+        }
+
+        async fn send_match_alert(&self, email: &str, alert: &MatchAlert) -> Result<(), MailError> {
+            self.alerts
+                .lock()
+                .unwrap()
+                .push((email.to_string(), alert.clone()));
             Ok(())
         }
     }
@@ -160,6 +216,14 @@ mod tests {
     #[async_trait]
     impl Mailer for FailingMailer {
         async fn send_welcome(&self, _email: &str) -> Result<(), MailError> {
+            Err(MailError::Api("boom".to_string()))
+        }
+
+        async fn send_match_alert(
+            &self,
+            _email: &str,
+            _alert: &MatchAlert,
+        ) -> Result<(), MailError> {
             Err(MailError::Api("boom".to_string()))
         }
     }
@@ -182,12 +246,12 @@ mod tests {
     #[sqlx::test]
     async fn sends_welcome_once_then_skips(pool: SqlitePool) {
         let id = insert_active_user(&pool, "a@example.com").await;
-        let mailer = RecordingMailer(Mutex::new(Vec::new()));
+        let mailer = RecordingMailer::new();
 
         send_welcome_if_unsent(&mailer, &pool, id, "a@example.com").await;
         send_welcome_if_unsent(&mailer, &pool, id, "a@example.com").await;
 
-        let sent = mailer.0.lock().unwrap();
+        let sent = mailer.welcome.lock().unwrap();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0], "a@example.com");
     }

@@ -1,7 +1,7 @@
 use std::sync::RwLock;
 
 use calendar::parse::{EventParser, LnrParser};
-use calendar::{for_team, upcoming, Event, MatchStatus, TeamType};
+use calendar::{diff, for_team, upcoming, Change, Event, MatchStatus, TeamType};
 use serde::Serialize;
 
 const SEASON: &str = "2026-2027";
@@ -34,14 +34,16 @@ impl CalendarService {
         }
     }
 
-    pub async fn sync(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn sync(&self) -> Result<Vec<Change>, Box<dyn std::error::Error + Send + Sync>> {
         let events = tokio::task::spawn_blocking(|| {
             let parser = LnrParser::new(SEASON);
             parser.parse_all()
         })
         .await??;
+        let old = self.events.read().expect("calendar cache poisoned").clone();
+        let changes = diff(&old, &events);
         *self.events.write().expect("calendar cache poisoned") = events;
-        Ok(())
+        Ok(changes)
     }
 
     pub fn list_teams(&self) -> Vec<TeamView> {

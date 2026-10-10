@@ -80,3 +80,17 @@ export async function getTeams(): Promise<TeamView[]> {
 export async function getTeamMatches(teamId: string): Promise<MatchView[]> {
   return parse<MatchView[]>(await fetch(`/api/teams/${teamId}/matches`));
 }
+
+export async function getNotifications(): Promise<number[]> {
+  return parse<number[]>(await fetch('/api/notifications'));
+}
+
+export async function subscribe(matchId: number): Promise<void> {
+  const res = await fetch(`/api/notifications/${matchId}`, { method: 'POST' });
+  if (!res.ok) throw new ApiError(res.status, 'Subscription failed');
+}
+
+export async function unsubscribe(matchId: number): Promise<void> {
+  const res = await fetch(`/api/notifications/${matchId}`, { method: 'DELETE' });
+  if (!res.ok) throw new ApiError(res.status, 'Unsubscription failed');
+}

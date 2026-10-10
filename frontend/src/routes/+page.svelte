@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import type { PageData } from './$types';
   import type { MatchView, TeamView } from '$lib/types';
-  import { getTeamMatches, getTeams } from '$lib/api';
+  import { getNotifications, getTeamMatches, getTeams, subscribe, unsubscribe } from '$lib/api';
 
   let { data }: { data: PageData } = $props();
 
@@ -10,6 +10,8 @@
   let selected = $state('stade-rochelais');
   let matches: MatchView[] = $state([]);
   let loading = $state(false);
+  let subscribed: number[] = $state([]);
+  let pending: number[] = $state([]);
 
   async function refreshMatches() {
     loading = true;
@@ -20,8 +22,25 @@
     }
   }
 
+  async function toggleNotification(match: MatchView) {
+    if (pending.includes(match.id)) return;
+    pending = [...pending, match.id];
+    try {
+      if (subscribed.includes(match.id)) {
+        await unsubscribe(match.id);
+        subscribed = subscribed.filter((id) => id !== match.id);
+      } else {
+        await subscribe(match.id);
+        subscribed = [...subscribed, match.id];
+      }
+    } finally {
+      pending = pending.filter((id) => id !== match.id);
+    }
+  }
+
   onMount(async () => {
     teams = await getTeams();
+    subscribed = await getNotifications();
     await refreshMatches();
   });
 </script>
@@ -61,7 +80,7 @@
     {:else}
       <div class="matches">
         {#each matches as match (match.id)}
-          <button class="match-card" type="button">
+          <div class="match-card">
             <div class="match-card__teams">
               <span class="match-card__club">
                 <img
@@ -83,15 +102,46 @@
             </div>
             <div class="match-card__footer">
               <span class="match-card__kickoff">{match.kickoff}</span>
-              <span
-                class="badge {match.status === 'scheduled'
-                  ? 'badge-scheduled'
-                  : 'badge-tbd'}"
-              >
-                {match.status}
-              </span>
+              <div class="match-card__meta">
+                {#if match.status === 'not scheduled'}
+                  <button
+                    class="bell"
+                    class:bell--active={subscribed.includes(match.id)}
+                    type="button"
+                    disabled={pending.includes(match.id)}
+                    aria-pressed={subscribed.includes(match.id)}
+                    aria-label={subscribed.includes(match.id)
+                      ? 'Turn off notifications for this match'
+                      : 'Be notified when this match gets a date'}
+                    title={subscribed.includes(match.id)
+                      ? 'Turn off notifications for this match'
+                      : 'Be notified when this match gets a date'}
+                    onclick={() => toggleNotification(match)}
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+                      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+                    </svg>
+                  </button>
+                {/if}
+                <span
+                  class="badge {match.status === 'scheduled'
+                    ? 'badge-scheduled'
+                    : 'badge-tbd'}"
+                >
+                  {match.status}
+                </span>
+              </div>
             </div>
-          </button>
+          </div>
         {/each}
       </div>
     {/if}
@@ -122,12 +172,50 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 16px 20px;
-    cursor: pointer;
     font-family: inherit;
     font-size: 1rem;
     color: var(--ink);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
     transition: border-color 0.15s ease;
+  }
+
+  .bell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition:
+      color 0.15s ease,
+      border-color 0.15s ease,
+      background 0.15s ease;
+  }
+
+  .bell svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .bell:hover:not(:disabled) {
+    border-color: var(--yellow);
+    color: var(--black);
+  }
+
+  .bell:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .bell--active {
+    background: var(--yellow);
+    border-color: var(--yellow);
+    color: var(--black);
   }
 
   .match-card:hover {
@@ -182,6 +270,12 @@
   .match-card__kickoff {
     color: var(--muted);
     font-size: 0.9rem;
+  }
+
+  .match-card__meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
 
   .badge-scheduled {
