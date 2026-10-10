@@ -99,6 +99,14 @@ Open http://localhost:5173 (ports 5173 and 3000 are forwarded in the devcontaine
 DATABASE_URL="sqlite:///tmp/test.db" cargo run --bin create_admin -- --email admin@example.com --password password123
 ```
 
+## Rust crate Calendar testing
+
+To manually fetch the calendar and test the parsing you can run the following test manually (this will execute the test for LNR parsing in `src/parse/lnr.rs`): 
+
+```bash
+cargo test capture_lnr_fixture -- --ignored
+```
+
 ## Deployment (Raspberry Pi, arm64)
 
 `deploy.yml` builds a `linux/arm64` image and publishes it to GHCR on every `v*`
