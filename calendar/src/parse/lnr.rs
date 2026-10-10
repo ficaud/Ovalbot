@@ -37,7 +37,7 @@ impl EventParser for LnrParser {
         self.parse_events(raw, 1)
     }
 
-    fn parse_all(&self) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+    fn parse_all(&self) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
         self.fetch_all_events_from(&self.calendar_base_url())
     }
 }
@@ -125,7 +125,7 @@ impl LnrParser {
     fn fetch_all_events_from(
         &self,
         base_url: &str,
-    ) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
         let mut events = Vec::new();
         for day_num in 1..=MAX_JOURNEES {
             match self.fetch_day(base_url, day_num) {

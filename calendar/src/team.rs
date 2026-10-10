@@ -54,6 +54,49 @@ impl TeamType {
             _ => None,
         }
     }
+
+    pub fn all() -> [TeamType; 14] {
+        [
+            TeamType::StadeRochelais,
+            TeamType::StadeToulousain,
+            TeamType::RcToulon,
+            TeamType::RcVannes,
+            TeamType::AvironBayonnais,
+            TeamType::Racing92,
+            TeamType::Usap,
+            TeamType::AsmClermont,
+            TeamType::LouRugby,
+            TeamType::SectionPalois,
+            TeamType::CastresOlympique,
+            TeamType::MontpellierHeraultRugby,
+            TeamType::StadeFrancaisParis,
+            TeamType::UnionBordeauxBegles,
+        ]
+    }
+
+    pub fn id(&self) -> &'static str {
+        match self {
+            TeamType::StadeRochelais => "stade-rochelais",
+            TeamType::StadeToulousain => "stade-toulousain",
+            TeamType::RcToulon => "rc-toulon",
+            TeamType::RcVannes => "rc-vannes",
+            TeamType::AvironBayonnais => "aviron-bayonnais",
+            TeamType::Racing92 => "racing-92",
+            TeamType::Usap => "usa-perpignan",
+            TeamType::AsmClermont => "asm-clermont",
+            TeamType::LouRugby => "lou-rugby",
+            TeamType::SectionPalois => "section-paloise",
+            TeamType::CastresOlympique => "castres-olympique",
+            TeamType::MontpellierHeraultRugby => "montpellier-herault-rugby",
+            TeamType::StadeFrancaisParis => "stade-francais-paris",
+            TeamType::UnionBordeauxBegles => "union-bordeaux-begles",
+            TeamType::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<TeamType> {
+        TeamType::all().into_iter().find(|team| team.id() == id)
+    }
 }
 
 impl fmt::Display for TeamType {
@@ -130,5 +173,25 @@ mod tests {
     fn display_returns_canonical_name() {
         assert_eq!(TeamType::StadeRochelais.to_string(), "Stade Rochelais");
         assert_eq!(TeamType::AsmClermont.to_string(), "ASM Clermont Auvergne");
+    }
+
+    #[test]
+    fn all_lists_the_fourteen_teams() {
+        let teams = TeamType::all();
+        assert_eq!(teams.len(), 14);
+        assert!(teams.contains(&TeamType::StadeRochelais));
+        assert!(!teams.contains(&TeamType::Unknown));
+    }
+
+    #[test]
+    fn id_and_from_id_roundtrip() {
+        for team in TeamType::all() {
+            assert_eq!(TeamType::from_id(team.id()), Some(team));
+        }
+    }
+
+    #[test]
+    fn from_id_returns_none_for_unknown() {
+        assert_eq!(TeamType::from_id("not-a-team"), None);
     }
 }

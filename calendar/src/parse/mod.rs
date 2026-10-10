@@ -10,5 +10,5 @@ use crate::ParseError;
 
 pub trait EventParser: Send + Sync {
     fn parse(&self, raw: &str) -> Result<Vec<Event>, ParseError>;
-    fn parse_all(&self) -> Result<Vec<Event>, Box<dyn std::error::Error>>;
+    fn parse_all(&self) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>>;
 }
