@@ -190,4 +190,40 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn diff_ignores_unchanged_statuses() {
+        let old = vec![
+            event(
+                0,
+                TeamType::StadeRochelais,
+                TeamType::RcToulon,
+                MatchStatus::Tbd,
+            ),
+            event(
+                1,
+                TeamType::StadeRochelais,
+                TeamType::Usap,
+                MatchStatus::Scheduled,
+            ),
+        ];
+        let new = old.clone();
+
+        let changes = diff(&old, &new);
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn diff_ignores_new_matches_without_previous_tbd() {
+        let old: Vec<Event> = Vec::new();
+        let new = vec![event(
+            0,
+            TeamType::StadeRochelais,
+            TeamType::RcToulon,
+            MatchStatus::Scheduled,
+        )];
+
+        let changes = diff(&old, &new);
+        assert!(changes.is_empty());
+    }
 }
