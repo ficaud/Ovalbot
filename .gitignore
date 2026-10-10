@@ -14,3 +14,5 @@
 /frontend/build/
 /frontend/.svelte-kit/
 /.env
+/calendar/target/
+/calendar/src/parse/fixtures
