@@ -78,3 +78,14 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - Env vars : `RESEND_ENABLED` (default `false` → Noop), `RESEND_API_KEY`, `RESEND_FROM`. Added to `docker-compose.yml`.
 - Tests : 2 new mailer unit tests (dedup + failure leaves marker unset) → `cargo test` 12 green, clippy `-D warnings` + `fmt --check` green.
 - Remaining (later) : final email copy (subject/body placeholders), verified domain in Resend.
+
+### 2026-10-10 — Phase 3 match scheduling alerts (done)
+- Spec : `doc/specs/phase3.md`. Goal: per-match email alert when a match flips `Tbd → Scheduled` (any of the 14 teams).
+- Migration `0004_create_match_notifications.sql` : `(user_id, match_id, created_at)`, PK `(user_id, match_id)`, `ON DELETE CASCADE`.
+- `CalendarService::sync()` now returns `Vec<Change>` (captures old snapshot, `calendar::diff(old, new)`). Crate `calendar` gained 2 `diff` edge-case tests.
+- `mailer` : `Mailer` trait + `send_match_alert` (`MatchAlert { team, opponent, kickoff }`), `ResendMailer`/`NoopMailer` updated (refactored shared `send()`).
+- New module `src/notifications.rs` : `subscribe`/`unsubscribe`/`list_for_user`/`process` (emails subscribers then deletes rows).
+- Endpoints : `GET /api/notifications`, `POST`/`DELETE /api/notifications/{match_id}` (extractor `ActiveUser`).
+- `main.rs` : background sync loop now calls `notifications::process` on the returned changes.
+- Frontend : bell toggle (SVG inline + `title` tooltip) on `Tbd` match cards, card switched `<button>` → `<div>`.
+- Verified : `cargo test` 19 green (18 unit + 1 integration), calendar crate 25 green, clippy `-D warnings` + `fmt --check` green, `npm run build` + `npm run check` green.
