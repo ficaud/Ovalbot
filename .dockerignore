@@ -1,0 +1,11 @@
+.git
+.gitignore
+target/
+calendar/target/
+frontend/node_modules/
+frontend/build/
+node_modules/
+*.db
+*.sqlite
+.env
+my-env/

@@ -6,7 +6,7 @@ use axum_extra::extract::CookieJar;
 use sqlx::SqlitePool;
 
 use crate::error::AppError;
-use crate::models::{Role, Session, User};
+use crate::models::{Role, Session, Status, User};
 use crate::state::AppState;
 
 pub fn hash_password(password: &str) -> Result<String, AppError> {
@@ -68,6 +68,23 @@ impl FromRequestParts<AppState> for AdminUser {
             return Err(AppError::Forbidden);
         }
         Ok(AdminUser(auth))
+    }
+}
+
+pub struct ActiveUser(pub AuthUser);
+
+impl FromRequestParts<AppState> for ActiveUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = AuthUser::from_request_parts(parts, state).await?;
+        if auth.user.status != Status::Active {
+            return Err(AppError::Forbidden);
+        }
+        Ok(ActiveUser(auth))
     }
 }
 

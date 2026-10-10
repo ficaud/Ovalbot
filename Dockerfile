@@ -15,6 +15,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
+COPY calendar ./calendar
 COPY src ./src
 COPY migrations ./migrations
 RUN cargo build --release

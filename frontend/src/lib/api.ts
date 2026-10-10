@@ -1,4 +1,4 @@
-import type { RegisterResult, UserView, VersionInfo } from './types';
+import type { MatchView, RegisterResult, TeamView, UserView, VersionInfo } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -71,4 +71,12 @@ export async function activateUser(id: number): Promise<void> {
 export async function deleteUser(id: number): Promise<void> {
   const res = await fetch(`/api/admin/users/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new ApiError(res.status, 'Deletion failed');
+}
+
+export async function getTeams(): Promise<TeamView[]> {
+  return parse<TeamView[]>(await fetch('/api/teams'));
+}
+
+export async function getTeamMatches(teamId: string): Promise<MatchView[]> {
+  return parse<MatchView[]>(await fetch(`/api/teams/${teamId}/matches`));
 }

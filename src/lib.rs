@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod calendar;
 pub mod db;
 pub mod email;
 pub mod error;
@@ -16,7 +17,7 @@ use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
-use crate::routes::{admin, auth as auth_routes};
+use crate::routes::{admin, auth as auth_routes, calendar as calendar_routes};
 use crate::state::AppState;
 
 pub fn app(state: AppState) -> Router {
@@ -29,6 +30,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/logout", post(auth_routes::logout))
         .route("/api/me", get(auth_routes::me))
         .route("/api/version", get(auth_routes::version))
+        .route("/api/teams", get(calendar_routes::list_teams))
+        .route(
+            "/api/teams/{team}/matches",
+            get(calendar_routes::team_matches),
+        )
         .route("/api/admin/users", get(admin::list_users))
         .route("/api/admin/users/{id}/activate", post(admin::activate_user))
         .route("/api/admin/users/{id}", delete(admin::delete_user))

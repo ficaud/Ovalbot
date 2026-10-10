@@ -1,6 +1,12 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use ovalbot::calendar::CalendarService;
 use ovalbot::mailer;
 use ovalbot::state::AppState;
 use ovalbot::{app, db};
+
+const SYNC_INTERVAL_SECS: u64 = 20 * 60;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,9 +22,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = db::connect(&database_url).await?;
     db::migrate(&pool).await?;
 
+    let calendar = Arc::new(CalendarService::new());
+    if let Err(e) = calendar.sync().await {
+        tracing::warn!("initial calendar sync failed: {e}");
+    }
+
+    let sync_calendar = calendar.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(SYNC_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            if let Err(e) = sync_calendar.sync().await {
+                tracing::warn!("calendar sync failed: {e}");
+            }
+        }
+    });
+
     let state = AppState {
         pool,
         mailer: mailer::from_env(),
+        calendar,
     };
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     tracing::info!("listening on {}", listener.local_addr()?);

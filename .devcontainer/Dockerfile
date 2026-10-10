@@ -53,6 +53,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-delay 5 https://sh.ru
 # chowns it to the runtime user so cargo can write at runtime.
 WORKDIR /tmp/prefetch
 COPY Cargo.toml Cargo.lock ./
+COPY calendar ./calendar
 RUN mkdir -p src && echo "fn main() {}" > src/main.rs \
     && cargo fetch \
     && rm -rf src

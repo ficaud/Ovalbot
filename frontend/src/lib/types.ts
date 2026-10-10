@@ -18,3 +18,18 @@ export interface RegisterResult {
   email: string;
   status: Status;
 }
+
+export interface TeamView {
+  id: string;
+  name: string;
+}
+
+export interface MatchView {
+  id: number;
+  team: string;
+  team_id: string;
+  opponent: string;
+  opponent_id: string;
+  kickoff: string;
+  status: string;
+}

@@ -6,7 +6,8 @@ edition = "2021"
 [dependencies]
 axum = "0.8"
 axum-extra = { version = "0.12", features = ["cookie"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "fs"] }
+calendar = { path = "calendar" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "fs", "time"] }
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 argon2 = "0.6"
 serde = { version = "1", features = ["derive"] }
