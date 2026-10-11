@@ -176,6 +176,9 @@ mod tests {
         })
     }
 
+    /// Fetches real LNR HTML pages and saves them as local fixtures. Ignored by
+    /// default; run explicitly with `cargo test capture_lnr_fixture -- --ignored`
+    /// to (re)generate the fixtures.
     #[test]
     #[ignore]
     fn capture_lnr_fixture() {
@@ -187,6 +190,7 @@ mod tests {
         std::fs::write(PLAYED_FIXTURE_PATH, played).unwrap();
     }
 
+    /// Debugging aid: loads the fixture and prints the first 5 matched rows.
     #[test]
     fn inspect_lnr_rows() {
         let raw = load_fixture(FIXTURE_PATH);
@@ -197,6 +201,7 @@ mod tests {
         }
     }
 
+    /// Parses the fixture and asserts that it yields at least one event.
     #[test]
     fn parse_lnr_fixture() {
         let raw = load_fixture(FIXTURE_PATH);
@@ -209,6 +214,8 @@ mod tests {
         assert!(!events.is_empty());
     }
 
+    /// Parses the fixture and checks exact clubs, ids, kickoff and status for the
+    /// first and last events.
     #[test]
     fn parses_clubs_and_time_from_fixture() {
         let raw = load_fixture(FIXTURE_PATH);
@@ -239,6 +246,7 @@ mod tests {
         assert_eq!(last.status, MatchStatus::Scheduled);
     }
 
+    /// Parses the "played" fixture and asserts every match is `Finished`.
     #[test]
     fn parses_played_matches_as_finished() {
         let raw = load_fixture(PLAYED_FIXTURE_PATH);
@@ -286,6 +294,8 @@ mod tests {
         (base_url, handle)
     }
 
+    /// `fetch_all_events_from` stops at the first 404; serving 2 journées of 7
+    /// events yields 14 events.
     #[test]
     fn fetch_all_events_stops_on_not_found() {
         let body = load_fixture(FIXTURE_PATH);

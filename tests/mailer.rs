@@ -18,6 +18,8 @@ impl Mailer for FailingMailer {
     }
 }
 
+/// Sends the welcome email only once per user, skipping subsequent calls once
+/// the `welcome_email_sent_at` marker is set.
 #[sqlx::test]
 async fn sends_welcome_once_then_skips(pool: SqlitePool) {
     let id = insert_active_user(&pool, "a@example.com").await;
@@ -31,6 +33,8 @@ async fn sends_welcome_once_then_skips(pool: SqlitePool) {
     assert_eq!(sent[0], "a@example.com");
 }
 
+/// Leaves the `welcome_email_sent_at` marker unset when the mailer fails, so the
+/// email can be retried on a later run.
 #[sqlx::test]
 async fn failed_send_leaves_marker_unset(pool: SqlitePool) {
     let id = insert_active_user(&pool, "a@example.com").await;

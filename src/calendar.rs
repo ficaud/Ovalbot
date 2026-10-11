@@ -24,24 +24,33 @@ pub struct MatchView {
 }
 
 pub struct CalendarService {
+    // events are in memory cache, so that we can read them as we want without blocking the tokio runtime
+    // but the writing requires a write lock (only one write at the time).
     events: RwLock<Vec<Event>>,
 }
 
 impl CalendarService {
     pub fn new() -> Self {
         Self {
+            // event list is empty by default
             events: RwLock::new(Vec::new()),
         }
     }
 
     pub async fn sync(&self) -> Result<Vec<Change>, Box<dyn std::error::Error + Send + Sync>> {
+        // Event retrival and parsing is blocking so we spawn it on a separate thread.
         let events = tokio::task::spawn_blocking(|| {
             let parser = LnrParser::new(SEASON);
             parser.parse_all()
         })
         .await??;
+
+        // Get the last calendar that has been saved in cache memory
         let old = self.events.read().expect("calendar cache poisoned").clone();
+
+        // Diff the new calendar with the old one
         let changes = diff(&old, &events);
+        // Save the new calendar in cache memory
         *self.events.write().expect("calendar cache poisoned") = events;
         Ok(changes)
     }
@@ -111,6 +120,7 @@ mod tests {
         }
     }
 
+    /// `list_teams` returns all 14 known teams.
     #[test]
     fn list_teams_returns_the_fourteen_teams() {
         let service = CalendarService::new();
@@ -119,6 +129,8 @@ mod tests {
         assert!(teams.iter().any(|t| t.id == "stade-rochelais"));
     }
 
+    /// `home_matches` returns only the team's home games (excluding finished and
+    /// away matches) and maps them to `MatchView`.
     #[test]
     fn home_matches_returns_only_home_games() {
         let service = CalendarService::new();
