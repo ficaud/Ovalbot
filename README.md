@@ -8,6 +8,8 @@
 
 # OvalBot
 
+[![CI](https://github.com/ficaud/Ovalbot/actions/workflows/ci.yml/badge.svg)](https://github.com/ficaud/Ovalbot/actions/workflows/ci.yml)
+[![Deploy](https://github.com/ficaud/Ovalbot/actions/workflows/deploy.yml/badge.svg)](https://github.com/ficaud/Ovalbot/actions/workflows/deploy.yml)
 [![codecov](https://codecov.io/gh/ficaud/Ovalbot/branch/main/graph/badge.svg)](https://codecov.io/gh/ficaud/Ovalbot)
 
 </br>
