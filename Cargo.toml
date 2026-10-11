@@ -1,3 +1,7 @@
+[workspace]
+members = ["calendar"]
+resolver = "2"
+
 [package]
 name = "ovalbot"
 version = "0.1.0"

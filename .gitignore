@@ -4,6 +4,9 @@
 # Rust build artifacts
 /target
 
+# Coverage reports
+/lcov.info
+
 # SQLite databases
 data/
 *.db
@@ -16,4 +19,3 @@ data/
 /frontend/.svelte-kit/
 /.env
 /calendar/target/
-/calendar/src/parse/fixtures
