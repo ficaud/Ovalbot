@@ -8,6 +8,8 @@
 
 # OvalBot
 
+[![codecov](https://codecov.io/gh/ficaud/Ovalbot/branch/main/graph/badge.svg)](https://codecov.io/gh/ficaud/Ovalbot)
+
 </br>
 </div>
 

@@ -42,7 +42,7 @@ ENV PATH="${CARGO_HOME}/bin:${PATH}"
 
 RUN curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-delay 5 https://sh.rustup.rs | sh -s -- \
     -y --no-modify-path --default-toolchain stable --profile minimal \
-    && rustup component add rustfmt clippy rust-src \
+    && rustup component add rustfmt clippy rust-src llvm-tools-preview \
     && cargo --version \
     && rustc --version
 
@@ -57,6 +57,15 @@ COPY calendar ./calendar
 RUN mkdir -p src && echo "fn main() {}" > src/main.rs \
     && cargo fetch \
     && rm -rf src
+
+# ------------------------------------------------------------------
+# 2c. Coverage tooling (cargo-llvm-cov, prebuilt via cargo-binstall)
+# ------------------------------------------------------------------
+RUN curl -L --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-delay 5 \
+        https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh \
+        | bash \
+    && cargo binstall -y cargo-llvm-cov \
+    && cargo llvm-cov --version
 
 # ------------------------------------------------------------------
 # 3. Node.js LTS (NodeSource) for the SvelteKit frontend
