@@ -167,27 +167,28 @@ mod tests {
 
     const FIXTURE_PATH: &str = "src/parse/fixtures/lnr.html";
     const PLAYED_FIXTURE_PATH: &str = "src/parse/fixtures/lnr_played.html";
+    const CAPTURE_DIR: &str = "src/parse/fixtures/captured";
 
     fn load_fixture(path: &str) -> String {
         std::fs::read_to_string(path).unwrap_or_else(|_| {
             panic!(
-                "fixture missing: run `cargo test capture_lnr_fixture -- --ignored` first to fetch and save it"
+                "fixture missing: expected a committed minimal fixture; regenerate a live snapshot with `cargo test capture_lnr_fixture -- --ignored`"
             )
         })
     }
 
-    /// Fetches real LNR HTML pages and saves them as local fixtures. Ignored by
-    /// default; run explicitly with `cargo test capture_lnr_fixture -- --ignored`
-    /// to (re)generate the fixtures.
+    /// Fetches live LNR HTML and saves full snapshots under `fixtures/captured/`
+    /// (gitignored) to check the parser against the real site. Ignored by default;
+    /// run explicitly with `cargo test capture_lnr_fixture -- --ignored`.
     #[test]
     #[ignore]
     fn capture_lnr_fixture() {
         let parser = LnrParser::new("2026-2027");
-        std::fs::create_dir_all("src/parse/fixtures").unwrap();
+        std::fs::create_dir_all(CAPTURE_DIR).unwrap();
         let scheduled = parser.get_calendar_events(6).unwrap();
-        std::fs::write(FIXTURE_PATH, scheduled).unwrap();
+        std::fs::write(format!("{CAPTURE_DIR}/lnr.html"), scheduled).unwrap();
         let played = parser.get_calendar_events(1).unwrap();
-        std::fs::write(PLAYED_FIXTURE_PATH, played).unwrap();
+        std::fs::write(format!("{CAPTURE_DIR}/lnr_played.html"), played).unwrap();
     }
 
     /// Debugging aid: loads the fixture and prints the first 5 matched rows.
