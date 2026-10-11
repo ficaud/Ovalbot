@@ -1,5 +1,5 @@
 import { redirect } from '@sveltejs/kit';
-import { listUsers } from '$lib/api';
+import { listUsers } from '#lib/api';
 import type { PageLoad } from './$types';
 
 export const load: PageLoad = async ({ parent, depends }) => {

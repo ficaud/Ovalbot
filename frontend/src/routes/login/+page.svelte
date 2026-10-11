@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto, invalidateAll } from '$app/navigation';
   import { page } from '$app/state';
-  import { login } from '$lib/api';
+  import { login } from '#lib/api';
 
   let email = $state('');
   let password = $state('');
