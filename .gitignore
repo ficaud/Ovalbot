@@ -19,3 +19,6 @@ data/
 /frontend/.svelte-kit/
 /.env
 /calendar/target/
+
+# Live calendar snapshots captured for manual comparison (not committed)
+/calendar/src/parse/fixtures/captured/
