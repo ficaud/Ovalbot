@@ -5,6 +5,7 @@
 /target
 
 # SQLite databases
+data/
 *.db
 *.db-shm
 *.db-wal

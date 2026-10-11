@@ -136,6 +136,13 @@ cp .env.example .env
 - `OVALBOT_VERSION`: tag to deploy (pin it, e.g. `v1.0.0`, for reproducibility).
 - `PORT`: host port exposed by the container (default `3000`).
 
+The SQLite database is stored in `./data` next to `docker-compose.yml`. Create it
+writable by the container user (uid `10001`) before the first run:
+
+```bash
+mkdir -p data && chown -R 10001:10001 data
+```
+
 ### 3. Run
 
 ```bash
@@ -144,16 +151,16 @@ docker compose logs -f ovalbot       # follow the logs
 ```
 
 The service restarts automatically (`restart: unless-stopped`) and persists its
-SQLite database in the `ovalbot-data` volume.
+SQLite database in the `./data` directory next to `docker-compose.yml`.
 
 ### 4. Create the first admin account
 
 ```bash
-docker compose exec ovalbot create_admin --email admin@example.com --password <pwd>
+docker compose exec ovalbot create_admin --email admin@example.com --password '<pwd>'
 ```
 
 This runs the `create_admin` CLI inside the container, against the same
-`DATABASE_URL` and data volume as the server.
+`DATABASE_URL` and `./data` directory as the server.
 
 ### 5. Update to a new version
 

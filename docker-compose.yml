@@ -9,8 +9,5 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_FROM: ${RESEND_FROM:-OvalBot <onboarding@resend.dev>}
     volumes:
-      - ovalbot-data:/data
+      - ./data:/data
     restart: unless-stopped
-
-volumes:
-  ovalbot-data:
