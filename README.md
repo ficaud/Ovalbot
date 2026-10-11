@@ -11,18 +11,20 @@
 </br>
 </div>
 
-Ticket resale helper for Stade Rochelais home games, plus a small website
-(registration + waitlist in Phase 1, match calendar and alerts later).
+OvalBot emails you when a TOP14 match gets a confirmed date, and shows the Stade Rochelais (and many others) calendar. Registration is open, gated by a 10-person waitlist during this early phase.
 
-Stack: **Rust / Axum** (backend) + **SvelteKit** (frontend) + **SQLite**.
-Hosted on a Raspberry Pi (arm64) via Docker Compose.
+- Stack: **Rust / Axum** (backend) + **SvelteKit** (frontend) + **SQLite**.
+- Hosted on a Raspberry Pi (arm64) via Docker Compose.
 
 ## Structure
 
-- `src/` — Rust backend (Axum server + `create_admin` CLI).
+- `src/` — Rust backend (Axum server + `create_admin` CLI)
+- `calendar/` - Rust backend responsible for parsing the Top14 calendar.
 - `migrations/` — SQL migrations (sqlx, embedded at runtime).
 - `frontend/` — SvelteKit app (Svelte 5, `adapter-static`).
 - `doc/specs/` — specifications (`cdc.md` + per-phase specs).
+- `templates/` - HTML emails templates.
+- `tests/` - Rust tests.
 
 ## Development
 
@@ -31,7 +33,7 @@ Hosted on a Raspberry Pi (arm64) via Docker Compose.
 ```bash
 cargo run --bin ovalbot          # start the API + static frontend (port 3000)
 cargo run --bin create_admin -- --email <email> --password <pwd>
-cargo test                       # unit + integration tests
+cargo test --workspace          # unit + integration tests (both crates)
 cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings
 ```
 
@@ -43,13 +45,35 @@ The backend serves the built frontend from `frontend/build` (override with the
 
 ```bash
 cd frontend
-npm install                      # first time only (or npm ci if package-lock.json is committed)
+npm ci                          # install exact dependencies from package-lock.json
 npm run dev                      # dev server on port 5173 (proxies /api -> :3000)
 npm run build                    # static build into frontend/build
 npm run check                    # svelte-check (types)
 ```
 
 ### Devcontainer
+
+The project ships a plain devcontainer (`.devcontainer/`) with Rust, Node.js and
+SQLite. It does **not** include personal tooling (such as neovim, zsh, gitconfig) — those
+live in a separate `ovalbot-devenv` overlay image.
+
+#### Base devcontainer (no overlay)
+
+Open the folder in VS Code with the "Dev Containers" extension and choose
+**"Reopen in Container"** (or open a Codespace). This uses
+`.devcontainer/devcontainer.json` directly and drops you into a `bash` shell as
+the `devuser` user, with ports `3000` (backend) and `5173` (frontend) forwarded.
+
+From the command line (without VS Code):
+
+```bash
+devcontainer up --workspace-folder .            # build (first time) + start
+devcontainer exec --workspace-folder . bash     # open a shell
+```
+
+#### With the personal overlay (recommended)
+
+Works better with a personal overlay that contains your personal settings (e.g. neovim).
 
 Open a shell with `devcontainer exec --workspace-folder . zsh` or
 `./my-env/up.sh`, then:
@@ -70,6 +94,21 @@ devcontainer exec --workspace-folder . /workspaces/OvalBot/my-env/link.sh
 devcontainer exec --workspace-folder . zsh
 ```
 
+## Configuration
+
+The backend reads these environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `DATABASE_URL` | `sqlite://ovalbot.db` | SQLite connection string. |
+| `STATIC_DIR` | `frontend/build` | Directory holding the built SvelteKit frontend. |
+| `TEMPLATE_DIR` | `templates` | Directory holding the HTML email templates. |
+| `RESEND_ENABLED` | `false` | Set `true` to send emails via Resend (welcome + match alerts). |
+| `RESEND_API_KEY` | *(empty)* | Resend API key, required when `RESEND_ENABLED=true`. |
+| `RESEND_FROM` | `OvalBot <onboarding@resend.dev>` | Sender address for outgoing emails. |
+
+See `.env.example` for a ready-to-copy template.
+
 ## Testing
 
 ### Option A — simulated production (backend serves the built frontend)
@@ -78,7 +117,7 @@ devcontainer exec --workspace-folder . zsh
 DATABASE_URL="sqlite:///tmp/test.db" cargo run --bin ovalbot
 ```
 
-### Option B — dev with hot reload (two terminals)
+### Option B — local dev with hot reload (two terminals)
 
 Terminal 1 — backend on `:3000`:
 
@@ -100,9 +139,11 @@ Open http://localhost:5173 (ports 5173 and 3000 are forwarded in the devcontaine
 DATABASE_URL="sqlite:///tmp/test.db" cargo run --bin create_admin -- --email admin@example.com --password password123
 ```
 
-## Rust crate Calendar testing
+## Calendar crate testing
 
-To manually fetch the calendar and test the parsing you can run the following test manually (this will execute the test for LNR parsing in `src/parse/lnr.rs`): 
+The LNR parser tests (`calendar/src/parse/lnr.rs`) read committed HTML fixtures
+from `calendar/src/parse/fixtures/`. To regenerate those fixtures from the live
+site, run:
 
 ```bash
 cargo test capture_lnr_fixture -- --ignored
@@ -127,6 +168,8 @@ docker --version && docker compose version
 ```
 
 ### 2. Configure
+
+Get the docker-compose.yml file from the OvalBot GitHub project as an example.
 
 Copy the example env file and adjust the values:
 
