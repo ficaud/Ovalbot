@@ -1,4 +1,4 @@
-import { getMe, getVersion } from '$lib/api';
+import { getMe, getVersion } from '#lib/api';
 import type { LayoutLoad } from './$types';
 
 export const ssr = false;

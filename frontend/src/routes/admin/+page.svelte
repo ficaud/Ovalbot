@@ -1,8 +1,8 @@
 <script lang="ts">
   import { invalidate } from '$app/navigation';
-  import { activateUser, deleteUser } from '$lib/api';
-  import { formatDate } from '$lib/format';
-  import type { UserView } from '$lib/types';
+  import { activateUser, deleteUser } from '#lib/api';
+  import { formatDate } from '#lib/format';
+  import type { UserView } from '#lib/types';
   import type { PageData } from './$types';
 
   let { data }: { data: PageData } = $props();

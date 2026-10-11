@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { PageData } from './$types';
-  import type { MatchView, TeamView } from '$lib/types';
-  import { getNotifications, getTeamMatches, getTeams, subscribe, unsubscribe } from '$lib/api';
+  import type { MatchView, TeamView } from '#lib/types';
+  import { getNotifications, getTeamMatches, getTeams, subscribe, unsubscribe } from '#lib/api';
 
   let { data }: { data: PageData } = $props();
 

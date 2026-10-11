@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto, invalidateAll } from '$app/navigation';
-  import { logout } from '$lib/api';
+  import { logout } from '#lib/api';
   import type { LayoutData } from './$types';
   import type { Snippet } from 'svelte';
   import '../app.css';

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { register } from '$lib/api';
+  import { register } from '#lib/api';
 
   let email = $state('');
   let password = $state('');
