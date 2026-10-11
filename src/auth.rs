@@ -114,14 +114,17 @@ mod tests {
 
     #[test]
     fn hash_and_verify_roundtrip() {
-        let hash = hash_password("correct horse battery staple").unwrap();
-        assert!(verify_password("correct horse battery staple", &hash).is_ok());
+        let password = generate_session_token();
+        let hash = hash_password(&password).unwrap();
+        assert!(verify_password(&password, &hash).is_ok());
     }
 
     #[test]
     fn rejects_wrong_password() {
-        let hash = hash_password("secret-password").unwrap();
-        assert!(verify_password("wrong-password", &hash).is_err());
+        let password = generate_session_token();
+        let wrong = generate_session_token();
+        let hash = hash_password(&password).unwrap();
+        assert!(verify_password(&wrong, &hash).is_err());
     }
 
     #[test]
