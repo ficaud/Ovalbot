@@ -124,6 +124,7 @@ pub async fn login(
 
     let cookie = Cookie::build(("session", session_id))
         .http_only(true)
+        .secure(true)
         .same_site(SameSite::Lax)
         .path("/")
         .max_age(Duration::days(SESSION_DAYS))
