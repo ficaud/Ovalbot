@@ -70,6 +70,7 @@ mod tests {
         (url, handle)
     }
 
+    /// Fetches a page from a local mock server and returns its HTML body verbatim.
     #[test]
     fn fetcher_returns_page_body() {
         let body = "<html><body>Hello from the mock server</body></html>";
@@ -81,6 +82,8 @@ mod tests {
         assert_eq!(html, body);
     }
 
+    /// Sends a browser-like `User-Agent` header on every request, which the site
+    /// requires to serve HTML.
     #[test]
     fn fetcher_sends_user_agent() {
         let (url, handle) = serve_once("200 OK", "<html></html>");
@@ -91,6 +94,8 @@ mod tests {
         assert!(request.contains("Mozilla/5.0"));
     }
 
+    /// Maps an HTTP 404 response to `FetchError::NotFound`, which callers use to
+    /// stop iterating over calendar pages.
     #[test]
     fn fetcher_returns_not_found_on_404() {
         let (url, handle) = serve_once("404 Not Found", "<html>404</html>");

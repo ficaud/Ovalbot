@@ -37,6 +37,7 @@ impl fmt::Display for Email {
 mod tests {
     use super::*;
 
+    /// `parse` accepts a valid email and normalizes it to lowercase.
     #[test]
     fn parses_valid_email() {
         assert_eq!(
@@ -45,11 +46,13 @@ mod tests {
         );
     }
 
+    /// `parse` rejects an address without an `@`.
     #[test]
     fn rejects_email_without_at() {
         assert!(Email::parse("not-an-email").is_err());
     }
 
+    /// `parse` rejects an address whose domain has no dot.
     #[test]
     fn rejects_email_without_domain_dot() {
         assert!(Email::parse("user@localhost").is_err());

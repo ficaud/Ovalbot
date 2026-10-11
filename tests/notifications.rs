@@ -18,6 +18,8 @@ fn state(pool: SqlitePool, mailer: Arc<dyn Mailer>) -> AppState {
     }
 }
 
+/// Subscribing twice to the same match inserts a single row (`ON CONFLICT DO
+/// NOTHING`).
 #[sqlx::test]
 async fn subscribe_is_idempotent(pool: SqlitePool) {
     let user = insert_active_user(&pool, "a@example.com").await;
@@ -36,6 +38,7 @@ async fn subscribe_is_idempotent(pool: SqlitePool) {
     assert_eq!(count, 1);
 }
 
+/// Unsubscribing from a match the user never followed is a no-op.
 #[sqlx::test]
 async fn unsubscribe_is_a_noop_for_unknown_match(pool: SqlitePool) {
     let user = insert_active_user(&pool, "a@example.com").await;
@@ -46,6 +49,7 @@ async fn unsubscribe_is_a_noop_for_unknown_match(pool: SqlitePool) {
     assert!(ids.is_empty());
 }
 
+/// Lists the match ids the user is subscribed to, sorted ascending.
 #[sqlx::test]
 async fn list_returns_subscribed_match_ids(pool: SqlitePool) {
     let user = insert_active_user(&pool, "a@example.com").await;
@@ -56,6 +60,8 @@ async fn list_returns_subscribed_match_ids(pool: SqlitePool) {
     assert_eq!(ids, vec![1, 3]);
 }
 
+/// Emails each subscriber of a newly-scheduled match once, then deletes the
+/// `match_notifications` rows for that match while leaving other matches intact.
 #[sqlx::test]
 async fn process_emails_subscribers_once_and_clears_rows(pool: SqlitePool) {
     let user_a = insert_active_user(&pool, "a@example.com").await;
@@ -101,6 +107,7 @@ async fn process_emails_subscribers_once_and_clears_rows(pool: SqlitePool) {
     assert_eq!(unrelated, 1);
 }
 
+/// Sends nothing when a scheduled match has no subscribers.
 #[sqlx::test]
 async fn process_without_subscribers_sends_nothing(pool: SqlitePool) {
     let mailer = Arc::new(RecordingMailer::new());

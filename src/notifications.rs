@@ -39,13 +39,16 @@ pub async fn list_for_user(pool: &SqlitePool, user_id: i64) -> Result<Vec<i64>, 
 }
 
 pub async fn process(state: &AppState, changes: Vec<Change>) {
+    // if there is no change, we don't do anything here
     for change in changes {
+        // we only care about scheduled matches
         let Change::Scheduled {
             id,
             team,
             opponent,
             kickoff,
         } = change;
+        // process the match
         process_one(state, id, team.to_string(), opponent.to_string(), kickoff).await;
     }
 }
@@ -57,6 +60,7 @@ async fn process_one(
     opponent: String,
     kickoff: String,
 ) {
+    // get the subscribers for this match id
     let subscribers: Vec<(i64, String)> = match sqlx::query_as(
         "SELECT mn.user_id, u.email FROM match_notifications mn \
          JOIN users u ON u.id = mn.user_id WHERE mn.match_id = ?",
@@ -72,21 +76,24 @@ async fn process_one(
         }
     };
 
+    // if there is no subscribers, we don't do anything here
     if subscribers.is_empty() {
         return;
     }
 
+    // send the email to all the subscribers
     let alert = MatchAlert {
         team,
         opponent,
         kickoff,
     };
+    // for each subscriber, send the email
     for (user_id, email) in &subscribers {
         if let Err(e) = state.mailer.send_match_alert(email, &alert).await {
             tracing::warn!("failed to send match alert for user {user_id}: {e}");
         }
     }
-
+    // clear the notifications for this match in the database
     if let Err(e) = sqlx::query("DELETE FROM match_notifications WHERE match_id = ?")
         .bind(i64::from(match_id))
         .execute(&state.pool)

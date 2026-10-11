@@ -39,6 +39,7 @@ pub async fn promote_next_waiting(pool: &SqlitePool) -> Result<Option<User>, App
 mod tests {
     use super::*;
 
+    /// `status_for` returns `Active` for any active count below the limit.
     #[test]
     fn active_below_limit() {
         for count in 0..ACTIVE_LIMIT {
@@ -46,6 +47,7 @@ mod tests {
         }
     }
 
+    /// `status_for` returns `Waiting` once the active count reaches the limit.
     #[test]
     fn waiting_at_and_above_limit() {
         assert_eq!(status_for(ACTIVE_LIMIT), Status::Waiting);

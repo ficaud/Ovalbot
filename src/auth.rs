@@ -112,6 +112,7 @@ async fn load_user(pool: &SqlitePool, user_id: i64) -> Result<User, AppError> {
 mod tests {
     use super::*;
 
+    /// A freshly hashed password verifies successfully against its own hash.
     #[test]
     fn hash_and_verify_roundtrip() {
         let password = generate_session_token();
@@ -119,6 +120,7 @@ mod tests {
         assert!(verify_password(&password, &hash).is_ok());
     }
 
+    /// Verifying with a different password fails.
     #[test]
     fn rejects_wrong_password() {
         let password = generate_session_token();
@@ -127,6 +129,7 @@ mod tests {
         assert!(verify_password(&wrong, &hash).is_err());
     }
 
+    /// A generated session token is 64 hexadecimal characters long.
     #[test]
     fn session_token_is_64_hex_chars() {
         let token = generate_session_token();
@@ -134,6 +137,7 @@ mod tests {
         assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
+    /// Two generated session tokens differ.
     #[test]
     fn session_tokens_are_unique() {
         let a = generate_session_token();

@@ -122,6 +122,7 @@ impl ResendMailer {
             html,
             text,
         };
+        // send thee email to resend and await the response
         let response = self
             .client
             .post("https://api.resend.com/emails")
@@ -138,11 +139,13 @@ impl ResendMailer {
 
 #[async_trait]
 impl Mailer for ResendMailer {
+    // send the welcome email
     async fn send_welcome(&self, email: &str) -> Result<(), MailError> {
         let html = render(&self.templates.welcome_html, &[]);
         self.send(email, WELCOME_SUBJECT, &html, WELCOME_TEXT).await
     }
 
+    // send the match alert email
     async fn send_match_alert(&self, email: &str, alert: &MatchAlert) -> Result<(), MailError> {
         let subject = format!("Match scheduled: {} vs {}", alert.team, alert.opponent);
         let text = format!(
@@ -235,6 +238,7 @@ pub async fn send_welcome_if_unsent(
 mod tests {
     use super::*;
 
+    /// `render` replaces known `{{placeholders}}` with the provided values.
     #[test]
     fn render_replaces_known_placeholders() {
         let template = "<p>{{team}} vs {{opponent}} at {{kickoff}}</p>";
@@ -252,6 +256,7 @@ mod tests {
         );
     }
 
+    /// `render` leaves unknown placeholders untouched.
     #[test]
     fn render_leaves_unknown_placeholders_untouched() {
         let template = "<p>{{team}} vs {{unknown}}</p>";
@@ -259,6 +264,8 @@ mod tests {
         assert_eq!(rendered, "<p>Stade Rochelais vs {{unknown}}</p>");
     }
 
+    /// `load_templates` falls back to the built-in defaults when the directory is
+    /// missing.
     #[test]
     fn load_templates_falls_back_to_defaults_when_dir_missing() {
         let templates = load_templates(Path::new("/nonexistent/ovalbot/templates"));
@@ -266,6 +273,7 @@ mod tests {
         assert_eq!(templates.match_alert_html, DEFAULT_MATCH_ALERT_HTML);
     }
 
+    /// `load_templates` reads `welcome.html` and `match_alert.html` from a directory.
     #[test]
     fn load_templates_reads_files_from_dir() {
         let dir = std::env::temp_dir().join("ovalbot-mailer-test");

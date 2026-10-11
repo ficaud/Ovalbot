@@ -80,6 +80,8 @@ fn normalize(input: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Parses a precise French kickoff ("samedi 10 octobre", "14h30") into a
+    /// `MatchDate` with the expected day, month, hour and minute.
     #[test]
     fn parses_precise_date_and_time() {
         let date = MatchDate::parse("samedi 10 octobre", "14h30").unwrap();
@@ -89,22 +91,27 @@ mod tests {
         assert_eq!(date.minute, 30);
     }
 
+    /// Returns `None` when the time is missing or a dash, meaning the match is
+    /// still TBD and not precise enough to be `Scheduled`.
     #[test]
     fn returns_none_for_tbd_time() {
         assert!(MatchDate::parse("samedi 10 octobre", "-").is_none());
         assert!(MatchDate::parse("samedi 10 octobre", "").is_none());
     }
 
+    /// Returns `None` for a multi-day range, which is not a single precise kickoff.
     #[test]
     fn returns_none_for_date_range() {
         assert!(MatchDate::parse("samedi 28 novembre – dimanche 29 novembre", "14h30").is_none());
     }
 
+    /// Returns `None` when the month name is not recognized (e.g. a typo).
     #[test]
     fn returns_none_for_unknown_month() {
         assert!(MatchDate::parse("samedi 10 octombre", "14h30").is_none());
     }
 
+    /// Parses accented month names (e.g. "février") by normalizing accents.
     #[test]
     fn parses_accented_months() {
         let date = MatchDate::parse("vendredi 5 février", "20h05").unwrap();

@@ -88,6 +88,7 @@ mod tests {
         }
     }
 
+    /// `upcoming` drops finished matches and sorts the remaining ones by id.
     #[test]
     fn upcoming_excludes_finished_and_sorts() {
         let events = vec![
@@ -116,6 +117,8 @@ mod tests {
         assert_eq!(result[1].id, 2);
     }
 
+    /// `for_team` returns only home matches when `is_home` is true, and only away
+    /// matches when it is false.
     #[test]
     fn for_team_filters_home_and_away() {
         let events = vec![
@@ -148,6 +151,7 @@ mod tests {
         assert_eq!(away[0].id, 1);
     }
 
+    /// `diff` reports a `Change` for a match that moved from `Tbd` to `Scheduled`.
     #[test]
     fn diff_detects_tbd_to_scheduled() {
         let old = vec![
@@ -191,6 +195,7 @@ mod tests {
         );
     }
 
+    /// `diff` returns nothing when the two snapshots are identical.
     #[test]
     fn diff_ignores_unchanged_statuses() {
         let old = vec![
@@ -213,6 +218,7 @@ mod tests {
         assert!(changes.is_empty());
     }
 
+    /// `diff` ignores newly-added matches that had no previous `Tbd` status.
     #[test]
     fn diff_ignores_new_matches_without_previous_tbd() {
         let old: Vec<Event> = Vec::new();

@@ -133,6 +133,8 @@ pub struct Team {
 mod tests {
     use super::*;
 
+    /// `from_name` maps distinctive club names to their `TeamType`, returning
+    /// `None` for unrecognized input.
     #[test]
     fn from_name_matches_distinctive_names() {
         assert_eq!(
@@ -148,6 +150,8 @@ mod tests {
         assert_eq!(TeamType::from_name("Unknown"), None);
     }
 
+    /// `from_name` checks "toulon" before "toulouse"/"toulousain" so that both
+    /// clubs resolve to the right `TeamType`.
     #[test]
     fn from_name_disambiguates_toulon_before_toulouse() {
         assert_eq!(TeamType::from_name("RC Toulon"), Some(TeamType::RcToulon));
@@ -157,6 +161,7 @@ mod tests {
         );
     }
 
+    /// `from_name` is case- and accent-insensitive.
     #[test]
     fn from_name_is_case_and_accent_insensitive() {
         assert_eq!(
@@ -169,12 +174,14 @@ mod tests {
         );
     }
 
+    /// `Display` returns the canonical French club name.
     #[test]
     fn display_returns_canonical_name() {
         assert_eq!(TeamType::StadeRochelais.to_string(), "Stade Rochelais");
         assert_eq!(TeamType::AsmClermont.to_string(), "ASM Clermont Auvergne");
     }
 
+    /// `all` returns exactly the 14 known teams and excludes `Unknown`.
     #[test]
     fn all_lists_the_fourteen_teams() {
         let teams = TeamType::all();
@@ -183,6 +190,7 @@ mod tests {
         assert!(!teams.contains(&TeamType::Unknown));
     }
 
+    /// `id` and `from_id` round-trip for every known team.
     #[test]
     fn id_and_from_id_roundtrip() {
         for team in TeamType::all() {
@@ -190,6 +198,7 @@ mod tests {
         }
     }
 
+    /// `from_id` returns `None` for an unknown slug.
     #[test]
     fn from_id_returns_none_for_unknown() {
         assert_eq!(TeamType::from_id("not-a-team"), None);
