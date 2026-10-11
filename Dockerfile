@@ -18,6 +18,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY calendar ./calendar
 COPY src ./src
 COPY migrations ./migrations
+COPY templates ./templates
 RUN cargo build --release
 
 # ---------- Stage 3 : image runtime minimale ----------
@@ -29,11 +30,13 @@ WORKDIR /app
 COPY --from=builder /app/target/release/ovalbot /usr/local/bin/ovalbot
 COPY --from=builder /app/target/release/create_admin /usr/local/bin/create_admin
 COPY --from=frontend /app/frontend/build /app/static
+COPY --from=builder /app/templates /app/templates
 RUN useradd --system --uid 10001 ovalbot
 RUN mkdir -p /data && chown -R ovalbot:ovalbot /data
 USER ovalbot
 EXPOSE 3000
 ENV DATABASE_URL=sqlite:///data/ovalbot.sqlite
 ENV STATIC_DIR=/app/static
+ENV TEMPLATE_DIR=/app/templates
 VOLUME ["/data"]
 CMD ["/usr/local/bin/ovalbot"]

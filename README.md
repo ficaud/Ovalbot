@@ -36,7 +36,8 @@ cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 The backend serves the built frontend from `frontend/build` (override with the
-`STATIC_DIR` environment variable).
+`STATIC_DIR` environment variable). Email HTML is loaded from `templates/`
+(override with `TEMPLATE_DIR`); see `welcome.html` and `match_alert.html`.
 
 ### Frontend
 

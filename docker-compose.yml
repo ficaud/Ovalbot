@@ -8,6 +8,11 @@ services:
       RESEND_ENABLED: ${RESEND_ENABLED:-false}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_FROM: ${RESEND_FROM:-OvalBot <onboarding@resend.dev>}
+      TEMPLATE_DIR: ${TEMPLATE_DIR:-/app/templates}
     volumes:
       - ./data:/data
+      # To override the email templates without rebuilding the image, create a
+      # `templates/` folder next to this file (welcome.html + match_alert.html)
+      # and uncomment:
+      # - ./templates:/app/templates
     restart: unless-stopped
