@@ -11,7 +11,7 @@ pub enum MatchStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
-    pub id: u16,
+    pub id: u32,
     pub team: Team,
     pub opponent: Team,
     pub kickoff: String,

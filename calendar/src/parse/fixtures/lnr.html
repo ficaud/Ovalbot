@@ -4,6 +4,7 @@
        .calendar-results__line          -> one match row
        .club-line__name (href slug)     -> the two clubs
        .match-line__time                -> kickoff time
+       a[href*="feuille-de-match"]      -> stable LNR match id (last segment)
      Refresh a full live snapshot with `cargo test capture_lnr_fixture -- --ignored`
      (written to fixtures/captured/, gitignored). -->
 <div class="calendar-results__fixture-date">samedi 10 octobre</div>
@@ -12,36 +13,42 @@
     <a href="/club/paris" class="club-line__name">Stade Français Paris</a>
     <a href="/club/montpellier" class="club-line__name">Montpellier Hérault Rugby</a>
     <p class="match-line__time">14h30</p>
+    <a href="/feuille-de-match/2026-2027/j9/10001-paris-montpellier">Feuille de match</a>
 </div>
 
 <div class="calendar-results__line">
     <a href="/club/toulon" class="club-line__name">RC Toulon</a>
     <a href="/club/vannes" class="club-line__name">RC Vannes</a>
     <p class="match-line__time">16h35</p>
+    <a href="/feuille-de-match/2026-2027/j9/10002-toulon-vannes">Feuille de match</a>
 </div>
 
 <div class="calendar-results__line">
     <a href="/club/racing-92" class="club-line__name">Racing 92</a>
     <a href="/club/perpignan" class="club-line__name">USA Perpignan</a>
     <p class="match-line__time">16h35</p>
+    <a href="/feuille-de-match/2026-2027/j9/10003-racing-92-perpignan">Feuille de match</a>
 </div>
 
 <div class="calendar-results__line">
     <a href="/club/clermont" class="club-line__name">ASM Clermont Auvergne</a>
     <a href="/club/lyon" class="club-line__name">LOU Rugby</a>
     <p class="match-line__time">18h00</p>
+    <a href="/feuille-de-match/2026-2027/j9/10004-clermont-lyon">Feuille de match</a>
 </div>
 
 <div class="calendar-results__line">
     <a href="/club/pau" class="club-line__name">Section Paloise</a>
     <a href="/club/castres" class="club-line__name">Castres Olympique</a>
     <p class="match-line__time">18h00</p>
+    <a href="/feuille-de-match/2026-2027/j9/10005-pau-castres">Feuille de match</a>
 </div>
 
 <div class="calendar-results__line">
     <a href="/club/bordeaux" class="club-line__name">Union Bordeaux Bègles</a>
     <a href="/club/la-rochelle" class="club-line__name">Stade Rochelais</a>
     <p class="match-line__time">21h05</p>
+    <a href="/feuille-de-match/2026-2027/j9/10006-bordeaux-la-rochelle">Feuille de match</a>
 </div>
 
 <div class="calendar-results__fixture-date">dimanche 11 octobre</div>
@@ -50,4 +57,5 @@
     <a href="/club/toulouse" class="club-line__name">Stade Toulousain</a>
     <a href="/club/bayonne" class="club-line__name">Aviron Bayonnais</a>
     <p class="match-line__time">21h05</p>
+    <a href="/feuille-de-match/2026-2027/j9/10007-toulouse-bayonne">Feuille de match</a>
 </div>

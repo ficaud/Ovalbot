@@ -14,7 +14,7 @@ pub struct TeamView {
 
 #[derive(Debug, Serialize)]
 pub struct MatchView {
-    pub id: u16,
+    pub id: u32,
     pub team: String,
     pub team_id: String,
     pub opponent: String,
@@ -110,7 +110,7 @@ mod tests {
         }
     }
 
-    fn event(id: u16, home: TeamType, away: TeamType, status: MatchStatus) -> Event {
+    fn event(id: u32, home: TeamType, away: TeamType, status: MatchStatus) -> Event {
         Event {
             id,
             team: team(home),

@@ -55,7 +55,7 @@ pub async fn process(state: &AppState, changes: Vec<Change>) {
 
 async fn process_one(
     state: &AppState,
-    match_id: u16,
+    match_id: u32,
     team: String,
     opponent: String,
     kickoff: String,

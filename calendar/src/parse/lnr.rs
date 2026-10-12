@@ -15,6 +15,7 @@ const CLUB_NAME_SELECTOR: &str = ".club-line__name";
 const TIME_SELECTOR: &str = ".match-line__time";
 const DATE_SELECTOR: &str = ".calendar-results__fixture-date";
 const SCORE_SELECTOR: &str = ".match-line__score";
+const MATCH_LINK_SELECTOR: &str = r#"a[href*="feuille-de-match"]"#;
 
 pub struct LnrParser {
     season: String,
@@ -34,7 +35,7 @@ impl LnrParser {
 
 impl EventParser for LnrParser {
     fn parse(&self, raw: &str) -> Result<Vec<Event>, ParseError> {
-        self.parse_events(raw, 1)
+        self.parse_events(raw)
     }
 
     fn parse_all(&self) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
@@ -43,7 +44,7 @@ impl EventParser for LnrParser {
 }
 
 impl LnrParser {
-    fn parse_events(&self, raw: &str, day_num: u8) -> Result<Vec<Event>, ParseError> {
+    fn parse_events(&self, raw: &str) -> Result<Vec<Event>, ParseError> {
         // Parse the raw HTML into a traversable document tree.
         let doc = Html::parse_document(raw);
 
@@ -57,6 +58,8 @@ impl LnrParser {
             Selector::parse(TIME_SELECTOR).map_err(|e| ParseError::InvalidData(e.to_string()))?;
         let score_selector =
             Selector::parse(SCORE_SELECTOR).map_err(|e| ParseError::InvalidData(e.to_string()))?;
+        let match_link_selector = Selector::parse(MATCH_LINK_SELECTOR)
+            .map_err(|e| ParseError::InvalidData(e.to_string()))?;
         // Strip the leading dot to compare against the raw class names.
         let date_class = DATE_SELECTOR.trim_start_matches('.');
 
@@ -64,7 +67,6 @@ impl LnrParser {
         // date so each match inherits the date that precedes it.
         let mut events = Vec::new();
         let mut current_date = String::new();
-        let mut index: usize = 0;
         for block in doc.select(&block_selector) {
             // Date blocks only update the current date; they do not produce events.
             let is_date = block.value().classes().any(|class| class == date_class);
@@ -99,8 +101,17 @@ impl LnrParser {
                 MatchStatus::Tbd
             };
 
-            // Build the event and append it to the result list.
-            let id = ((day_num as usize - 1) * 7 + index) as u16;
+            // Prefer the LNR match id embedded in the "feuille de match" link:
+            // it is stable across reorderings and reschedules. Fall back to a
+            // positional id only when the link is absent (offline fixtures).
+            let id = block
+                .select(&match_link_selector)
+                .next()
+                .and_then(|link| link.value().attr("href"))
+                .and_then(parse_match_id_from_href)
+                .unwrap_or_default();
+            
+            // push to events vector
             events.push(Event {
                 id,
                 team: build_team(clubs[0]),
@@ -108,7 +119,6 @@ impl LnrParser {
                 kickoff,
                 status,
             });
-            index += 1;
         }
         Ok(events)
     }
@@ -129,13 +139,21 @@ impl LnrParser {
         let mut events = Vec::new();
         for day_num in 1..=MAX_JOURNEES {
             match self.fetch_day(base_url, day_num) {
-                Ok(html) => events.extend(self.parse_events(&html, day_num)?),
+                Ok(html) => events.extend(self.parse_events(&html)?),
                 Err(FetchError::NotFound) => break,
                 Err(e) => return Err(e.into()),
             }
         }
         Ok(events)
     }
+}
+
+/// Extracts the LNR match id from a "feuille de match" href. The last path
+/// segment looks like `{id}-{home-slug}-{away-slug}` (e.g.
+/// `.../2026-2027/j9/11877-la-rochelle-bayonne`), so the id precedes the first
+/// dash.
+fn parse_match_id_from_href(href: &str) -> Option<u32> {
+    href.rsplit('/').next()?.split('-').next()?.parse().ok()
 }
 
 fn build_team(el: ElementRef<'_>) -> Team {
@@ -225,7 +243,7 @@ mod tests {
 
         assert_eq!(events.len(), 7);
         let first = &events[0];
-        assert_eq!(first.id, 0);
+        assert_eq!(first.id, 10001);
         assert_eq!(first.team.name, "Stade Français Paris");
         assert_eq!(first.team.team_type, TeamType::StadeFrancaisParis);
         assert_eq!(first.team.id, "paris");
@@ -236,7 +254,7 @@ mod tests {
         assert_eq!(first.status, MatchStatus::Scheduled);
 
         let last = &events[6];
-        assert_eq!(last.id, 6);
+        assert_eq!(last.id, 10007);
         assert_eq!(last.team.name, "Stade Toulousain");
         assert_eq!(last.team.team_type, TeamType::StadeToulousain);
         assert_eq!(last.team.id, "toulouse");
@@ -245,6 +263,18 @@ mod tests {
         assert_eq!(last.opponent.id, "bayonne");
         assert_eq!(last.kickoff, "dimanche 11 octobre 21h05");
         assert_eq!(last.status, MatchStatus::Scheduled);
+    }
+
+    /// The LNR match id is the numeric segment of the "feuille de match" href.
+    #[test]
+    fn parse_match_id_from_href_extracts_numeric_id() {
+        assert_eq!(
+            parse_match_id_from_href(
+                "https://top14.lnr.fr/feuille-de-match/2026-2027/j9/11877-la-rochelle-bayonne"
+            ),
+            Some(11877)
+        );
+        assert_eq!(parse_match_id_from_href("/club/la-rochelle"), None);
     }
 
     /// Parses the "played" fixture and asserts every match is `Finished`.
