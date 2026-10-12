@@ -89,3 +89,11 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - `main.rs` : background sync loop now calls `notifications::process` on the returned changes.
 - Frontend : bell toggle (SVG inline + `title` tooltip) on `Tbd` match cards, card switched `<button>` → `<div>`.
 - Verified : `cargo test` 19 green (18 unit + 1 integration), calendar crate 25 green, clippy `-D warnings` + `fmt --check` green, `npm run build` + `npm run check` green.
+
+### 2026-10-12 — Fix wrong match in scheduling alerts (unstable match id)
+- Bug : a user received an alert for « Montpellier vs LOU » instead of « Stade Rochelais vs Bayonne ». Root cause: `Event.id` was **positional** (`(journée-1)*7 + index`) and `calendar::diff` matched on id only, so after LNR reordered the journée the same id pointed to another fixture → wrong email (and wrong subscription lookup).
+- Fix : `Event.id` is now the **LNR match id** (segment of the `feuille-de-match/.../{id}-...` link, present on every row incl. `Tbd`). Type widened `u16 → u32` (`Event`, `Change::Scheduled`, `MatchView`, `process_one`). Positional id kept only as fallback when the link is absent (offline fixtures).
+- `calendar::diff` now also requires the previous and current events to be the **same match** (same `team.id`/`opponent.id` slugs) before emitting `Tbd → Scheduled`.
+- Migration `0005_clear_match_notifications.sql` : wipes stale positional subscriptions (test phase, no corrective email sent).
+- Fixtures `lnr.html`/`lnr_played.html` gained `feuille-de-match` links; new tests: id extraction, positional fallback, diff id-reassignment guard.
+- Verified : `cargo test --workspace` green (51 passed, 1 ignored), clippy `-D warnings` + `fmt --check` green.

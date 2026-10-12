@@ -36,12 +36,20 @@ CREATE TABLE match_notifications (
 | Champ | Type | Contraintes | Description |
 |---|---|---|---|
 | `user_id` | INTEGER | FK → `users.id`, `ON DELETE CASCADE`, PK | Compte abonné |
-| `match_id` | INTEGER | PK | Id stable du match : `(journée - 1) * 7 + index` (crate `calendar`) |
+| `match_id` | INTEGER | PK | Id stable du match : id LNR extrait du lien `feuille-de-match` (crate `calendar`) |
 | `created_at` | TEXT | NOT NULL | Date de souscription |
 
 > [!note] Id de match
-> `match_id` est l'id stable produit par le parser LNR (`Event.id`). Il est identique d'un
-> scraping à l'autre tant que la saison ne change pas (`2026-2027` codée en dur).
+> `match_id` est l'id de match **LNR** (`Event.id`), extrait du segment numérique du lien
+> `feuille-de-match/.../{id}-{home}-{away}` présent sur chaque ligne (y compris les matchs
+> `Tbd`). Il ne dépend ni de l'ordre des matchs dans la page ni de la programmation, donc
+> il reste stable d'un scraping à l'autre tant que la saison ne change pas (`2026-2027`
+> codée en dur). Si le lien est absent (fixtures hors-ligne), le parser retombe sur un id
+> positionnel `(journée - 1) * 7 + index`.
+>
+> `calendar::diff()` ne déclenche un `Tbd → Scheduled` que si, pour un même id, les deux
+> équipes (slugs `home`/`away`) sont identiques : un id réaffecté ne peut donc pas
+> notifier le mauvais match.
 
 ## Architecture
 

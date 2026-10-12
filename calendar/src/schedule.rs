@@ -11,7 +11,7 @@ use crate::Event;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     Scheduled {
-        id: u16,
+        id: u32,
         team: TeamType,
         opponent: TeamType,
         kickoff: String,
@@ -47,13 +47,22 @@ pub fn for_team(events: &[Event], team: TeamType, is_home: bool) -> Vec<Event> {
 }
 
 /// Changes between two snapshots: matches that moved from Tbd to Scheduled.
+///
+/// A change is reported only when the previous event with the same id is the
+/// *same match* (same home and away clubs). This guards against a stale or
+/// reassigned id silently notifying the wrong fixture.
 pub fn diff(old: &[Event], new: &[Event]) -> Vec<Change> {
-    let old_status: HashMap<u16, MatchStatus> =
-        old.iter().map(|event| (event.id, event.status)).collect();
+    let previous: HashMap<u32, &Event> = old.iter().map(|event| (event.id, event)).collect();
 
     new.iter()
         .filter(|event| event.status == MatchStatus::Scheduled)
-        .filter(|event| old_status.get(&event.id) == Some(&MatchStatus::Tbd))
+        .filter(|event| {
+            previous.get(&event.id).is_some_and(|previous| {
+                previous.status == MatchStatus::Tbd
+                    && previous.team.id == event.team.id
+                    && previous.opponent.id == event.opponent.id
+            })
+        })
         .map(|event| Change::Scheduled {
             id: event.id,
             team: event.team.team_type,
@@ -72,13 +81,13 @@ mod tests {
 
     fn team(team_type: TeamType) -> Team {
         Team {
-            id: String::new(),
+            id: team_type.id().to_string(),
             name: team_type.to_string(),
             team_type,
         }
     }
 
-    fn event(id: u16, team_type: TeamType, opponent: TeamType, status: MatchStatus) -> Event {
+    fn event(id: u32, team_type: TeamType, opponent: TeamType, status: MatchStatus) -> Event {
         Event {
             id,
             team: team(team_type),
@@ -193,6 +202,27 @@ mod tests {
                 kickoff: String::new(),
             }
         );
+    }
+
+    /// `diff` ignores a `Tbd -> Scheduled` transition when the id now maps to a
+    /// different match (different clubs), guarding against a reassigned id
+    /// notifying the wrong fixture.
+    #[test]
+    fn diff_ignores_id_reassigned_to_another_match() {
+        let old = vec![event(
+            0,
+            TeamType::StadeRochelais,
+            TeamType::RcToulon,
+            MatchStatus::Tbd,
+        )];
+        let new = vec![event(
+            0,
+            TeamType::Usap,
+            TeamType::RcVannes,
+            MatchStatus::Scheduled,
+        )];
+
+        assert!(diff(&old, &new).is_empty());
     }
 
     /// `diff` returns nothing when the two snapshots are identical.
