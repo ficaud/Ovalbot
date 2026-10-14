@@ -108,12 +108,24 @@ The backend reads these environment variables:
 | `STATIC_DIR` | `frontend/build` | Directory holding the built SvelteKit frontend. |
 | `TEMPLATE_DIR` | `templates` | Directory holding the HTML email templates. |
 | `RESEND_ENABLED` | `false` | Set `true` to send emails via Resend (welcome + match alerts). |
-| `RESEND_API_KEY` | *(empty)* | Resend API key, required when `RESEND_ENABLED=true`. |
+| `RESEND_API_KEY` | *(empty)* | Resend API key, required when `RESEND_ENABLED=true` (See more on [resend](https://resend.com/)) |
 | `RESEND_FROM` | `OvalBot <onboarding@resend.dev>` | Sender address for outgoing emails. |
 
 See `.env.example` for a ready-to-copy template.
 
 ## Testing
+
+One classic account that is probably registered in the test environment is : 
+
+User : 
+```bash
+test@gmail.com
+```
+
+Password :
+```bash
+12345678
+```
 
 ### Option A — simulated production (backend serves the built frontend)
 
