@@ -101,7 +101,7 @@ pub async fn login(
 ) -> Result<Response, AppError> {
     let email = Email::parse(&body.email)?;
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at FROM users WHERE email = ?",
+        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at, telegram_id, notify_email, notify_telegram FROM users WHERE email = ?",
     )
     .bind(email.as_str())
     .fetch_optional(&state.pool)

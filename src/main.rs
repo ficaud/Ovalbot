@@ -5,6 +5,7 @@ use ovalbot::calendar::CalendarService;
 use ovalbot::mailer;
 use ovalbot::notifications;
 use ovalbot::state::AppState;
+use ovalbot::telegram;
 use ovalbot::{app, db};
 
 const SYNC_INTERVAL_SECS: u64 = 20 * 60;
@@ -37,8 +38,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         pool,
         mailer: mailer::from_env(),
+        telegram: telegram::from_env(),
+        telegram_config: telegram::config_from_env(),
         calendar,
     };
+
+    // Register the Telegram webhook (best-effort, no-op when disabled)
+    telegram::register_webhook().await;
 
     // Start the calendar sync service
     let sync_state = state.clone();
