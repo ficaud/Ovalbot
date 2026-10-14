@@ -32,6 +32,11 @@
   let error = $state('');
   let notice = $state('');
 
+  let botDialogEl: HTMLDialogElement;
+  let searchDuo = $state(false);
+  let searchSingle = $state(false);
+  let searchGroup = $state(0);
+
   function openSettings() {
     error = '';
     notice = '';
@@ -40,6 +45,18 @@
 
   function closeSettings() {
     dialogEl?.close();
+  }
+
+  function openBotSettings() {
+    botDialogEl?.showModal();
+  }
+
+  function closeBotSettings() {
+    botDialogEl?.close();
+  }
+
+  function saveBotSettings() {
+    botDialogEl?.close();
   }
 
   async function connectTelegram() {
@@ -180,6 +197,30 @@
             <div class="match-card__footer">
               <span class="match-card__kickoff">{match.kickoff}</span>
               <div class="match-card__meta">
+                <button
+                  class="bell"
+                  type="button"
+                  aria-label="Bot settings"
+                  title="Bot settings"
+                  onclick={openBotSettings}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 8V4H8" />
+                    <rect width="16" height="12" x="4" y="8" rx="2" />
+                    <path d="M2 14h2" />
+                    <path d="M20 14h2" />
+                    <path d="M15 13v2" />
+                    <path d="M9 13v2" />
+                  </svg>
+                </button>
                 {#if match.status === 'not scheduled'}
                   <button
                     class="bell"
@@ -303,6 +344,36 @@
     <button class="btn btn-primary" type="button" onclick={saveSettings} disabled={saving}>
       {saving ? 'Saving…' : 'Save'}
     </button>
+  </div>
+</dialog>
+
+<dialog bind:this={botDialogEl} class="modal">
+  <div class="modal__head">
+    <h2>Bot settings</h2>
+    <button class="modal__close" type="button" aria-label="Close" onclick={closeBotSettings}>
+      &times;
+    </button>
+  </div>
+
+  <div class="field">
+    <label class="switch">
+      <input type="checkbox" bind:checked={searchDuo} />
+      <span>Search for duo tickets</span>
+    </label>
+    <label class="switch">
+      <input type="checkbox" bind:checked={searchSingle} />
+      <span>Search for single tickets</span>
+    </label>
+  </div>
+
+  <div class="field">
+    <label for="group-tickets">Search group tickets</label>
+    <input id="group-tickets" class="input" type="number" min="0" bind:value={searchGroup} />
+  </div>
+
+  <div class="modal__actions">
+    <button class="btn btn-secondary" type="button" onclick={closeBotSettings}>Close</button>
+    <button class="btn btn-primary" type="button" onclick={saveBotSettings}>Save</button>
   </div>
 </dialog>
 
