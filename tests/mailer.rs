@@ -1,8 +1,17 @@
 mod common;
 
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
+use axum::body::Bytes;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::routing::post;
+use axum::Router;
 use common::{insert_active_user, RecordingMailer};
-use ovalbot::services::mailer::{send_welcome_if_unsent, MailError, Mailer, MatchAlert};
+use ovalbot::services::mailer::{
+    send_welcome_if_unsent, EmailTemplates, MailError, Mailer, MatchAlert, ResendMailer,
+};
 use sqlx::SqlitePool;
 
 struct FailingMailer;
@@ -50,4 +59,121 @@ async fn failed_send_leaves_marker_unset(pool: SqlitePool) {
     .await
     .unwrap();
     assert_eq!(count, 0);
+}
+
+#[derive(Clone)]
+struct Captured {
+    headers: HeaderMap,
+    body: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct MockResend {
+    status: StatusCode,
+    captured: Arc<Mutex<Option<Captured>>>,
+}
+
+async fn capture(State(mock): State<MockResend>, headers: HeaderMap, body: Bytes) -> StatusCode {
+    *mock.captured.lock().unwrap() = Some(Captured {
+        headers,
+        body: body.to_vec(),
+    });
+    mock.status
+}
+
+/// Starts a tiny in-process HTTP server standing in for the Resend API. Returns
+/// its base URL and a slot holding the last captured request.
+async fn mock_resend(status: u16) -> (String, Arc<Mutex<Option<Captured>>>) {
+    let captured = Arc::new(Mutex::new(None));
+    let mock = MockResend {
+        status: StatusCode::from_u16(status).unwrap(),
+        captured: captured.clone(),
+    };
+    let app = Router::new()
+        .route("/emails", post(capture))
+        .with_state(mock);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    (format!("http://{addr}"), captured)
+}
+
+fn mailer(base_url: &str) -> ResendMailer {
+    ResendMailer::with_base_url(
+        "test-key".to_string(),
+        "OvalBot <from@example.com>".to_string(),
+        EmailTemplates::defaults(),
+        base_url.to_string(),
+    )
+}
+
+fn captured_body(captured: &Arc<Mutex<Option<Captured>>>) -> serde_json::Value {
+    let guard = captured.lock().unwrap();
+    let request = guard.as_ref().expect("no request captured");
+    serde_json::from_slice(&request.body).unwrap()
+}
+
+fn captured_headers(captured: &Arc<Mutex<Option<Captured>>>) -> HeaderMap {
+    captured.lock().unwrap().as_ref().unwrap().headers.clone()
+}
+
+/// Sends the welcome email to Resend with the expected auth header and payload.
+#[tokio::test]
+async fn send_welcome_posts_expected_request() {
+    let (base_url, captured) = mock_resend(200).await;
+
+    mailer(&base_url)
+        .send_welcome("a@example.com")
+        .await
+        .unwrap();
+
+    let headers = captured_headers(&captured);
+    assert_eq!(headers.get("authorization").unwrap(), "Bearer test-key");
+    let body = captured_body(&captured);
+    assert_eq!(body["from"], "OvalBot <from@example.com>");
+    assert_eq!(body["to"], "a@example.com");
+    assert_eq!(body["subject"], "Welcome to OvalBot");
+}
+
+/// Sends the match alert with a subject built from the teams.
+#[tokio::test]
+async fn send_match_alert_posts_expected_request() {
+    let (base_url, captured) = mock_resend(200).await;
+
+    let alert = MatchAlert {
+        team: "Stade Rochelais".to_string(),
+        opponent: "RC Toulon".to_string(),
+        kickoff: "samedi 14h30".to_string(),
+    };
+    mailer(&base_url)
+        .send_match_alert("b@example.com", &alert)
+        .await
+        .unwrap();
+
+    let body = captured_body(&captured);
+    assert_eq!(body["to"], "b@example.com");
+    assert_eq!(
+        body["subject"],
+        "Match scheduled: Stade Rochelais vs RC Toulon"
+    );
+    assert!(body["html"]
+        .as_str()
+        .unwrap()
+        .contains("Stade Rochelais vs RC Toulon"));
+}
+
+/// A non-success response is reported as `MailError::Api`.
+#[tokio::test]
+async fn send_returns_api_error_on_failure() {
+    let (base_url, _) = mock_resend(500).await;
+
+    let err = mailer(&base_url)
+        .send_welcome("a@example.com")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, MailError::Api(_)));
 }

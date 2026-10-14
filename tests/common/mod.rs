@@ -1,10 +1,14 @@
 #![allow(dead_code)]
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use ovalbot::services::mailer::{MailError, Mailer, MatchAlert};
-use ovalbot::services::telegram::{Telegram, TelegramError};
+use ovalbot::common::models::{Role, Status};
+use ovalbot::services::auth::generate_session_token;
+use ovalbot::services::calendar::CalendarService;
+use ovalbot::services::mailer::{MailError, Mailer, MatchAlert, NoopMailer};
+use ovalbot::services::state::AppState;
+use ovalbot::services::telegram::{NoopTelegram, Telegram, TelegramConfig, TelegramError};
 use sqlx::SqlitePool;
 
 pub struct RecordingMailer {
@@ -61,16 +65,73 @@ impl Telegram for RecordingTelegram {
 }
 
 pub async fn insert_active_user(pool: &SqlitePool, email: &str) -> i64 {
+    insert_user(pool, email, Status::Active, Role::User).await
+}
+
+pub async fn insert_user(pool: &SqlitePool, email: &str, status: Status, role: Role) -> i64 {
     let now = ovalbot::common::time::now();
+    let activated_at = (status == Status::Active).then(|| now.clone());
     sqlx::query(
         "INSERT INTO users (email, password_hash, status, role, created_at, activated_at) \
-         VALUES (?, 'x', 'active', 'user', ?, ?)",
+         VALUES (?, 'x', ?, ?, ?, ?)",
     )
     .bind(email)
+    .bind(status.as_str())
+    .bind(role.as_str())
     .bind(&now)
-    .bind(&now)
+    .bind(&activated_at)
     .execute(pool)
     .await
     .unwrap()
     .last_insert_rowid()
+}
+
+pub async fn insert_user_with_password(pool: &SqlitePool, email: &str, password: &str) -> i64 {
+    let id = insert_active_user(pool, email).await;
+    let hash = ovalbot::services::auth::hash_password(password).unwrap();
+    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+        .bind(&hash)
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    id
+}
+
+pub async fn insert_session(pool: &SqlitePool, user_id: i64, expires_at: &str) -> String {
+    let id = generate_session_token();
+    let now = ovalbot::common::time::now();
+    sqlx::query("INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+        .bind(&id)
+        .bind(user_id)
+        .bind(&now)
+        .bind(expires_at)
+        .execute(pool)
+        .await
+        .unwrap();
+    id
+}
+
+pub fn test_state(pool: SqlitePool) -> AppState {
+    test_state_with(
+        pool,
+        Arc::new(NoopMailer),
+        Arc::new(NoopTelegram),
+        TelegramConfig::default(),
+    )
+}
+
+pub fn test_state_with(
+    pool: SqlitePool,
+    mailer: Arc<dyn Mailer>,
+    telegram: Arc<dyn Telegram>,
+    telegram_config: TelegramConfig,
+) -> AppState {
+    AppState {
+        pool,
+        mailer,
+        telegram,
+        telegram_config,
+        calendar: Arc::new(CalendarService::new()),
+    }
 }
