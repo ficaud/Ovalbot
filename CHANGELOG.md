@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-15
+
+### Added
+- `services/telegram.rs`, `router/telegram.rs` : Add Telegram webhook route and set notifier to send messages via a telegram bot.
+- `.ignore` : Add ignore file for IDEs.
+- `SECURITY.md` : Add security policy.
+- `tests/router.rs`, `tests/mailer.rs` : Better mailer and router tests to improve overall coverage.
+- `page.svelte` : robot modal for future usage to allow user to give the bot instructions.
+
+### Changed
+- `services/`, `common/` : Split services and common code into separate modules to make it easier to read and navigate into the project.
+- `frontend/src/` : Refactor frontend main page layout by extracting the two modals in separates files.
+
+### Fixed
+- `vite.config.ts` : Listen to all the interface so that the host can connect to the server that is operating inside the devcontainer.
+
 ## [0.1.3] - 2026-10-12
 
 ### Fixed
