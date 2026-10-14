@@ -90,21 +90,34 @@ struct OutgoingEmail<'a> {
     text: &'a str,
 }
 
+const RESEND_API_URL: &str = "https://api.resend.com";
+
 #[derive(Clone)]
 pub struct ResendMailer {
     client: reqwest::Client,
     api_key: String,
     from: String,
     templates: EmailTemplates,
+    base_url: String,
 }
 
 impl ResendMailer {
     pub fn new(api_key: String, from: String, templates: EmailTemplates) -> Self {
+        Self::with_base_url(api_key, from, templates, RESEND_API_URL.to_string())
+    }
+
+    pub fn with_base_url(
+        api_key: String,
+        from: String,
+        templates: EmailTemplates,
+        base_url: String,
+    ) -> Self {
         Self {
             client: reqwest::Client::new(),
             api_key,
             from,
             templates,
+            base_url,
         }
     }
 
@@ -125,7 +138,7 @@ impl ResendMailer {
         // send thee email to resend and await the response
         let response = self
             .client
-            .post("https://api.resend.com/emails")
+            .post(format!("{}/emails", self.base_url))
             .bearer_auth(&self.api_key)
             .json(&payload)
             .send()
@@ -286,5 +299,28 @@ mod tests {
         assert_eq!(templates.match_alert_html, "<p>{{kickoff}}</p>");
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `NoopMailer` returns success for every send without doing anything.
+    #[tokio::test]
+    async fn noop_mailer_sends_nothing() {
+        let mailer = NoopMailer;
+        assert!(mailer.send_welcome("a@example.com").await.is_ok());
+        let alert = MatchAlert {
+            team: "Stade Rochelais".to_string(),
+            opponent: "RC Toulon".to_string(),
+            kickoff: "samedi 14h30".to_string(),
+        };
+        assert!(mailer
+            .send_match_alert("a@example.com", &alert)
+            .await
+            .is_ok());
+    }
+
+    /// `ResendMailer::new` targets the public Resend API by default.
+    #[test]
+    fn new_uses_default_base_url() {
+        let mailer = ResendMailer::new("key".into(), "from".into(), EmailTemplates::defaults());
+        assert_eq!(mailer.base_url, RESEND_API_URL);
     }
 }
