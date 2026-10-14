@@ -29,6 +29,7 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - Unit tests are mandatory for every business function implemented.
 - Code and comments are written in English.
 - No superfluous comments in the code.
+- Section separators use plain `//` comments (never `///`, reserved for doc comments that attach to the next item).
 - Axum 0.8 : path params use `{id}` (not `:id`).
 - Cookies : `axum-extra` (feature `cookie`).
 - Migrations : `sqlx::migrate!()` embedded at runtime + `sqlx-cli` (sqlite) in dev to create files.
@@ -97,3 +98,61 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - Migration `0005_clear_match_notifications.sql` : wipes stale positional subscriptions (test phase, no corrective email sent).
 - Fixtures `lnr.html`/`lnr_played.html` gained `feuille-de-match` links; new tests: id extraction, positional fallback, diff id-reassignment guard.
 - Verified : `cargo test --workspace` green (51 passed, 1 ignored), clippy `-D warnings` + `fmt --check` green.
+
+### 2026-10-14 — Telegram notifications (done)
+- Goal: match alerts delivered via Telegram **in addition to** email. Account linking uses a **bot deep-link + webhook**, never manual ID entry.
+- Migration `0006_add_telegram_id.sql` (`users.telegram_id TEXT`) + `0007_create_telegram_link_tokens.sql` (partial unique index on `telegram_id`, `telegram_link_tokens` table with `ON DELETE CASCADE`).
+- New module `src/telegram.rs` : trait `Telegram` (+ `NoopTelegram`), `TelegramClient` (reqwest POST `sendMessage`), `from_env()`/`config_from_env()`/`register_webhook()` (startup `setWebhook`), `Update::start_token()`, constant-time `secret_matches()`, `create_link_token`/`consume_link_token`/`unlink`, `deep_link`. Link tokens are single-use, 15 min TTL.
+- `models` : `User.telegram_id`, `UserView.telegram_linked` (raw chat id never exposed). All `query_as::<_, User>` SELECTs updated.
+- `AppState` gains `telegram: Arc<dyn Telegram>` + `telegram_config: TelegramConfig`.
+- Endpoints (`src/routes/telegram.rs`) : `POST /api/telegram/link` (`ActiveUser`, returns deep link), `DELETE /api/telegram/link` (unlink), `POST /api/telegram/webhook` (public, verifies `X-Telegram-Bot-Api-Secret-Token`).
+- `notifications::process_one` now dispatches email **and** Telegram per subscriber.
+- Registration form: removed the manual Telegram ID field (linking happens post-login from the home page).
+- Env vars : `TELEGRAM_ENABLED`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_URL`, `TELEGRAM_WEBHOOK_SECRET` (added to README, `.env.example`, `docker-compose.yml`).
+- Verified : `cargo test --workspace` green (6 new telegram tests), clippy `-D warnings` + `fmt --check` green, `npm run check` + `npm run build` green.
+
+### 2026-10-14 — Notification settings modal (per-channel prefs)
+- Goal: let users pick which channel receives match alerts (email and/or Telegram), from a modal.
+- Migration `0008_add_notification_prefs.sql` : `users.notify_email` / `users.notify_telegram` (`INTEGER NOT NULL DEFAULT 1`).
+- `models` : `User` + `UserView` gain both flags ; all `query_as::<_, User>` SELECTs updated.
+- Endpoint `PUT /api/notifications/settings` (`ActiveUser`, `src/routes/notifications.rs`) → `notifications::update_settings` (updates both booleans). Initial values come from `/api/me`.
+- `notifications::process_one` now fetches `notify_email`/`notify_telegram` per subscriber and gates each channel (both can be muted → user receives nothing). Welcome email unchanged.
+- Frontend `+page.svelte` : Telegram card replaced by a **Notification settings** button opening a native `<dialog>` modal (connect/disconnect Telegram + email/Telegram toggles, explicit **Save**, no autosave). `api.ts` gains `updateNotificationSettings`, `types.ts` gains the flags. `invalidateAll()` refreshes `data.user` after save/connect.
+- Verified : `cargo test --workspace` green (3 new notification tests), clippy `-D warnings` + `fmt --check` green, `npm run check` (0 warning) + `npm run build` green.
+
+### 2026-10-14 — Layered `src/` reorg (`common/` + `services/`)
+- Goal: separate the foundations and the business/integration layer from the HTTP layer, and remove the `telegram.rs` vs `routes/telegram.rs` naming ambiguity.
+- `git mv` foundations to `src/common/` : `db`, `error`, `models`, `time`.
+- `git mv` services to `src/services/` : `auth`, `calendar`, `email`, `mailer`, `notifications`, `state`, `telegram`, `waitlist`.
+- `src/routes/` untouched. `lib.rs` now declares only `pub mod common; pub mod routes; pub mod services;`.
+- All internal `crate::X` and public `ovalbot::X` paths rewritten (`main.rs`, `bin/create_admin.rs`, `tests/*`). Clean break — no compatibility `pub use`.
+- No change to `Cargo.toml`, Docker, CI or migrations (`Dockerfile` copies `src ./src` wholesale).
+- Verified : `cargo test --workspace` green, clippy `-D warnings` + `fmt --check` green.
+
+### 2026-10-14 — Coverage: routes + mailer transport
+- Goal: raise coverage on `src/services/auth.rs`, `src/services/mailer.rs` and the whole `src/routes/` layer.
+- `ResendMailer` gained an injectable `base_url` (`with_base_url`), default `https://api.resend.com`.
+- `tests/routes.rs` (29 tests): full HTTP layer via `ovalbot::app(state)` + `tower::ServiceExt::oneshot` — register/login/logout/me, admin (list/activate/delete), calendar (teams/matches), notifications (subscribe/settings), telegram (link/unlink/webhook). Covers `AuthUser`/`AdminUser`/`ActiveUser` + `load_session`/`load_user` (missing/expired/unknown session, deleted user).
+- `tests/mailer.rs`: transport tests against a tiny in-process **axum** mock (binds `127.0.0.1:0`, captures the last request) — `send_welcome`/`send_match_alert` POST `/emails` (auth header + JSON body), non-2xx → `MailError::Api`. No new dependency. `src/services/mailer.rs` unit: `NoopMailer` + default `base_url`.
+- Note: `wiremock` was tried first but its heavy dep tree made the `mailer` test binary OOM the linker on the memory-constrained arm64 dev box → replaced by the axum mock.
+- `tests/common/mod.rs`: shared `test_state`/`test_state_with`, `insert_user`, `insert_session`, `insert_user_with_password`.
+- Note: sqlx enables SQLite foreign keys by default in `#[sqlx::test]`; the orphaned-session test toggles `PRAGMA foreign_keys = OFF` on a dedicated connection.
+- Not covered: `mailer::from_env` (env vars, parallel-test race) — left out.
+- Verified : `cargo test --workspace` green, clippy `-D warnings` + `fmt --check` green.
+
+### 2026-10-14 — "Bot settings" modal (UI only)
+- `frontend/src/routes/+page.svelte` : a robot button (inline SVG) added next to the bell on **every** match card, opening a native `<dialog>` "Bot settings".
+- Modal content: checkboxes "Search for duo tickets" / "Search for single tickets" + number input "Search group tickets". Local `$state` only.
+- **No backend/API/persistence, nothing triggered** — `Save` just closes (placeholder for Phase 4).
+- Unrelated to the admin card's "Bot settings" link (left unchanged).
+- Verified : `npm run check` (0 warning) + `npm run build` green.
+
+### 2026-10-15 — Frontend section separators convention
+- Adopted plain `//` section separators in Rust (never `///`, reserved for doc comments). Applied to `src/services/telegram.rs` (3 separators) + fixed a trailing-space comment that broke `cargo fmt --check`.
+- Convention documented in `AGENTS.md` (Conventions).
+
+### 2026-10-15 — Split `+page.svelte` into components (Phases 1 + 2)
+- Extracted the two native `<dialog>` blocks into `frontend/src/lib/components/NotificationSettingsModal.svelte` and `BotSettingsModal.svelte` (each owns its script + logic).
+- `+page.svelte` now keeps only page state (`teams`/`selected`/`matches`/`subscribed`/`pending`) and opens the modals via `bind:this` + `export function open()`. Props passed from `data.user` (`telegram_linked`, `notify_email`, `notify_telegram`).
+- Moved shared CSS to `app.css` : `.modal*`, `.switch*`, `.badge-scheduled`/`.badge-tbd`. Page-specific styles (`.matches`, `.match-card*`, `.bell*`) stay scoped.
+- Verified : `npm run check` (0 error, 0 warning) + `npm run build` green.

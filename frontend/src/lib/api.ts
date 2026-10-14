@@ -94,3 +94,24 @@ export async function unsubscribe(matchId: number): Promise<void> {
   const res = await fetch(`/api/notifications/${matchId}`, { method: 'DELETE' });
   if (!res.ok) throw new ApiError(res.status, 'Unsubscription failed');
 }
+
+export async function linkTelegram(): Promise<{ url: string }> {
+  return parse<{ url: string }>(await fetch('/api/telegram/link', { method: 'POST' }));
+}
+
+export async function unlinkTelegram(): Promise<void> {
+  const res = await fetch('/api/telegram/link', { method: 'DELETE' });
+  if (!res.ok) throw new ApiError(res.status, 'Failed to disconnect Telegram');
+}
+
+export async function updateNotificationSettings(
+  emailEnabled: boolean,
+  telegramEnabled: boolean
+): Promise<void> {
+  const res = await fetch('/api/notifications/settings', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email_enabled: emailEnabled, telegram_enabled: telegramEnabled })
+  });
+  if (!res.ok) throw new ApiError(res.status, 'Failed to save notification settings');
+}

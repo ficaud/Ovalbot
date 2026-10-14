@@ -1,7 +1,10 @@
+#![allow(dead_code)]
+
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use ovalbot::mailer::{MailError, Mailer, MatchAlert};
+use ovalbot::telegram::{Telegram, TelegramError};
 use sqlx::SqlitePool;
 
 pub struct RecordingMailer {
@@ -30,6 +33,29 @@ impl Mailer for RecordingMailer {
             .lock()
             .unwrap()
             .push((email.to_string(), alert.clone()));
+        Ok(())
+    }
+}
+
+pub struct RecordingTelegram {
+    pub messages: Mutex<Vec<(String, String)>>,
+}
+
+impl RecordingTelegram {
+    pub fn new() -> Self {
+        Self {
+            messages: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl Telegram for RecordingTelegram {
+    async fn send_message(&self, chat_id: &str, text: &str) -> Result<(), TelegramError> {
+        self.messages
+            .lock()
+            .unwrap()
+            .push((chat_id.to_string(), text.to_string()));
         Ok(())
     }
 }

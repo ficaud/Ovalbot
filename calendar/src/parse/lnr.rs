@@ -110,7 +110,7 @@ impl LnrParser {
                 .and_then(|link| link.value().attr("href"))
                 .and_then(parse_match_id_from_href)
                 .unwrap_or_default();
-            
+
             // push to events vector
             events.push(Event {
                 id,

@@ -110,22 +110,15 @@ The backend reads these environment variables:
 | `RESEND_ENABLED` | `false` | Set `true` to send emails via Resend (welcome + match alerts). |
 | `RESEND_API_KEY` | *(empty)* | Resend API key, required when `RESEND_ENABLED=true` (See more on [resend](https://resend.com/)) |
 | `RESEND_FROM` | `OvalBot <onboarding@resend.dev>` | Sender address for outgoing emails. |
+| `TELEGRAM_ENABLED` | `false` | Set `true` to enable Telegram notifications. |
+| `TELEGRAM_BOT_TOKEN` | *(empty)* | Telegram bot token from @BotFather, required when `TELEGRAM_ENABLED=true`. |
+| `TELEGRAM_BOT_USERNAME` | *(empty)* | Bot username (without `@`), used to build the account-linking deep link. |
+| `TELEGRAM_WEBHOOK_URL` | *(empty)* | Public HTTPS URL of this app; registered via `setWebhook` at startup. |
+| `TELEGRAM_WEBHOOK_SECRET` | *(empty)* | Secret token Telegram sends in `X-Telegram-Bot-Api-Secret-Token`, verified on every update. |
 
 See `.env.example` for a ready-to-copy template.
 
 ## Testing
-
-One classic account that is probably registered in the test environment is : 
-
-User : 
-```bash
-test@gmail.com
-```
-
-Password :
-```bash
-12345678
-```
 
 ### Option A — simulated production (backend serves the built frontend)
 

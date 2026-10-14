@@ -1,8 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { invalidateAll } from '$app/navigation';
   import type { PageData } from './$types';
   import type { MatchView, TeamView } from '#lib/types';
-  import { getNotifications, getTeamMatches, getTeams, subscribe, unsubscribe } from '#lib/api';
+  import {
+    getNotifications,
+    getTeamMatches,
+    getTeams,
+    linkTelegram,
+    subscribe,
+    unsubscribe,
+    unlinkTelegram,
+    updateNotificationSettings
+  } from '#lib/api';
 
   let { data }: { data: PageData } = $props();
 
@@ -12,6 +22,70 @@
   let loading = $state(false);
   let subscribed: number[] = $state([]);
   let pending: number[] = $state([]);
+
+  let dialogEl: HTMLDialogElement;
+  let telegramLinked = $state(false);
+  let emailEnabled = $state(true);
+  let telegramEnabled = $state(true);
+  let telegramPending = $state(false);
+  let saving = $state(false);
+  let error = $state('');
+  let notice = $state('');
+
+  function openSettings() {
+    error = '';
+    notice = '';
+    dialogEl?.showModal();
+  }
+
+  function closeSettings() {
+    dialogEl?.close();
+  }
+
+  async function connectTelegram() {
+    telegramPending = true;
+    error = '';
+    notice = '';
+    try {
+      const { url } = await linkTelegram();
+      window.open(url, '_blank', 'noopener');
+      notice = 'Open Telegram and press Start to finish connecting.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Telegram is unavailable';
+    } finally {
+      telegramPending = false;
+    }
+  }
+
+  async function disconnectTelegram() {
+    telegramPending = true;
+    error = '';
+    notice = '';
+    try {
+      await unlinkTelegram();
+      telegramLinked = false;
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to disconnect Telegram';
+    } finally {
+      telegramPending = false;
+    }
+  }
+
+  async function saveSettings() {
+    saving = true;
+    error = '';
+    notice = '';
+    try {
+      await updateNotificationSettings(emailEnabled, telegramEnabled);
+      await invalidateAll();
+      telegramLinked = data.user.telegram_linked;
+      notice = 'Settings saved.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to save settings';
+    } finally {
+      saving = false;
+    }
+  }
 
   async function refreshMatches() {
     loading = true;
@@ -39,6 +113,9 @@
   }
 
   onMount(async () => {
+    telegramLinked = data.user.telegram_linked;
+    emailEnabled = data.user.notify_email;
+    telegramEnabled = data.user.notify_telegram;
     teams = await getTeams();
     subscribed = await getNotifications();
     await refreshMatches();
@@ -151,12 +228,83 @@
         <h3>Administration</h3>
         <p class="muted">Manage accounts and the waitlist.</p>
         <a href="/admin" class="btn btn-secondary">Manage accounts</a>
-        <p class="muted">Mange bot</p>
+        <p class="muted">Manage bot</p>
         <a href="/" class="btn btn-secondary">Bot settings</a>
       </div>
     {/if}
+
+    <div class="card">
+      <h3>Notifications</h3>
+      <p class="muted">Choose how you want to be alerted when a match gets a date.</p>
+      <button class="btn btn-secondary" type="button" onclick={openSettings}>
+        Notification settings
+      </button>
+    </div>
   {/if}
 </section>
+
+<dialog bind:this={dialogEl} class="modal">
+  <div class="modal__head">
+    <h2>Notification settings</h2>
+    <button class="modal__close" type="button" aria-label="Close" onclick={closeSettings}>
+      &times;
+    </button>
+  </div>
+
+  {#if error}
+    <div class="alert alert-error">{error}</div>
+  {/if}
+  {#if notice}
+    <div class="alert alert-info">{notice}</div>
+  {/if}
+
+  <div class="field">
+    <h3>Telegram</h3>
+    {#if telegramLinked}
+      <p class="muted">Your Telegram account is connected.</p>
+      <button
+        class="btn btn-secondary btn-sm"
+        type="button"
+        onclick={disconnectTelegram}
+        disabled={telegramPending}
+      >
+        Disconnect Telegram
+      </button>
+    {:else}
+      <p class="muted">Connect Telegram to get match alerts there too.</p>
+      <button
+        class="btn btn-secondary btn-sm"
+        type="button"
+        onclick={connectTelegram}
+        disabled={telegramPending}
+      >
+        Connect Telegram
+      </button>
+    {/if}
+  </div>
+
+  <div class="field">
+    <h3>Channels</h3>
+    <label class="switch">
+      <input type="checkbox" bind:checked={emailEnabled} />
+      <span>Email alerts</span>
+    </label>
+    <label class="switch" class:switch--disabled={!telegramLinked}>
+      <input type="checkbox" bind:checked={telegramEnabled} disabled={!telegramLinked} />
+      <span>Telegram alerts</span>
+    </label>
+    {#if !telegramLinked}
+      <p class="hint">Connect Telegram first to enable Telegram alerts.</p>
+    {/if}
+  </div>
+
+  <div class="modal__actions">
+    <button class="btn btn-secondary" type="button" onclick={closeSettings}>Close</button>
+    <button class="btn btn-primary" type="button" onclick={saveSettings} disabled={saving}>
+      {saving ? 'Saving…' : 'Save'}
+    </button>
+  </div>
+</dialog>
 
 <style>
   .matches {
@@ -288,5 +436,60 @@
   .badge-tbd {
     background: #f3f4f6;
     color: #374151;
+  }
+
+  .modal {
+    width: min(440px, calc(100vw - 32px));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    background: var(--surface);
+    color: var(--ink);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  }
+
+  .modal::backdrop {
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  .modal__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .modal__head h2 {
+    margin: 0;
+  }
+
+  .modal__close {
+    border: none;
+    background: transparent;
+    font-size: 1.5rem;
+    line-height: 1;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 0 4px;
+  }
+
+  .modal__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+  }
+
+  .switch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+    cursor: pointer;
+  }
+
+  .switch--disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 </style>

@@ -45,6 +45,9 @@ pub struct User {
     pub created_at: String,
     pub activated_at: Option<String>,
     pub welcome_email_sent_at: Option<String>,
+    pub telegram_id: Option<String>,
+    pub notify_email: bool,
+    pub notify_telegram: bool,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -69,6 +72,9 @@ pub struct UserView {
     pub role: Role,
     pub created_at: String,
     pub activated_at: Option<String>,
+    pub telegram_linked: bool,
+    pub notify_email: bool,
+    pub notify_telegram: bool,
 }
 
 impl From<User> for UserView {
@@ -80,6 +86,9 @@ impl From<User> for UserView {
             role: u.role,
             created_at: u.created_at,
             activated_at: u.activated_at,
+            telegram_linked: u.telegram_id.is_some(),
+            notify_email: u.notify_email,
+            notify_telegram: u.notify_telegram,
         }
     }
 }

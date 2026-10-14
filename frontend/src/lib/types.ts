@@ -8,6 +8,9 @@ export interface UserView {
   role: Role;
   created_at: string;
   activated_at: string | null;
+  telegram_linked: boolean;
+  notify_email: boolean;
+  notify_telegram: boolean;
 }
 
 export interface VersionInfo {

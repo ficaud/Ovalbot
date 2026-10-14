@@ -3,17 +3,20 @@ mod common;
 use std::sync::Arc;
 
 use calendar::{Change, TeamType};
-use common::{insert_active_user, RecordingMailer};
+use common::{insert_active_user, RecordingMailer, RecordingTelegram};
 use ovalbot::calendar::CalendarService;
 use ovalbot::mailer::Mailer;
-use ovalbot::notifications::{list_for_user, process, subscribe, unsubscribe};
+use ovalbot::notifications::{list_for_user, process, subscribe, unsubscribe, update_settings};
 use ovalbot::state::AppState;
+use ovalbot::telegram::{Telegram, TelegramConfig};
 use sqlx::SqlitePool;
 
-fn state(pool: SqlitePool, mailer: Arc<dyn Mailer>) -> AppState {
+fn state(pool: SqlitePool, mailer: Arc<dyn Mailer>, telegram: Arc<dyn Telegram>) -> AppState {
     AppState {
         pool,
         mailer,
+        telegram,
+        telegram_config: TelegramConfig::default(),
         calendar: Arc::new(CalendarService::new()),
     }
 }
@@ -69,9 +72,16 @@ async fn process_emails_subscribers_once_and_clears_rows(pool: SqlitePool) {
     subscribe(&pool, user_a, 7).await.unwrap();
     subscribe(&pool, user_b, 7).await.unwrap();
     subscribe(&pool, user_b, 8).await.unwrap();
+    sqlx::query("UPDATE users SET telegram_id = ? WHERE id = ?")
+        .bind("12345")
+        .bind(user_a)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let mailer = Arc::new(RecordingMailer::new());
-    let state = state(pool.clone(), mailer.clone());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let state = state(pool.clone(), mailer.clone(), telegram.clone());
 
     process(
         &state,
@@ -92,6 +102,11 @@ async fn process_emails_subscribers_once_and_clears_rows(pool: SqlitePool) {
     assert_eq!(sent[0].1.team, "Stade Rochelais");
     assert_eq!(sent[0].1.opponent, "RC Toulon");
 
+    let messages = telegram.messages.lock().unwrap().clone();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].0, "12345");
+    assert!(messages[0].1.contains("Stade Rochelais vs RC Toulon"));
+
     let remaining: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM match_notifications WHERE match_id = 7")
             .fetch_one(&pool)
@@ -111,7 +126,8 @@ async fn process_emails_subscribers_once_and_clears_rows(pool: SqlitePool) {
 #[sqlx::test]
 async fn process_without_subscribers_sends_nothing(pool: SqlitePool) {
     let mailer = Arc::new(RecordingMailer::new());
-    let state = state(pool.clone(), mailer.clone());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let state = state(pool.clone(), mailer.clone(), telegram.clone());
 
     process(
         &state,
@@ -125,4 +141,97 @@ async fn process_without_subscribers_sends_nothing(pool: SqlitePool) {
     .await;
 
     assert!(mailer.alerts.lock().unwrap().is_empty());
+    assert!(telegram.messages.lock().unwrap().is_empty());
+}
+
+/// Honors per-channel preferences: email can be muted, Telegram can be muted, or
+/// both, independently of the other subscribers.
+#[sqlx::test]
+async fn process_respects_channel_preferences(pool: SqlitePool) {
+    let email_only = insert_active_user(&pool, "email-only@example.com").await;
+    let telegram_only = insert_active_user(&pool, "telegram-only@example.com").await;
+    subscribe(&pool, email_only, 11).await.unwrap();
+    subscribe(&pool, telegram_only, 11).await.unwrap();
+    sqlx::query("UPDATE users SET notify_telegram = 0, telegram_id = '1' WHERE id = ?")
+        .bind(email_only)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET notify_email = 0, telegram_id = '2' WHERE id = ?")
+        .bind(telegram_only)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let state = state(pool.clone(), mailer.clone(), telegram.clone());
+
+    process(
+        &state,
+        vec![Change::Scheduled {
+            id: 11,
+            team: TeamType::StadeRochelais,
+            opponent: TeamType::RcToulon,
+            kickoff: "samedi 10 octobre 14h30".to_string(),
+        }],
+    )
+    .await;
+
+    let emails = mailer.alerts.lock().unwrap().clone();
+    assert_eq!(emails.len(), 1);
+    assert_eq!(emails[0].0, "email-only@example.com");
+
+    let messages = telegram.messages.lock().unwrap().clone();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].0, "2");
+}
+
+/// Sends nothing when a subscriber muted both channels.
+#[sqlx::test]
+async fn process_sends_nothing_when_all_channels_muted(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    subscribe(&pool, user, 12).await.unwrap();
+    sqlx::query(
+        "UPDATE users SET notify_email = 0, notify_telegram = 0, telegram_id = '3' WHERE id = ?",
+    )
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let state = state(pool.clone(), mailer.clone(), telegram.clone());
+
+    process(
+        &state,
+        vec![Change::Scheduled {
+            id: 12,
+            team: TeamType::StadeRochelais,
+            opponent: TeamType::RcToulon,
+            kickoff: "samedi 10 octobre 14h30".to_string(),
+        }],
+    )
+    .await;
+
+    assert!(mailer.alerts.lock().unwrap().is_empty());
+    assert!(telegram.messages.lock().unwrap().is_empty());
+}
+
+/// `update_settings` persists both channel flags for the user.
+#[sqlx::test]
+async fn update_settings_persists_preferences(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+
+    update_settings(&pool, user, false, true).await.unwrap();
+
+    let (email_enabled, telegram_enabled): (bool, bool) =
+        sqlx::query_as("SELECT notify_email, notify_telegram FROM users WHERE id = ?")
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(!email_enabled);
+    assert!(telegram_enabled);
 }

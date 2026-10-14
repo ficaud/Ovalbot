@@ -25,6 +25,8 @@ pub enum AppError {
     Forbidden,
     #[error("not found")]
     NotFound,
+    #[error("telegram unavailable")]
+    TelegramUnavailable,
 }
 
 impl IntoResponse for AppError {
@@ -42,6 +44,11 @@ impl IntoResponse for AppError {
             ),
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden", "forbidden"),
             AppError::NotFound => (StatusCode::NOT_FOUND, "not_found", "not found"),
+            AppError::TelegramUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "telegram_unavailable",
+                "telegram notifications are not available",
+            ),
             AppError::EmailTaken => (
                 StatusCode::CONFLICT,
                 "email_taken",

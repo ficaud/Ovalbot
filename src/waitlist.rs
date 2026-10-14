@@ -16,7 +16,7 @@ pub fn status_for(active_count: i64) -> Status {
 pub async fn promote_next_waiting(pool: &SqlitePool) -> Result<Option<User>, AppError> {
     let now = crate::time::now();
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at \
+        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at, telegram_id, notify_email, notify_telegram \
          FROM users WHERE status = 'waiting' ORDER BY created_at ASC, id ASC LIMIT 1",
     )
     .fetch_optional(pool)

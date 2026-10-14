@@ -8,18 +8,20 @@ pub mod models;
 pub mod notifications;
 pub mod routes;
 pub mod state;
+pub mod telegram;
 pub mod time;
 pub mod waitlist;
 
 use std::path::PathBuf;
 
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::routes::{
     admin, auth as auth_routes, calendar as calendar_routes, notifications as notifications_routes,
+    telegram as telegram_routes,
 };
 use crate::state::AppState;
 
@@ -40,9 +42,18 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/notifications", get(notifications_routes::list))
         .route(
+            "/api/notifications/settings",
+            put(notifications_routes::update_settings),
+        )
+        .route(
             "/api/notifications/{match_id}",
             post(notifications_routes::subscribe).delete(notifications_routes::unsubscribe),
         )
+        .route(
+            "/api/telegram/link",
+            post(telegram_routes::link).delete(telegram_routes::unlink),
+        )
+        .route("/api/telegram/webhook", post(telegram_routes::webhook))
         .route("/api/admin/users", get(admin::list_users))
         .route("/api/admin/users/{id}/activate", post(admin::activate_user))
         .route("/api/admin/users/{id}", delete(admin::delete_user))
