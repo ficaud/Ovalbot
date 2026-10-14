@@ -2,12 +2,12 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 
-use crate::auth::AdminUser;
-use crate::error::AppError;
-use crate::mailer::send_welcome_if_unsent;
-use crate::models::{Role, User, UserView};
-use crate::state::AppState;
-use crate::waitlist::promote_next_waiting;
+use crate::common::error::AppError;
+use crate::common::models::{Role, User, UserView};
+use crate::services::auth::AdminUser;
+use crate::services::mailer::send_welcome_if_unsent;
+use crate::services::state::AppState;
+use crate::services::waitlist::promote_next_waiting;
 
 pub async fn list_users(
     State(state): State<AppState>,
@@ -26,7 +26,7 @@ pub async fn activate_user(
     _admin: AdminUser,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, AppError> {
-    let now = crate::time::now();
+    let now = crate::common::time::now();
     let result = sqlx::query("UPDATE users SET status = 'active', activated_at = ? WHERE id = ?")
         .bind(&now)
         .bind(id)

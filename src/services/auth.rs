@@ -5,9 +5,9 @@ use axum::http::request::Parts;
 use axum_extra::extract::CookieJar;
 use sqlx::SqlitePool;
 
-use crate::error::AppError;
-use crate::models::{Role, Session, Status, User};
-use crate::state::AppState;
+use crate::common::error::AppError;
+use crate::common::models::{Role, Session, Status, User};
+use crate::services::state::AppState;
 
 pub fn hash_password(password: &str) -> Result<String, AppError> {
     Ok(Argon2::default()

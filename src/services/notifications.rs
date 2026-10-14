@@ -1,12 +1,12 @@
 use calendar::Change;
 use sqlx::SqlitePool;
 
-use crate::error::AppError;
-use crate::mailer::MatchAlert;
-use crate::state::AppState;
+use crate::common::error::AppError;
+use crate::services::mailer::MatchAlert;
+use crate::services::state::AppState;
 
 pub async fn subscribe(pool: &SqlitePool, user_id: i64, match_id: i64) -> Result<(), AppError> {
-    let now = crate::time::now();
+    let now = crate::common::time::now();
     sqlx::query(
         "INSERT INTO match_notifications (user_id, match_id, created_at) VALUES (?, ?, ?) \
          ON CONFLICT(user_id, match_id) DO NOTHING",

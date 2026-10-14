@@ -4,11 +4,13 @@ use std::sync::Arc;
 
 use calendar::{Change, TeamType};
 use common::{insert_active_user, RecordingMailer, RecordingTelegram};
-use ovalbot::calendar::CalendarService;
-use ovalbot::mailer::Mailer;
-use ovalbot::notifications::{list_for_user, process, subscribe, unsubscribe, update_settings};
-use ovalbot::state::AppState;
-use ovalbot::telegram::{Telegram, TelegramConfig};
+use ovalbot::services::calendar::CalendarService;
+use ovalbot::services::mailer::Mailer;
+use ovalbot::services::notifications::{
+    list_for_user, process, subscribe, unsubscribe, update_settings,
+};
+use ovalbot::services::state::AppState;
+use ovalbot::services::telegram::{Telegram, TelegramConfig};
 use sqlx::SqlitePool;
 
 fn state(pool: SqlitePool, mailer: Arc<dyn Mailer>, telegram: Arc<dyn Telegram>) -> AppState {

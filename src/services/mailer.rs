@@ -218,7 +218,7 @@ pub async fn send_welcome_if_unsent(
 
     match mailer.send_welcome(email).await {
         Ok(()) => {
-            let now = crate::time::now();
+            let now = crate::common::time::now();
             if let Err(e) = sqlx::query("UPDATE users SET welcome_email_sent_at = ? WHERE id = ?")
                 .bind(&now)
                 .bind(user_id)

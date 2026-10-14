@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use sqlx::SqlitePool;
 
-use crate::calendar::CalendarService;
-use crate::mailer::Mailer;
-use crate::telegram::{Telegram, TelegramConfig};
+use crate::services::calendar::CalendarService;
+use crate::services::mailer::Mailer;
+use crate::services::telegram::{Telegram, TelegramConfig};
 
 #[derive(Clone)]
 pub struct AppState {

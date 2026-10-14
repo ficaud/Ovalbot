@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::Serialize;
 
-use crate::error::AppError;
+use crate::common::error::AppError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Email(String);

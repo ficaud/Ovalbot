@@ -2,7 +2,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::str::FromStr;
 
-use crate::error::AppError;
+use crate::common::error::AppError;
 
 pub async fn connect(url: &str) -> Result<SqlitePool, AppError> {
     let options = SqliteConnectOptions::from_str(url)?

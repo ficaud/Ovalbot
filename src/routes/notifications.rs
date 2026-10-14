@@ -4,10 +4,10 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 
-use crate::auth::ActiveUser;
-use crate::error::AppError;
-use crate::notifications;
-use crate::state::AppState;
+use crate::common::error::AppError;
+use crate::services::auth::ActiveUser;
+use crate::services::notifications;
+use crate::services::state::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct SettingsRequest {
