@@ -3,10 +3,10 @@ use axum::Json;
 
 use calendar::TeamType;
 
-use crate::auth::ActiveUser;
-use crate::calendar::{MatchView, TeamView};
-use crate::error::AppError;
-use crate::state::AppState;
+use crate::common::error::AppError;
+use crate::services::auth::ActiveUser;
+use crate::services::calendar::{MatchView, TeamView};
+use crate::services::state::AppState;
 
 pub async fn list_teams(State(state): State<AppState>, _auth: ActiveUser) -> Json<Vec<TeamView>> {
     Json(state.calendar.list_teams())

@@ -2,7 +2,7 @@ mod common;
 
 use async_trait::async_trait;
 use common::{insert_active_user, RecordingMailer};
-use ovalbot::mailer::{send_welcome_if_unsent, MailError, Mailer, MatchAlert};
+use ovalbot::services::mailer::{send_welcome_if_unsent, MailError, Mailer, MatchAlert};
 use sqlx::SqlitePool;
 
 struct FailingMailer;

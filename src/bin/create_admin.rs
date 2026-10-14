@@ -1,7 +1,7 @@
 use std::env;
 
-use ovalbot::auth::hash_password;
-use ovalbot::db;
+use ovalbot::common::db;
+use ovalbot::services::auth::hash_password;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db::migrate(&pool).await?;
 
     let hash = hash_password(&password)?;
-    let now = ovalbot::time::now();
+    let now = ovalbot::common::time::now();
 
     let result = sqlx::query(
         "INSERT INTO users (email, password_hash, status, role, created_at, activated_at) \

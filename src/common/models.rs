@@ -60,7 +60,7 @@ pub struct Session {
 
 impl Session {
     pub fn is_expired(&self) -> bool {
-        crate::time::is_past(&self.expires_at)
+        crate::common::time::is_past(&self.expires_at)
     }
 }
 

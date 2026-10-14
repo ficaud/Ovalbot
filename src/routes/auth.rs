@@ -6,13 +6,13 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
 use time::Duration;
 
-use crate::auth::{generate_session_token, hash_password, verify_password, AuthUser};
-use crate::email::Email;
-use crate::error::AppError;
-use crate::mailer::send_welcome_if_unsent;
-use crate::models::{Status, User, UserView};
-use crate::state::AppState;
-use crate::waitlist::status_for;
+use crate::common::error::AppError;
+use crate::common::models::{Status, User, UserView};
+use crate::services::auth::{generate_session_token, hash_password, verify_password, AuthUser};
+use crate::services::email::Email;
+use crate::services::mailer::send_welcome_if_unsent;
+use crate::services::state::AppState;
+use crate::services::waitlist::status_for;
 
 const SESSION_DAYS: i64 = 30;
 
@@ -54,7 +54,7 @@ pub async fn register(
             .await?;
 
     let status = status_for(active_count);
-    let now = crate::time::now();
+    let now = crate::common::time::now();
     let activated_at = (status == Status::Active).then(|| now.clone());
 
     let result = sqlx::query(
@@ -112,8 +112,8 @@ pub async fn login(
         .map_err(|_| AppError::InvalidCredentials)?;
 
     let session_id = generate_session_token();
-    let now = crate::time::now();
-    let expires_at = crate::time::in_days(SESSION_DAYS);
+    let now = crate::common::time::now();
+    let expires_at = crate::common::time::in_days(SESSION_DAYS);
     sqlx::query("INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
         .bind(&session_id)
         .bind(user.id)

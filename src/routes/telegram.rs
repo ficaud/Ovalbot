@@ -4,10 +4,10 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
 
-use crate::auth::ActiveUser;
-use crate::error::AppError;
-use crate::state::AppState;
-use crate::telegram::{self, Update};
+use crate::common::error::AppError;
+use crate::services::auth::ActiveUser;
+use crate::services::state::AppState;
+use crate::services::telegram::{self, Update};
 
 #[derive(Debug, Serialize)]
 pub struct LinkResponse {

@@ -1,11 +1,11 @@
-use ovalbot::models::{Status, User};
-use ovalbot::waitlist::promote_next_waiting;
+use ovalbot::common::models::{Status, User};
+use ovalbot::services::waitlist::promote_next_waiting;
 use sqlx::SqlitePool;
 
 /// Promotes the oldest waiting user to `Active` and sets `activated_at`.
 #[sqlx::test]
 async fn promote_activates_oldest_waiting(pool: SqlitePool) {
-    let now = ovalbot::time::now();
+    let now = ovalbot::common::time::now();
     for i in 0..10 {
         sqlx::query(
             "INSERT INTO users (email, password_hash, status, role, created_at, activated_at) \

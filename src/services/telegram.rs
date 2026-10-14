@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
-use crate::error::AppError;
+use crate::common::error::AppError;
 
 pub const LINK_TTL_MINUTES: i64 = 15;
 
@@ -208,9 +208,9 @@ pub fn secret_matches(expected: &str, provided: &str) -> bool {
 
 /// Creates a new link token for the given user.
 pub async fn create_link_token(pool: &SqlitePool, user_id: i64) -> Result<String, AppError> {
-    let token = crate::auth::generate_session_token();
-    let now = crate::time::now();
-    let expires_at = crate::time::in_minutes(LINK_TTL_MINUTES);
+    let token = crate::services::auth::generate_session_token();
+    let now = crate::common::time::now();
+    let expires_at = crate::common::time::in_minutes(LINK_TTL_MINUTES);
 
     sqlx::query("DELETE FROM telegram_link_tokens WHERE user_id = ?")
         .bind(user_id)
@@ -254,7 +254,6 @@ pub async fn consume_link_token(
         .execute(pool)
         .await?;
 
-    // Check if the token is expired.
     if crate::common::time::is_past(&expires_at) {
         return Ok(false);
     }

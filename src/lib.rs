@@ -1,16 +1,6 @@
-pub mod auth;
-pub mod calendar;
-pub mod db;
-pub mod email;
-pub mod error;
-pub mod mailer;
-pub mod models;
-pub mod notifications;
+pub mod common;
 pub mod routes;
-pub mod state;
-pub mod telegram;
-pub mod time;
-pub mod waitlist;
+pub mod services;
 
 use std::path::PathBuf;
 
@@ -23,7 +13,7 @@ use crate::routes::{
     admin, auth as auth_routes, calendar as calendar_routes, notifications as notifications_routes,
     telegram as telegram_routes,
 };
-use crate::state::AppState;
+use crate::services::state::AppState;
 
 pub fn app(state: AppState) -> Router {
     let static_dir = std::env::var("STATIC_DIR").unwrap_or_else(|_| "frontend/build".to_owned());

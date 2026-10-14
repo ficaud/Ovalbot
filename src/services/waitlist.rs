@@ -1,7 +1,7 @@
 use sqlx::SqlitePool;
 
-use crate::error::AppError;
-use crate::models::{Status, User};
+use crate::common::error::AppError;
+use crate::common::models::{Status, User};
 
 pub const ACTIVE_LIMIT: i64 = 10;
 
@@ -14,7 +14,7 @@ pub fn status_for(active_count: i64) -> Status {
 }
 
 pub async fn promote_next_waiting(pool: &SqlitePool) -> Result<Option<User>, AppError> {
-    let now = crate::time::now();
+    let now = crate::common::time::now();
     let user = sqlx::query_as::<_, User>(
         "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at, telegram_id, notify_email, notify_telegram \
          FROM users WHERE status = 'waiting' ORDER BY created_at ASC, id ASC LIMIT 1",

@@ -3,8 +3,8 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use ovalbot::mailer::{MailError, Mailer, MatchAlert};
-use ovalbot::telegram::{Telegram, TelegramError};
+use ovalbot::services::mailer::{MailError, Mailer, MatchAlert};
+use ovalbot::services::telegram::{Telegram, TelegramError};
 use sqlx::SqlitePool;
 
 pub struct RecordingMailer {
@@ -61,7 +61,7 @@ impl Telegram for RecordingTelegram {
 }
 
 pub async fn insert_active_user(pool: &SqlitePool, email: &str) -> i64 {
-    let now = ovalbot::time::now();
+    let now = ovalbot::common::time::now();
     sqlx::query(
         "INSERT INTO users (email, password_hash, status, role, created_at, activated_at) \
          VALUES (?, 'x', 'active', 'user', ?, ?)",

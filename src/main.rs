@@ -1,12 +1,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ovalbot::calendar::CalendarService;
-use ovalbot::mailer;
-use ovalbot::notifications;
-use ovalbot::state::AppState;
-use ovalbot::telegram;
-use ovalbot::{app, db};
+use ovalbot::app;
+use ovalbot::common::db;
+use ovalbot::services::calendar::CalendarService;
+use ovalbot::services::mailer;
+use ovalbot::services::notifications;
+use ovalbot::services::state::AppState;
+use ovalbot::services::telegram;
 
 const SYNC_INTERVAL_SECS: u64 = 20 * 60;
 
