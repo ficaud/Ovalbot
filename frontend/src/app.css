@@ -353,6 +353,75 @@ p {
   color: #374151;
 }
 
+.badge-scheduled {
+  background: var(--yellow);
+  color: var(--black);
+}
+
+.badge-tbd {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+/* Modals ----------------------------------------------------------- */
+
+.modal {
+  width: min(440px, calc(100vw - 32px));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+}
+
+.modal::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.modal__head h2 {
+  margin: 0;
+}
+
+.modal__close {
+  border: none;
+  background: transparent;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+/* Switch ----------------------------------------------------------- */
+
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  cursor: pointer;
+}
+
+.switch--disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* Table ------------------------------------------------------------ */
 
 .table-wrap {
