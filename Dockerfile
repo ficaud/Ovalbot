@@ -22,7 +22,7 @@ COPY templates ./templates
 RUN cargo build --release
 
 # ---------- Stage 3 : image runtime minimale ----------
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*

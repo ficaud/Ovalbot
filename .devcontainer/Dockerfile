@@ -9,7 +9,7 @@
 # repository (cloned at `my-env/`) and are baked into a personal image built
 # on top of this one.
 
-FROM ubuntu:26.04
+FROM ubuntu:26.10
 
 LABEL description="OvalBot dev environment (Rust + SvelteKit + SQLite)"
 
