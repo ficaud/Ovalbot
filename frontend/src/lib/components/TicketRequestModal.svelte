@@ -9,7 +9,7 @@
     onsave,
     onremove
   }: {
-    onsave: (draft: TicketRequestDraft) => void;
+    onsave: (draft: TicketRequestDraft) => Promise<void>;
     onremove: (matchId: number) => void;
   } = $props();
 
@@ -22,6 +22,8 @@
   let singlePrice = $state<number | undefined>(undefined);
   let duoPrice = $state<number | undefined>(undefined);
   let groupPlaces = $state<number | undefined>(4);
+  let saving = $state(false);
+  let saveError = $state('');
 
   let error = $derived.by(() => {
     if (kind === 'single') {
@@ -67,6 +69,8 @@
     singlePrice = toEuros(draft?.single.maxPriceCents ?? null);
     duoPrice = toEuros(draft?.duo.maxPriceCents ?? null);
     groupPlaces = draft?.group.places ?? 4;
+    saving = false;
+    saveError = '';
     dialogEl?.showModal();
   }
 
@@ -74,21 +78,29 @@
     dialogEl?.close();
   }
 
-  function save() {
-    if (!match || error !== '') return;
-    onsave({
-      matchId: match.id,
-      kind,
-      single: {
-        quantity: inRange(singleQuantity, 1, MAX_SINGLE) ? singleQuantity! : 1,
-        maxPriceCents: toCents(singlePrice)
-      },
-      duo: { maxPriceCents: toCents(duoPrice) },
-      group: {
-        places: inRange(groupPlaces, MIN_GROUP, MAX_GROUP) ? groupPlaces! : MIN_GROUP
-      }
-    });
-    close();
+  async function save() {
+    if (!match || error !== '' || saving) return;
+    saving = true;
+    saveError = '';
+    try {
+      await onsave({
+        matchId: match.id,
+        kind,
+        single: {
+          quantity: inRange(singleQuantity, 1, MAX_SINGLE) ? singleQuantity! : 1,
+          maxPriceCents: toCents(singlePrice)
+        },
+        duo: { maxPriceCents: toCents(duoPrice) },
+        group: {
+          places: inRange(groupPlaces, MIN_GROUP, MAX_GROUP) ? groupPlaces! : MIN_GROUP
+        }
+      });
+      close();
+    } catch (err) {
+      saveError = err instanceof Error ? err.message : 'Failed to send ticket request';
+    } finally {
+      saving = false;
+    }
   }
 
   function remove() {
@@ -106,6 +118,10 @@
 
   {#if match}
     <p class="muted">For {match.team} vs {match.opponent} — {match.kickoff}</p>
+  {/if}
+
+  {#if saveError}
+    <div class="alert alert-error">{saveError}</div>
   {/if}
 
   <fieldset class="options">
@@ -217,8 +233,13 @@
     {/if}
     <div class="actions__end">
       <button class="btn btn-secondary" type="button" onclick={close}>Cancel</button>
-      <button class="btn btn-primary" type="button" onclick={save} disabled={error !== ''}>
-        Save request
+      <button
+        class="btn btn-primary"
+        type="button"
+        onclick={save}
+        disabled={error !== '' || saving}
+      >
+        {saving ? 'Saving…' : 'Save request'}
       </button>
     </div>
   </div>

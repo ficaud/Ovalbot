@@ -149,3 +149,14 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - **No backend/API/persistence, nothing triggered** — `Save` just closes (placeholder for Phase 4).
 - Unrelated to the admin card's "Bot settings" link (left unchanged).
 - Verified : `npm run check` (0 warning) + `npm run build` green.
+
+### 2026-10-17 — Ticket request modal (frontend) + transmission to the backend
+- Goal: let each user describe the tickets they want per match (one option per match), and transmit the parameters to the backend — bot integration and persistence come later.
+- Frontend: `BotSettingsModal.svelte` → `git mv` `TicketRequestModal.svelte`, rewritten. Exclusive modes (radio): **Single** (1–10, max price per ticket, bought as they become available), **Duo** (one pair, max price for the pair), **Group** (2–10 places, **pelouse only**, no price — the pelouse rate is automatic). Inactive fields stay `disabled` but keep their values. Prices stored in **cents**, validation mirrored in the UI (`Save` disabled + inline reason), `Remove request` only when a draft exists.
+- `frontend/src/lib/types.ts`: `TicketKind`, `TicketRequestDraft` (UI draft, three sub-objects) + `TicketRequestInput` (wire union, tagged on `kind`).
+- `frontend/src/lib/api.ts`: `putRequest(draft)` (`PUT /api/requests/{match_id}`), mapping draft → wire union lives here.
+- `+page.svelte`: `requests` keyed by match id, robot button turns active when a request exists, `saveRequest` is async — the modal stays open and shows the error if the server refuses.
+- Backend: `src/routes/tickets.rs` — `PUT /api/requests/{match_id}` (`ActiveUser`), payload = tagged enum `TicketRequestInput`, bounds validated (mirror of the modal, `MAX_PRICE_CENTS = 100_000`), then `tracing::info!` and `204`. New `AppError::InvalidTicketRequest` → `400 invalid_ticket_request`. `AppState` unchanged.
+- **No persistence, no `GET`/`DELETE`, no decision logic, no bot** — the frontend stays the source of truth for the UI (drafts are lost on reload, assumed).
+- Tests: 4 unit (`is_valid` per kind) + 3 route tests (`tests/routes.rs`: every kind → 204, out-of-range → 400, anonymous → 401 / waiting → 403). Smoke-tested end to end (`RUST_LOG=ovalbot=info` shows `ticket request received` with `user_id`/`match_id`/params).
+- Verified: `cargo test --workspace` green, clippy `-D warnings` + `fmt --check` green, `npm run check` (0 warning) + `npm run build` green.

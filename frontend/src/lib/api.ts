@@ -1,4 +1,12 @@
-import type { MatchView, RegisterResult, TeamView, UserView, VersionInfo } from './types';
+import type {
+  MatchView,
+  RegisterResult,
+  TeamView,
+  TicketRequestDraft,
+  TicketRequestInput,
+  UserView,
+  VersionInfo
+} from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -114,4 +122,28 @@ export async function updateNotificationSettings(
     body: JSON.stringify({ email_enabled: emailEnabled, telegram_enabled: telegramEnabled })
   });
   if (!res.ok) throw new ApiError(res.status, 'Failed to save notification settings');
+}
+
+function toTicketRequestInput(draft: TicketRequestDraft): TicketRequestInput {
+  switch (draft.kind) {
+    case 'single':
+      return {
+        kind: 'single',
+        quantity: draft.single.quantity,
+        max_price_cents: draft.single.maxPriceCents!
+      };
+    case 'duo':
+      return { kind: 'duo', max_price_cents: draft.duo.maxPriceCents! };
+    case 'group':
+      return { kind: 'group', places: draft.group.places };
+  }
+}
+
+export async function putRequest(draft: TicketRequestDraft): Promise<void> {
+  const res = await fetch(`/api/requests/${draft.matchId}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(toTicketRequestInput(draft))
+  });
+  if (!res.ok) throw new ApiError(res.status, 'Failed to send ticket request');
 }
