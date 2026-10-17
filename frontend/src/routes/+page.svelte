@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import type { PageData } from './$types';
   import type { MatchView, TeamView, TicketRequestDraft } from '#lib/types';
-  import { getNotifications, getTeamMatches, getTeams, subscribe, unsubscribe } from '#lib/api';
+  import { getNotifications, getTeamMatches, getTeams, putRequest, subscribe, unsubscribe } from '#lib/api';
   import NotificationSettingsModal from '#lib/components/NotificationSettingsModal.svelte';
   import TicketRequestModal from '#lib/components/TicketRequestModal.svelte';
 
@@ -19,7 +19,8 @@
   let settingsModal: ReturnType<typeof NotificationSettingsModal> | undefined;
   let requestModal: ReturnType<typeof TicketRequestModal> | undefined;
 
-  function saveRequest(draft: TicketRequestDraft) {
+  async function saveRequest(draft: TicketRequestDraft) {
+    await putRequest(draft);
     requests = { ...requests, [draft.matchId]: draft };
   }
 

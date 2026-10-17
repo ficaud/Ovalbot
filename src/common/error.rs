@@ -25,6 +25,8 @@ pub enum AppError {
     Forbidden,
     #[error("not found")]
     NotFound,
+    #[error("invalid ticket request")]
+    InvalidTicketRequest,
     #[error("telegram unavailable")]
     TelegramUnavailable,
 }
@@ -59,6 +61,11 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST,
                 "invalid_password",
                 "invalid password",
+            ),
+            AppError::InvalidTicketRequest => (
+                StatusCode::BAD_REQUEST,
+                "invalid_ticket_request",
+                "invalid ticket request",
             ),
             AppError::Sqlx(_) | AppError::Migrate(_) | AppError::Argon2(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

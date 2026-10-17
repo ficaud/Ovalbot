@@ -642,3 +642,79 @@ async fn telegram_webhook_links_chat(pool: SqlitePool) {
             .unwrap();
     assert_eq!(telegram_id.as_deref(), Some("12345"));
 }
+
+// ---- tickets ----
+
+#[sqlx::test]
+async fn ticket_request_accepts_every_kind(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    let app = app(pool);
+
+    let payloads = [
+        (
+            7,
+            json!({ "kind": "single", "quantity": 3, "max_price_cents": 4500 }),
+        ),
+        (8, json!({ "kind": "duo", "max_price_cents": 9000 })),
+        (9, json!({ "kind": "group", "places": 4 })),
+    ];
+
+    for (match_id, body) in payloads {
+        let (status, _, _) = call(
+            &app,
+            request(
+                "PUT",
+                &format!("/api/requests/{match_id}"),
+                Some(&cookie),
+                Some(body),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+}
+
+#[sqlx::test]
+async fn ticket_request_rejects_invalid_values(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    let app = app(pool);
+
+    let payloads = [
+        json!({ "kind": "single", "quantity": 0, "max_price_cents": 4500 }),
+        json!({ "kind": "single", "quantity": 11, "max_price_cents": 4500 }),
+        json!({ "kind": "single", "quantity": 2, "max_price_cents": 0 }),
+        json!({ "kind": "duo", "max_price_cents": 0 }),
+        json!({ "kind": "group", "places": 1 }),
+        json!({ "kind": "group", "places": 11 }),
+    ];
+
+    for body in payloads {
+        let (status, _, response) = call(
+            &app,
+            request("PUT", "/api/requests/7", Some(&cookie), Some(body)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&response)["error"], "invalid_ticket_request");
+    }
+}
+
+#[sqlx::test]
+async fn ticket_request_requires_active_account(pool: SqlitePool) {
+    let body = json!({ "kind": "duo", "max_price_cents": 9000 });
+
+    let (anonymous, _, _) = call(
+        &app(pool.clone()),
+        request("PUT", "/api/requests/7", None, Some(body.clone())),
+    )
+    .await;
+    assert_eq!(anonymous, StatusCode::UNAUTHORIZED);
+
+    let cookie = session_cookie(&pool, Status::Waiting, Role::User).await;
+    let (waiting, _, _) = call(
+        &app(pool),
+        request("PUT", "/api/requests/7", Some(&cookie), Some(body)),
+    )
+    .await;
+    assert_eq!(waiting, StatusCode::FORBIDDEN);
+}

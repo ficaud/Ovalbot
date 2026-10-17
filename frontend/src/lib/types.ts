@@ -46,3 +46,8 @@ export interface TicketRequestDraft {
   duo: { maxPriceCents: number | null };
   group: { places: number };
 }
+
+export type TicketRequestInput =
+  | { kind: 'single'; quantity: number; max_price_cents: number }
+  | { kind: 'duo'; max_price_cents: number }
+  | { kind: 'group'; places: number };
