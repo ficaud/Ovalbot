@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { PageData } from './$types';
-  import type { MatchView, TeamView } from '#lib/types';
+  import type { MatchView, TeamView, TicketRequestDraft } from '#lib/types';
   import { getNotifications, getTeamMatches, getTeams, subscribe, unsubscribe } from '#lib/api';
   import NotificationSettingsModal from '#lib/components/NotificationSettingsModal.svelte';
-  import BotSettingsModal from '#lib/components/BotSettingsModal.svelte';
+  import TicketRequestModal from '#lib/components/TicketRequestModal.svelte';
 
   let { data }: { data: PageData } = $props();
 
@@ -14,9 +14,20 @@
   let loading = $state(false);
   let subscribed: number[] = $state([]);
   let pending: number[] = $state([]);
+  let requests = $state<Record<number, TicketRequestDraft>>({});
 
   let settingsModal: ReturnType<typeof NotificationSettingsModal> | undefined;
-  let botModal: ReturnType<typeof BotSettingsModal> | undefined;
+  let requestModal: ReturnType<typeof TicketRequestModal> | undefined;
+
+  function saveRequest(draft: TicketRequestDraft) {
+    requests = { ...requests, [draft.matchId]: draft };
+  }
+
+  function removeRequest(matchId: number) {
+    const next = { ...requests };
+    delete next[matchId];
+    requests = next;
+  }
 
   async function refreshMatches() {
     loading = true;
@@ -110,10 +121,11 @@
               <div class="match-card__meta">
                 <button
                   class="bell"
+                  class:bell--active={requests[match.id] !== undefined}
                   type="button"
-                  aria-label="Bot settings"
-                  title="Bot settings"
-                  onclick={() => botModal?.open()}
+                  aria-label="Ticket request"
+                  title="Ticket request"
+                  onclick={() => requestModal?.open(match, requests[match.id] ?? null)}
                 >
                   <svg
                     viewBox="0 0 24 24"
@@ -202,7 +214,11 @@
   notifyTelegram={data.user.notify_telegram}
 />
 
-<BotSettingsModal bind:this={botModal} />
+<TicketRequestModal
+  bind:this={requestModal}
+  onsave={saveRequest}
+  onremove={removeRequest}
+/>
 
 <style>
   .matches {
