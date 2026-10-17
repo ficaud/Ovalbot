@@ -39,7 +39,10 @@ pub fn app(state: AppState) -> Router {
             "/api/notifications/{match_id}",
             post(notifications_routes::subscribe).delete(notifications_routes::unsubscribe),
         )
-        .route("/api/requests/{match_id}", put(tickets_routes::put_request))
+        .route(
+            "/api/requests/{match_id}",
+            put(tickets_routes::new_ticket_request).delete(tickets_routes::delete_ticket_request),
+        )
         .route(
             "/api/telegram/link",
             post(telegram_routes::link).delete(telegram_routes::unlink),

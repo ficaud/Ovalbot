@@ -8,6 +8,7 @@ use ovalbot::services::mailer;
 use ovalbot::services::notifications;
 use ovalbot::services::state::AppState;
 use ovalbot::services::telegram;
+use ovalbot::services::tickets::TicketManager;
 
 const SYNC_INTERVAL_SECS: u64 = 20 * 60;
 
@@ -35,6 +36,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("initial calendar sync failed: {e}");
     }
 
+    let tickets = Arc::new(TicketManager::default());
+
     // Initialize the state
     let state = AppState {
         pool,
@@ -42,6 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         telegram: telegram::from_env(),
         telegram_config: telegram::config_from_env(),
         calendar,
+        tickets,
     };
 
     // Register the Telegram webhook (best-effort, no-op when disabled)
