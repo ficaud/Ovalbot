@@ -700,6 +700,39 @@ async fn ticket_request_rejects_invalid_values(pool: SqlitePool) {
 }
 
 #[sqlx::test]
+async fn ticket_request_remove_requires_active_account(pool: SqlitePool) {
+    let (anonymous, _, _) = call(
+        &app(pool.clone()),
+        request("DELETE", "/api/requests/7", None, None),
+    )
+    .await;
+    assert_eq!(anonymous, StatusCode::UNAUTHORIZED);
+
+    let cookie = session_cookie(&pool, Status::Waiting, Role::User).await;
+    let (waiting, _, _) = call(
+        &app(pool),
+        request("DELETE", "/api/requests/7", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(waiting, StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+async fn ticket_request_remove_is_idempotent(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    let app = app(pool);
+
+    for _ in 0..2 {
+        let (status, _, _) = call(
+            &app,
+            request("DELETE", "/api/requests/7", Some(&cookie), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+}
+
+#[sqlx::test]
 async fn ticket_request_requires_active_account(pool: SqlitePool) {
     let body = json!({ "kind": "duo", "max_price_cents": 9000 });
 

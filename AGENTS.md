@@ -160,3 +160,10 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - **No persistence, no `GET`/`DELETE`, no decision logic, no bot** — the frontend stays the source of truth for the UI (drafts are lost on reload, assumed).
 - Tests: 4 unit (`is_valid` per kind) + 3 route tests (`tests/routes.rs`: every kind → 204, out-of-range → 400, anonymous → 401 / waiting → 403). Smoke-tested end to end (`RUST_LOG=ovalbot=info` shows `ticket request received` with `user_id`/`match_id`/params).
 - Verified: `cargo test --workspace` green, clippy `-D warnings` + `fmt --check` green, `npm run check` (0 warning) + `npm run build` green.
+
+### 2026-10-17 — Ticket request removal (transmission + log)
+- Goal: transmit the removal of a request to the backend, still without persistence.
+- Backend: `DELETE /api/requests/{match_id}` in `src/routes/tickets.rs` (`ActiveUser`, no `State`), logs `ticket request removed` with `user_id`/`match_id`, returns `204` — idempotent (a missing request is not an error). Route merged with `PUT` on the same path in `src/lib.rs`.
+- Frontend: `deleteRequest(matchId)` in `api.ts`; `+page.svelte`'s `removeRequest` is now async and updates the local map **only after** the server acknowledges (no optimistic removal); `TicketRequestModal.svelte` gains a `removing` state (`Removing…`, buttons disabled) and `saveError` → `serverError`, kept open on failure.
+- Tests: 2 route tests (`tests/routes.rs`: anonymous → 401 / waiting → 403, and two consecutive deletes → 204).
+- Verified: `cargo test --workspace` green (34 route tests), clippy `-D warnings` + `fmt --check` green, `npm run check` (0 warning) + `npm run build` green; smoke test shows `ticket request removed user_id=1 match_id=42` and `401` when anonymous.

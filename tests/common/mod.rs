@@ -9,6 +9,7 @@ use ovalbot::services::calendar::CalendarService;
 use ovalbot::services::mailer::{MailError, Mailer, MatchAlert, NoopMailer};
 use ovalbot::services::state::AppState;
 use ovalbot::services::telegram::{NoopTelegram, Telegram, TelegramConfig, TelegramError};
+use ovalbot::services::tickets::TicketManager;
 use sqlx::SqlitePool;
 
 pub struct RecordingMailer {
@@ -133,5 +134,6 @@ pub fn test_state_with(
         telegram,
         telegram_config,
         calendar: Arc::new(CalendarService::new()),
+        tickets: Arc::new(TicketManager::new()),
     }
 }

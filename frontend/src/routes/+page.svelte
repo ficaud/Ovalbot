@@ -2,7 +2,15 @@
   import { onMount } from 'svelte';
   import type { PageData } from './$types';
   import type { MatchView, TeamView, TicketRequestDraft } from '#lib/types';
-  import { getNotifications, getTeamMatches, getTeams, putRequest, subscribe, unsubscribe } from '#lib/api';
+  import {
+    deleteRequest,
+    getNotifications,
+    getTeamMatches,
+    getTeams,
+    putRequest,
+    subscribe,
+    unsubscribe
+  } from '#lib/api';
   import NotificationSettingsModal from '#lib/components/NotificationSettingsModal.svelte';
   import TicketRequestModal from '#lib/components/TicketRequestModal.svelte';
 
@@ -24,7 +32,8 @@
     requests = { ...requests, [draft.matchId]: draft };
   }
 
-  function removeRequest(matchId: number) {
+  async function removeRequest(matchId: number) {
+    await deleteRequest(matchId);
     const next = { ...requests };
     delete next[matchId];
     requests = next;

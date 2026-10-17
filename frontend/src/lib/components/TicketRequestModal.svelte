@@ -10,7 +10,7 @@
     onremove
   }: {
     onsave: (draft: TicketRequestDraft) => Promise<void>;
-    onremove: (matchId: number) => void;
+    onremove: (matchId: number) => Promise<void>;
   } = $props();
 
   let dialogEl: HTMLDialogElement;
@@ -23,7 +23,8 @@
   let duoPrice = $state<number | undefined>(undefined);
   let groupPlaces = $state<number | undefined>(4);
   let saving = $state(false);
-  let saveError = $state('');
+  let removing = $state(false);
+  let serverError = $state('');
 
   let error = $derived.by(() => {
     if (kind === 'single') {
@@ -70,7 +71,8 @@
     duoPrice = toEuros(draft?.duo.maxPriceCents ?? null);
     groupPlaces = draft?.group.places ?? 4;
     saving = false;
-    saveError = '';
+    removing = false;
+    serverError = '';
     dialogEl?.showModal();
   }
 
@@ -79,9 +81,9 @@
   }
 
   async function save() {
-    if (!match || error !== '' || saving) return;
+    if (!match || error !== '' || saving || removing) return;
     saving = true;
-    saveError = '';
+    serverError = '';
     try {
       await onsave({
         matchId: match.id,
@@ -97,16 +99,24 @@
       });
       close();
     } catch (err) {
-      saveError = err instanceof Error ? err.message : 'Failed to send ticket request';
+      serverError = err instanceof Error ? err.message : 'Failed to send ticket request';
     } finally {
       saving = false;
     }
   }
 
-  function remove() {
-    if (!match) return;
-    onremove(match.id);
-    close();
+  async function remove() {
+    if (!match || saving || removing) return;
+    removing = true;
+    serverError = '';
+    try {
+      await onremove(match.id);
+      close();
+    } catch (err) {
+      serverError = err instanceof Error ? err.message : 'Failed to remove ticket request';
+    } finally {
+      removing = false;
+    }
   }
 </script>
 
@@ -120,8 +130,8 @@
     <p class="muted">For {match.team} vs {match.opponent} — {match.kickoff}</p>
   {/if}
 
-  {#if saveError}
-    <div class="alert alert-error">{saveError}</div>
+  {#if serverError}
+    <div class="alert alert-error">{serverError}</div>
   {/if}
 
   <fieldset class="options">
@@ -229,15 +239,24 @@
 
   <div class="actions">
     {#if hasExisting}
-      <button class="btn btn-danger" type="button" onclick={remove}>Remove request</button>
+      <button
+        class="btn btn-danger"
+        type="button"
+        onclick={remove}
+        disabled={saving || removing}
+      >
+        {removing ? 'Removing…' : 'Remove request'}
+      </button>
     {/if}
     <div class="actions__end">
-      <button class="btn btn-secondary" type="button" onclick={close}>Cancel</button>
+      <button class="btn btn-secondary" type="button" onclick={close} disabled={saving || removing}>
+        Cancel
+      </button>
       <button
         class="btn btn-primary"
         type="button"
         onclick={save}
-        disabled={error !== '' || saving}
+        disabled={error !== '' || saving || removing}
       >
         {saving ? 'Saving…' : 'Save request'}
       </button>

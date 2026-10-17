@@ -147,3 +147,8 @@ export async function putRequest(draft: TicketRequestDraft): Promise<void> {
   });
   if (!res.ok) throw new ApiError(res.status, 'Failed to send ticket request');
 }
+
+export async function deleteRequest(matchId: number): Promise<void> {
+  const res = await fetch(`/api/requests/${matchId}`, { method: 'DELETE' });
+  if (!res.ok) throw new ApiError(res.status, 'Failed to remove ticket request');
+}

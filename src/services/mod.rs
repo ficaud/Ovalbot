@@ -5,4 +5,5 @@ pub mod mailer;
 pub mod notifications;
 pub mod state;
 pub mod telegram;
+pub mod tickets;
 pub mod waitlist;
