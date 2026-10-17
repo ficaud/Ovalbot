@@ -36,3 +36,13 @@ export interface MatchView {
   kickoff: string;
   status: string;
 }
+
+export type TicketKind = 'single' | 'duo' | 'group';
+
+export interface TicketRequestDraft {
+  matchId: number;
+  kind: TicketKind;
+  single: { quantity: number; maxPriceCents: number | null };
+  duo: { maxPriceCents: number | null };
+  group: { places: number };
+}
