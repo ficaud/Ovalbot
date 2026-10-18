@@ -13,3 +13,15 @@ pub fn stade_rochelais() -> Club {
         "https://billetterie.staderochelais.com/fr".to_string(),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stade_rochelais_points_to_the_ticketing_site() {
+        let club = stade_rochelais();
+        assert_eq!(club.name, "Stade Rochelais");
+        assert_eq!(club.get_url(), "https://billetterie.staderochelais.com/fr");
+    }
+}

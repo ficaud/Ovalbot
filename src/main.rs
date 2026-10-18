@@ -37,6 +37,44 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+#[cfg(test)]
+mod env_helpers_tests {
+    use super::*;
+
+    #[test]
+    fn env_flag_parses_variants() {
+        let name = "OVB_TEST_ENV_FLAG_A";
+        std::env::set_var(name, "1");
+        assert!(env_flag(name, false));
+        std::env::set_var(name, "TRUE");
+        assert!(env_flag(name, false));
+        std::env::set_var(name, "0");
+        assert!(!env_flag(name, true));
+        std::env::set_var(name, "false");
+        assert!(!env_flag(name, true));
+        std::env::set_var(name, " maybe ");
+        // Invalid values fall back to the default.
+        assert!(env_flag(name, true));
+        std::env::remove_var(name);
+        assert!(!env_flag(name, false));
+    }
+
+    #[test]
+    fn env_u64_parses_or_falls_back_to_default() {
+        let name = "OVB_TEST_ENV_U64_B";
+        std::env::set_var(name, "42");
+        assert_eq!(env_u64(name, 7), 42);
+        std::env::set_var(name, " 60 ");
+        assert_eq!(env_u64(name, 7), 60);
+        std::env::set_var(name, "not-a-number");
+        assert_eq!(env_u64(name, 7), 7);
+        std::env::set_var(name, "-3");
+        assert_eq!(env_u64(name, 7), 7);
+        std::env::remove_var(name);
+        assert_eq!(env_u64(name, 7), 7);
+    }
+}
+
 /// Uniquely identifies a resale seat across scans. The encounter is identified
 /// by its title + date (the only stable identifiers on the ticketing site —
 /// `Encounter.id` is a volatile counter), the seat by its site-native id.
@@ -230,7 +268,6 @@ mod tests {
                     row: "1".to_string(),
                     seat_number: pack_id,
                 },
-                preview_url: None,
             },
             price: price.to_string(),
         }

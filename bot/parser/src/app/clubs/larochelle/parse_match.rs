@@ -94,3 +94,164 @@ impl ParseMatch for LarochellMatchParser {
         parse_match(html)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Captured live from https://billetterie.staderochelais.com/fr on 2026-10-18.
+    const FIXTURE: &str = include_str!("fixtures/match_list.html");
+
+    #[test]
+    fn fixture_extracts_all_encounters() {
+        let encounters = parse_match(FIXTURE);
+        assert_eq!(encounters.len(), 31);
+
+        // The dedup filter leaves no duplicate (title, date) pair.
+        let mut unique = HashSet::new();
+        assert!(
+            encounters
+                .iter()
+                .all(|e| unique.insert((e.title.clone(), e.date.clone())))
+        );
+    }
+
+    #[test]
+    fn fixture_rugby_encounters() {
+        let encounters = parse_match(FIXTURE);
+        let rugby: Vec<&Encounter> = encounters
+            .iter()
+            .filter(|e| e.nature == MatchNature::Rugby)
+            .collect();
+        assert_eq!(rugby.len(), 5);
+        let titles: Vec<&str> = rugby.iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            vec![
+                "UNION BORDEAUX BÈGLES",
+                "AVIRON BAYONNAIS",
+                "USA PERPIGNAN",
+                "CASTRES OLYMPIQUE",
+                "SECTION PALOISE"
+            ]
+        );
+        assert_eq!(rugby[0].date, "dimanche 25 octobre à 21h05");
+    }
+
+    #[test]
+    fn fixture_sport_nature_counts() {
+        let encounters = parse_match(FIXTURE);
+        let count = |nature: MatchNature| encounters.iter().filter(|e| e.nature == nature).count();
+        // 7 "BASKET" badges, the rest: rugby (5), other events (19).
+        assert_eq!(count(MatchNature::Basketball), 7);
+        assert_eq!(count(MatchNature::Other), 19);
+    }
+
+    #[test]
+    fn fixture_resale_links() {
+        let encounters = parse_match(FIXTURE);
+        let with_link: Vec<(&str, &str)> = encounters
+            .iter()
+            .filter_map(|e| {
+                e.resale_link
+                    .as_ref()
+                    .map(|link| (e.title.as_str(), link.as_str()))
+            })
+            .collect();
+        assert_eq!(
+            with_link,
+            vec![
+                (
+                    "ÉVREUX",
+                    "https://billetterie.staderochelais.com/fr/product/1368/revente_j6_23_oct_stade_rochelais_evreux"
+                ),
+                (
+                    "UNION BORDEAUX BÈGLES",
+                    "https://billetterie.staderochelais.com/fr/product/1357/revente_j7_24_25_oct_stade_rochelais_ubb"
+                ),
+                (
+                    "DENAIN",
+                    "https://billetterie.staderochelais.com/fr/product/1371/revente_j8_06_nov_stade_rochelais_denain"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn badge_takes_priority_over_title_inference() {
+        let html = r#"<ul>
+            <li class="cards-grid__item">
+                <h3 class="title">STADE ROCHELAIS - ÉVREUX</h3>
+                <span class="date">samedi 6 juin 2026 à 14h00</span>
+                <span class="badge-event">BASKET</span>
+            </li>
+            <li class="cards-grid__item">
+                <h3 class="title">STADE ROCHELAIS X</h3>
+                <span class="date">dimanche 7 juin</span>
+            </li>
+            <li class="cards-grid__item">
+                <h3 class="title">REPAS D'AVANT-MATCH</h3>
+                <span class="date">dimanche 7 juin</span>
+                <span class="badge-event">REPAS</span>
+            </li>
+        </ul>"#;
+        let encounters = parse_match(html);
+        assert_eq!(encounters.len(), 3);
+        assert_eq!(encounters[0].nature, MatchNature::Basketball);
+        assert_eq!(encounters[1].nature, MatchNature::Rugby);
+        assert_eq!(encounters[2].nature, MatchNature::Other);
+    }
+
+    #[test]
+    fn resale_anchor_href_is_made_absolute() {
+        let html = r#"<ul><li class="cards-grid__item">
+            <h3 class="title">AVIRON BAYONNAIS</h3>
+            <span class="date">dimanche 8 novembre à 21h05</span>
+            <span class="badge-event">RUGBY</span>
+            <a href="/fr/product/1357/revente_x" class="btn-resale btn">Revente</a>
+        </li></ul>"#;
+        let encounters = parse_match(html);
+        assert_eq!(
+            encounters[0].resale_link.as_deref(),
+            Some("https://billetterie.staderochelais.com/fr/product/1357/revente_x")
+        );
+    }
+
+    #[test]
+    fn resale_button_without_href_is_ignored() {
+        // Only `<a class="btn-resale">` counts; the disabled `<button>` variant
+        // carries no offer.
+        let html = r#"<ul><li class="cards-grid__item">
+            <h3 class="title">AVIRON BAYONNAIS</h3>
+            <span class="date">dimanche 8 novembre à 21h05</span>
+            <button class="btn-resale btn unavailable">Revente</button>
+        </li></ul>"#;
+        let encounters = parse_match(html);
+        assert_eq!(encounters[0].resale_link, None);
+    }
+
+    #[test]
+    fn duplicates_and_titleless_cards_are_skipped() {
+        let html = r#"<ul>
+            <li class="cards-grid__item">
+                <h3 class="title">CASTRES OLYMPIQUE</h3>
+                <span class="date">week-end du 19/20 décembre</span>
+                <span class="badge-event">RUGBY</span>
+            </li>
+            <li class="cards-grid__item">
+                <h3 class="title">CASTRES OLYMPIQUE</h3>
+                <span class="date">week-end du 19/20 décembre</span>
+                <span class="badge-event">RUGBY</span>
+            </li>
+            <li class="cards-grid__item"><span class="date">samedi 6 juin</span></li>
+        </ul>"#;
+        let encounters = parse_match(html);
+        assert_eq!(encounters.len(), 1);
+        assert_eq!(encounters[0].title, "CASTRES OLYMPIQUE");
+    }
+
+    #[test]
+    fn empty_document_yields_no_encounters() {
+        assert!(parse_match("<html><body></body></html>").is_empty());
+    }
+}

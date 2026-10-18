@@ -42,3 +42,20 @@ impl Club {
         &self.url
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn club_new_stores_fields() {
+        let club = Club::new(
+            "Stade Rochelais".to_string(),
+            ClubType::StadeRochelais,
+            "https://example.com".to_string(),
+        );
+        assert_eq!(club.name, "Stade Rochelais");
+        assert!(matches!(club.club_type, ClubType::StadeRochelais));
+        assert_eq!(club.get_url(), "https://example.com");
+    }
+}

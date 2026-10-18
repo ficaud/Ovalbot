@@ -58,3 +58,65 @@ fn fetch_html(url: &str, proxy_mode: ProxyMode) -> Result<String, Box<dyn std::e
         proxy_mode,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    /// Binds a listener on an ephemeral port and serves a canned HTTP
+    /// response for the first `responses` connections.
+    fn serve(body: &'static str, responses: usize) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        thread::spawn(move || {
+            for stream in listener.incoming().take(responses) {
+                let mut stream = stream.expect("accept");
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{addr}/page")
+    }
+
+    #[test]
+    fn get_html_returns_the_server_body() {
+        let url = serve("<html>bonjour du mock</html>", 1);
+        let client = WebClient::new(ProxyMode::Disabled);
+        assert_eq!(
+            client.get_html(&url).unwrap(),
+            "<html>bonjour du mock</html>"
+        );
+    }
+
+    #[test]
+    fn get_html_fails_when_the_connection_is_refused() {
+        // Bind and drop to grab a port with nothing listening on it.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("local_addr").port();
+        drop(listener);
+
+        let client = WebClient::new(ProxyMode::Disabled);
+        assert!(
+            client
+                .get_html(&format!("http://127.0.0.1:{port}/"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn set_proxy_mode_updates_the_client() {
+        let mut client = WebClient::new(ProxyMode::Disabled);
+        assert_eq!(client.proxy_mode, ProxyMode::Disabled);
+        client.set_proxy_mode(ProxyMode::Rotating);
+        assert_eq!(client.proxy_mode, ProxyMode::Rotating);
+    }
+}

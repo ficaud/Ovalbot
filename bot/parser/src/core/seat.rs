@@ -12,7 +12,6 @@ pub struct SeatComposition {
 pub struct SeatInfo {
     pub full_name: String,
     pub composition: SeatComposition,
-    pub preview_url: Option<String>,
 }
 
 /// SeatId uniquely identifies a resale seat on the ticketing site:

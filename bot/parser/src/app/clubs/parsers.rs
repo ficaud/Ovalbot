@@ -2,7 +2,7 @@
 /// The `ParseMatch` trait provides a method for parsing match information and returning a list of `Encounter` instances,
 /// while the `ParseSeat` trait provides a method for parsing seat information and returning a list of `Seat` instances based on the provided HTML content and encounter information.
 use crate::core::encounter::Encounter;
-use crate::core::seat::{Seat, SeatComposition};
+use crate::core::seat::Seat;
 
 pub trait ParseMatch {
     fn parse_match(&self, html: &str) -> Vec<Encounter>;
@@ -10,8 +10,4 @@ pub trait ParseMatch {
 
 pub trait ParseSeat {
     fn parse_seat(&self, html: &str, encounter: Encounter) -> Vec<Seat>;
-}
-
-pub trait ParseSeatPreview {
-    fn fetch_preview_url(&self, composition: &SeatComposition) -> Option<String>;
 }

@@ -137,7 +137,6 @@ pub fn parse_seat(html: &str, _encounter: Encounter) -> Vec<Seat> {
                 seat_info: SeatInfo {
                     full_name: seat_text.clone(),
                     composition: get_seat_composition(&seat_text, &category),
-                    preview_url: None,
                 },
                 price: pack.amount_by_ticket.clone(),
             });
@@ -191,5 +190,113 @@ fn get_seat_composition(seat_info: &str, category: &str) -> SeatComposition {
 impl ParseSeat for LarochellSeatParser {
     fn parse_seat(&self, html: &str, encounter: Encounter) -> Vec<Seat> {
         parse_seat(html, encounter)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::club::ClubType;
+
+    // Captured live from a resale page (open basketball resale) on 2026-10-18:
+    // https://billetterie.staderochelais.com/fr/product/1368/revente_j6_23_oct_stade_rochelais_evreux
+    const FIXTURE: &str = include_str!("fixtures/seat_page.html");
+
+    fn sample_encounter() -> Encounter {
+        Encounter::new(
+            ClubType::StadeRochelais,
+            "REVENTE - ÉVREUX".to_string(),
+            "vendredi 23 octobre à 20h00".to_string(),
+            crate::core::encounter::MatchNature::Other,
+            None,
+        )
+    }
+
+    #[test]
+    fn fixture_seats_parsed() {
+        let seats = parse_seat(FIXTURE, sample_encounter());
+        assert_eq!(seats.len(), 3);
+
+        // Look seats up by ticket id: the tickets map is a HashMap, so the
+        // iteration order is not stable.
+        let by_ticket_id: HashMap<&str, &Seat> =
+            seats.iter().map(|s| (s.id.ticket_id.as_str(), s)).collect();
+
+        let s1 = by_ticket_id["49206"];
+        assert_eq!(s1.id.pack_id, 33696);
+        assert_eq!(s1.price, "32.00");
+        assert_eq!(s1.seat_info.full_name, "Rang H • Siège 57");
+        assert_eq!(s1.seat_info.composition.category, "CATÉGORIE 1");
+        assert_eq!(s1.seat_info.composition.row, "H");
+        assert_eq!(s1.seat_info.composition.seat_number, 57);
+
+        let s2 = by_ticket_id["49214"];
+        assert_eq!(s2.id.pack_id, 33701);
+        assert_eq!(s2.price, "24.00");
+        assert_eq!(s2.seat_info.composition.category, "CATÉGORIE 2");
+        assert_eq!(s2.seat_info.composition.row, "C");
+        assert_eq!(s2.seat_info.composition.seat_number, 8);
+
+        let s3 = by_ticket_id["49216"];
+        assert_eq!(s3.seat_info.composition.category, "CATÉGORIE 3");
+        assert_eq!(s3.seat_info.composition.seat_number, 6);
+    }
+
+    #[test]
+    fn malformed_pack_json_is_skipped() {
+        let html = r#"
+            <div class="js-listing-plain" data-json="not-json">invalid</div>
+            <div class="js-listing-plain" data-json="{&quot;pack_id&quot;:5,&quot;category_id&quot;:&quot;9&quot;,&quot;tickets&quot;:{&quot;t1&quot;:{&quot;seat_info&quot;:&quot;<span>Pelouse &bull; Rang 5 &bull; Si&amp;#232;ge 42</span>&quot;}},&quot;amount_by_ticket&quot;:&quot;15.00&quot;}"></div>
+            <script data-drupal-selector="drupal-settings-json">{"resale":{"attributes":{"9":{"name":"Pelouse"}}}}</script>
+        "#;
+        let seats = parse_seat(html, sample_encounter());
+        assert_eq!(seats.len(), 1);
+        assert_eq!(seats[0].id.pack_id, 5);
+        assert_eq!(seats[0].id.ticket_id, "t1");
+        assert_eq!(seats[0].price, "15.00");
+        assert_eq!(seats[0].seat_info.composition.category, "Pelouse");
+        assert_eq!(seats[0].seat_info.composition.row, "5");
+        assert_eq!(seats[0].seat_info.composition.seat_number, 42);
+    }
+
+    #[test]
+    fn page_without_settings_or_packs_yields_no_seats() {
+        assert!(parse_seat("<html><body></body></html>", sample_encounter()).is_empty());
+    }
+
+    #[test]
+    fn unknown_category_id_falls_back_to_empty_name() {
+        let html = r#"
+            <div class="js-listing-plain" data-json="{&quot;pack_id&quot;:7,&quot;category_id&quot;:&quot;999&quot;,&quot;tickets&quot;:{&quot;t9&quot;:{&quot;seat_info&quot;:&quot;<span>Pelouse &bull; Rang 1 &bull; Si&amp;#232;ge 2</span>&quot;}},&quot;amount_by_ticket&quot;:&quot;9.00&quot;}"></div>
+        "#;
+        let seats = parse_seat(html, sample_encounter());
+        assert_eq!(seats.len(), 1);
+        assert_eq!(seats[0].seat_info.composition.category, "");
+    }
+
+    #[test]
+    fn get_seat_composition_parses_known_parts() {
+        let composition =
+            get_seat_composition("Accès Tribune Or • Rang 5 • Siège 12", "Tribune Or");
+        assert_eq!(composition.category, "Tribune Or");
+        assert_eq!(composition.bloc, "");
+        assert_eq!(composition.row, "5");
+        assert_eq!(composition.seat_number, 12);
+
+        let composition = get_seat_composition("Bloc Nord • Rang 2 • Siège 8", "CATÉGORIE 2");
+        assert_eq!(composition.bloc, "Nord");
+        assert_eq!(composition.row, "2");
+        assert_eq!(composition.seat_number, 8);
+    }
+
+    #[test]
+    fn get_seat_composition_defaults_to_zeroes() {
+        let composition = get_seat_composition("", "");
+        assert_eq!(composition.row, "");
+        assert_eq!(composition.seat_number, 0);
+
+        let composition = get_seat_composition("Aucun détail", "Pelouse");
+        assert_eq!(composition.row, "");
+        assert_eq!(composition.seat_number, 0);
     }
 }

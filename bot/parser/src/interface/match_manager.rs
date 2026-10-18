@@ -1,14 +1,11 @@
 use crate::app::clubs::{
-    larochelle::{
-        parse_match::LarochellMatchParser, parse_seat::LarochellSeatParser,
-        parse_seat_preview::LarochellSeatPreviewParser,
-    },
-    parsers::{ParseMatch, ParseSeat, ParseSeatPreview},
+    larochelle::{parse_match::LarochellMatchParser, parse_seat::LarochellSeatParser},
+    parsers::{ParseMatch, ParseSeat},
 };
 use crate::controller::html_extract::FetchHtml;
 use crate::core::club::Club;
 use crate::core::encounter::{Encounter, MatchNature};
-use crate::core::seat::{Seat, SeatComposition};
+use crate::core::seat::Seat;
 use crate::interface::curl::proxy::ProxyMode;
 /// This module is the top-level API of the parser crate: it retrieves the match list and
 /// the resale seats for the supported club. It holds no persistent state and performs no
@@ -109,15 +106,97 @@ fn get_seats(html: &str, encounter: Encounter) -> Vec<Seat> {
     parser.parse_seat(html, encounter)
 }
 
-/// Fetches the Pacifa3D preview image URL for a given seat composition.
-///
-/// # Arguments
-/// * `club` - The club the seat belongs to
-/// * `composition` - The seat composition (access, row, seat number) to resolve
-/// # Returns
-/// `Some(url)` if the preview image was found, `None` otherwise
-pub fn get_seat_preview(_club: &Club, composition: &SeatComposition) -> Option<String> {
-    // SR only: the Stade Rochelais preview parser is the only implementation.
-    let parser: &dyn ParseSeatPreview = &LarochellSeatPreviewParser;
-    parser.fetch_preview_url(composition)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::club::ClubType;
+    use crate::interface::club_manager;
+
+    const MATCH_LIST: &str = include_str!("../app/clubs/larochelle/fixtures/match_list.html");
+    const SEAT_PAGE: &str = include_str!("../app/clubs/larochelle/fixtures/seat_page.html");
+
+    struct Stub {
+        html: Result<String, String>,
+    }
+
+    impl FetchHtml for Stub {
+        fn get_html(&self, _url: &str) -> Result<String, String> {
+            self.html.clone()
+        }
+    }
+
+    fn ok(html: &'static str) -> Stub {
+        Stub {
+            html: Ok(html.to_string()),
+        }
+    }
+
+    fn failing() -> Stub {
+        Stub {
+            html: Err("connection reset".to_string()),
+        }
+    }
+
+    #[test]
+    fn get_matches_filters_by_nature() {
+        let club = club_manager::stade_rochelais();
+        let rugby = get_matches(&club, &ok(MATCH_LIST), MatchNature::Rugby);
+        assert_eq!(rugby.len(), 5);
+        assert!(rugby.iter().all(|e| e.nature == MatchNature::Rugby));
+
+        let basket = get_matches(&club, &ok(MATCH_LIST), MatchNature::Basketball);
+        assert_eq!(basket.len(), 7);
+
+        let other = get_matches(&club, &ok(MATCH_LIST), MatchNature::Other);
+        assert_eq!(other.len(), 19);
+    }
+
+    #[test]
+    fn get_matches_returns_empty_on_fetch_error() {
+        let club = club_manager::stade_rochelais();
+        let empty = get_matches(&club, &failing(), MatchNature::Rugby);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn get_encounters_with_seats_populates_seats_from_resale_page() {
+        let encounter = Encounter::new(
+            ClubType::StadeRochelais,
+            "REVENTE - ÉVREUX".to_string(),
+            "vendredi 23 octobre à 20h00".to_string(),
+            MatchNature::Other,
+            Some("https://billetterie.staderochelais.com/fr/product/1368/x".to_string()),
+        );
+        let out = get_encounters_with_seats(vec![encounter], &ok(SEAT_PAGE));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].seats.as_ref().map(|s| s.len()), Some(3));
+    }
+
+    #[test]
+    fn get_encounters_without_resale_link_get_empty_seats() {
+        let encounter = Encounter::new(
+            ClubType::StadeRochelais,
+            "AVIRON BAYONNAIS".to_string(),
+            "dimanche 8 novembre à 21h05".to_string(),
+            MatchNature::Rugby,
+            None,
+        );
+        let out = get_encounters_with_seats(vec![encounter], &ok(MATCH_LIST));
+        assert_eq!(out[0].seats.as_ref().map(|s| s.len()), Some(0));
+    }
+
+    #[test]
+    fn get_encounters_keep_seats_unset_on_fetch_error() {
+        let encounter = Encounter::new(
+            ClubType::StadeRochelais,
+            "UNION BORDEAUX BÈGLES".to_string(),
+            "dimanche 25 octobre à 21h05".to_string(),
+            MatchNature::Rugby,
+            Some("https://billetterie.staderochelais.com/fr/product/1357/x".to_string()),
+        );
+        let out = get_encounters_with_seats(vec![encounter], &failing());
+        assert_eq!(out.len(), 1);
+        assert!(out[0].seats.is_none());
+        assert!(out[0].resale_link.is_some());
+    }
 }
