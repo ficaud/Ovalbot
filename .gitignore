@@ -22,3 +22,10 @@ data/
 
 # Live calendar snapshots captured for manual comparison (not committed)
 /calendar/src/parse/fixtures/captured/
+
+# Imported bot: local secrets & runtime data (never committed)
+/bot/.env
+/bot/.private/
+/bot/config_scan.json
+/bot/proxies.txt
+/bot/parser/.env

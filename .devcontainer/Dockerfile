@@ -22,7 +22,7 @@ ENV TZ=UTC
 # 1. System dependencies
 # ------------------------------------------------------------------
 RUN apt-get update \
-    && packages="build-essential pkg-config git wget curl ca-certificates libsqlite3-dev sqlite3 sudo" \
+    && packages="build-essential pkg-config git wget curl ca-certificates libsqlite3-dev sqlite3 libcurl4-openssl-dev sudo" \
     && ok=0 \
     && for i in 1 2 3 4 5; do \
         apt-get install -y --no-install-recommends $packages \
@@ -54,6 +54,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-delay 5 https://sh.ru
 WORKDIR /tmp/prefetch
 COPY Cargo.toml Cargo.lock ./
 COPY calendar ./calendar
+COPY bot ./bot
 RUN mkdir -p src && echo "fn main() {}" > src/main.rs \
     && cargo fetch \
     && rm -rf src
