@@ -51,3 +51,22 @@ export type TicketRequestInput =
   | { kind: 'single'; quantity: number; max_price_cents: number }
   | { kind: 'duo'; max_price_cents: number }
   | { kind: 'group'; places: number };
+
+export type TicketRequestStatus =
+  | 'pending'
+  | 'accepted'
+  | 'purchased'
+  | 'failed'
+  | 'expired'
+  | 'cancelled';
+
+export interface TicketRequestView {
+  match_id: number;
+  kind: TicketKind;
+  quantity: number | null;
+  max_price_cents: number | null;
+  places: number | null;
+  status: TicketRequestStatus;
+  created_at: string;
+  updated_at: string;
+}

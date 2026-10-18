@@ -35,8 +35,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("initial calendar sync failed: {e}");
     }
 
-    let calendar = Arc::new(CalendarService::new());
-
     // Initialize the state
     let state = AppState {
         pool,

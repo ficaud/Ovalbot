@@ -4,6 +4,7 @@ import type {
   TeamView,
   TicketRequestDraft,
   TicketRequestInput,
+  TicketRequestView,
   UserView,
   VersionInfo
 } from './types';
@@ -137,6 +138,20 @@ function toTicketRequestInput(draft: TicketRequestDraft): TicketRequestInput {
     case 'group':
       return { kind: 'group', places: draft.group.places };
   }
+}
+
+export async function listRequests(): Promise<TicketRequestView[]> {
+  return parse<TicketRequestView[]>(await fetch('/api/requests'));
+}
+
+export function toTicketRequestDraft(view: TicketRequestView): TicketRequestDraft {
+  return {
+    matchId: view.match_id,
+    kind: view.kind,
+    single: { quantity: view.quantity ?? 1, maxPriceCents: view.max_price_cents },
+    duo: { maxPriceCents: view.max_price_cents },
+    group: { places: view.places ?? 4 }
+  };
 }
 
 export async function putRequest(draft: TicketRequestDraft): Promise<void> {
