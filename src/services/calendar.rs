@@ -65,6 +65,12 @@ impl CalendarService {
             .collect()
     }
 
+    /// Returns a full clone of the in-memory calendar snapshot. The bot scan
+    /// loop uses it to resolve encounters to match ids without extra queries.
+    pub fn snapshot(&self) -> Vec<Event> {
+        self.events.read().expect("calendar cache poisoned").clone()
+    }
+
     pub fn home_matches(&self, team: TeamType) -> Vec<MatchView> {
         let events = self.events.read().expect("calendar cache poisoned");
         let upcoming = upcoming(&events);
