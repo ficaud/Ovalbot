@@ -178,3 +178,14 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - Tests: 9 service integration tests (new `tests/tickets.rs`: insert/update-in-place with `created_at` preservation, per-user isolation, kind switch nulls out outgoing columns, locked upsert/remove, scoped sorted list, user-delete cascade, CHECK violation rejection) + 7 new route tests (persistence, second PUT updates in place, survives a new `app()` over the same pool, delete removes from list, list scoped/auth-guarded, locked → `409`).
 - Verified: `cargo test --workspace` green (28 lib unit incl. `columns_maps_each_kind`, 9 tickets, 41 routes), `cargo fmt --check` + `clippy --all-targets -D warnings` green, `npm run check` (0 warning). Note: full `cargo test` OOM-killed the linker once on this arm64 box; rerun with `--jobs 2` is enough.
 - Remaining (later): frontend sync via `GET /api/requests` (load + prefill modal), bot Phase 4 (`candidates(match_id)` + atomic `claim()`), optional match snapshot columns.
+
+### 2026-10-18 — Frontend reload of ticket requests
+- Goal: after a reload, the user still sees the matches they sent ticket requests for (robot button active, modal prefilled, removal possible).
+- `types.ts`: `TicketRequestStatus` (6 unions) + `TicketRequestView` (wire shape of `GET /api/requests`, snake_case like `UserView`/`MatchView`).
+- `api.ts`: `listRequests()` + `toTicketRequestDraft(view)` (inverse of `toTicketRequestDraft`'s input mapping; inactive sub-objects stay null/default, the modal already tolerates that).
+- `+page.svelte`: `statuses` map keyed by match id; `onMount` loads teams/notifications/requests with `Promise.all` (`listRequests().catch(() => [])` so an expired session doesn't block the page); `saveRequest`/`removeRequest` keep `statuses` in sync; the robot `open()` call passes `statuses[match.id]`.
+- `TicketRequestModal.svelte`: `open(selected, draft, existingStatus?)` + `locked` derived from `status !== 'pending'`. When locked (accepted/purchased/…): inline alert “This request is now “ACCEPTED” and can no longer be modified.”, whole `<fieldset disabled>` (radios + inputs) and both `Save`/`Remove` buttons disabled — avoids a bare 409.
+- Cleanup: removed a duplicate `let calendar = Arc::new(...)` in `main.rs` (shadowing leftover from the `TicketManager` removal).
+- Smoke test (real server): login as admin → `PUT /api/requests/42` → `GET /api/requests` returns the exact wire shape (`match_id`, `kind`, `quantity`, `max_price_cents`, `places`, `status`, timestamps); log shows `ticket request created user_id=1 match_id=42`; bundle checked (`api/requests` present in the built JS).
+- Verified: `npm run check` (0 warning) + `npm run build` green, `cargo fmt --check` + `clippy --all-targets -D warnings` green.
+- Remaining (later): cross-team “my requests” summary, bot Phase 4.

@@ -1,5 +1,10 @@
 <script lang="ts">
-  import type { MatchView, TicketKind, TicketRequestDraft } from '#lib/types';
+  import type {
+    MatchView,
+    TicketKind,
+    TicketRequestDraft,
+    TicketRequestStatus
+  } from '#lib/types';
 
   const MAX_SINGLE = 10;
   const MIN_GROUP = 2;
@@ -25,6 +30,10 @@
   let saving = $state(false);
   let removing = $state(false);
   let serverError = $state('');
+  let status = $state<TicketRequestStatus | undefined>(undefined);
+
+  // A request that left `pending` can no longer be modified (the backend answers 409).
+  let locked = $derived(status !== undefined && status !== 'pending');
 
   let error = $derived.by(() => {
     if (kind === 'single') {
@@ -62,7 +71,11 @@
     return cents === null ? undefined : cents / 100;
   }
 
-  export function open(selected: MatchView, draft: TicketRequestDraft | null) {
+  export function open(
+    selected: MatchView,
+    draft: TicketRequestDraft | null,
+    existingStatus?: TicketRequestStatus
+  ) {
     match = selected;
     hasExisting = draft !== null;
     kind = draft?.kind ?? 'single';
@@ -70,6 +83,7 @@
     singlePrice = toEuros(draft?.single.maxPriceCents ?? null);
     duoPrice = toEuros(draft?.duo.maxPriceCents ?? null);
     groupPlaces = draft?.group.places ?? 4;
+    status = existingStatus;
     saving = false;
     removing = false;
     serverError = '';
@@ -81,7 +95,7 @@
   }
 
   async function save() {
-    if (!match || error !== '' || saving || removing) return;
+    if (!match || error !== '' || saving || removing || locked) return;
     saving = true;
     serverError = '';
     try {
@@ -106,7 +120,7 @@
   }
 
   async function remove() {
-    if (!match || saving || removing) return;
+    if (!match || saving || removing || locked) return;
     removing = true;
     serverError = '';
     try {
@@ -134,7 +148,13 @@
     <div class="alert alert-error">{serverError}</div>
   {/if}
 
-  <fieldset class="options">
+  {#if locked && status}
+    <div class="alert alert-error">
+      This request is now “{status.toUpperCase()}” and can no longer be modified.
+    </div>
+  {/if}
+
+  <fieldset class="options" disabled={locked}>
     <legend>Choose one option for this match.</legend>
 
     <div class="option" class:option--active={kind === 'single'}>
@@ -243,7 +263,7 @@
         class="btn btn-danger"
         type="button"
         onclick={remove}
-        disabled={saving || removing}
+        disabled={saving || removing || locked}
       >
         {removing ? 'Removing…' : 'Remove request'}
       </button>
@@ -256,7 +276,7 @@
         class="btn btn-primary"
         type="button"
         onclick={save}
-        disabled={error !== '' || saving || removing}
+        disabled={error !== '' || saving || removing || locked}
       >
         {saving ? 'Saving…' : 'Save request'}
       </button>

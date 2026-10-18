@@ -1,14 +1,21 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { PageData } from './$types';
-  import type { MatchView, TeamView, TicketRequestDraft } from '#lib/types';
+  import type {
+    MatchView,
+    TeamView,
+    TicketRequestDraft,
+    TicketRequestStatus
+  } from '#lib/types';
   import {
     deleteRequest,
     getNotifications,
     getTeamMatches,
     getTeams,
+    listRequests,
     putRequest,
     subscribe,
+    toTicketRequestDraft,
     unsubscribe
   } from '#lib/api';
   import NotificationSettingsModal from '#lib/components/NotificationSettingsModal.svelte';
@@ -23,6 +30,7 @@
   let subscribed: number[] = $state([]);
   let pending: number[] = $state([]);
   let requests = $state<Record<number, TicketRequestDraft>>({});
+  let statuses = $state<Record<number, TicketRequestStatus>>({});
 
   let settingsModal: ReturnType<typeof NotificationSettingsModal> | undefined;
   let requestModal: ReturnType<typeof TicketRequestModal> | undefined;
@@ -30,6 +38,7 @@
   async function saveRequest(draft: TicketRequestDraft) {
     await putRequest(draft);
     requests = { ...requests, [draft.matchId]: draft };
+    statuses = { ...statuses, [draft.matchId]: 'pending' };
   }
 
   async function removeRequest(matchId: number) {
@@ -37,6 +46,9 @@
     const next = { ...requests };
     delete next[matchId];
     requests = next;
+    const nextStatuses = { ...statuses };
+    delete nextStatuses[matchId];
+    statuses = nextStatuses;
   }
 
   async function refreshMatches() {
@@ -65,8 +77,18 @@
   }
 
   onMount(async () => {
-    teams = await getTeams();
-    subscribed = await getNotifications();
+    const [teamList, notifications, stored] = await Promise.all([
+      getTeams(),
+      getNotifications(),
+      // Non-critical: the page stays usable if the session just expired.
+      listRequests().catch(() => [])
+    ]);
+    teams = teamList;
+    subscribed = notifications;
+    requests = Object.fromEntries(
+      stored.map((view) => [view.match_id, toTicketRequestDraft(view)])
+    );
+    statuses = Object.fromEntries(stored.map((view) => [view.match_id, view.status]));
     await refreshMatches();
   });
 </script>
@@ -135,7 +157,8 @@
                   type="button"
                   aria-label="Ticket request"
                   title="Ticket request"
-                  onclick={() => requestModal?.open(match, requests[match.id] ?? null)}
+                  onclick={() =>
+                    requestModal?.open(match, requests[match.id] ?? null, statuses[match.id])}
                 >
                   <svg
                     viewBox="0 0 24 24"

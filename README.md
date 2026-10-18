@@ -159,6 +159,25 @@ site, run:
 cargo test capture_lnr_fixture -- --ignored
 ```
 
+### Useful SQL commands to check the databases
+
+How to get the list of ticket requests emit by users:
+
+```sql
+sqlite3 -box ovalbot.db "
+SELECT u.email,
+       tr.match_id,
+       tr.kind,
+       tr.quantity,
+       tr.max_price_cents,
+       tr.places,
+       tr.status,
+       tr.updated_at
+FROM ticket_requests tr
+JOIN users u ON u.id = tr.user_id
+ORDER BY u.email, tr.match_id;"
+```
+
 ## Deployment (Raspberry Pi, arm64)
 
 `deploy.yml` builds a `linux/arm64` image and publishes it to GHCR on every `v*`
