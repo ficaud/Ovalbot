@@ -12,10 +12,11 @@ RUN npm run build
 FROM rust:1-slim AS builder
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends pkg-config libsqlite3-dev \
+    && apt-get install -y --no-install-recommends pkg-config libsqlite3-dev libcurl4-openssl-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY calendar ./calendar
+COPY bot ./bot
 COPY src ./src
 COPY migrations ./migrations
 COPY templates ./templates
@@ -24,7 +25,7 @@ RUN cargo build --release
 # ---------- Stage 3 : image runtime minimale ----------
 FROM debian:trixie-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates libcurl4 libssl3 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/release/ovalbot /usr/local/bin/ovalbot

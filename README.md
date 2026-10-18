@@ -117,6 +117,10 @@ The backend reads these environment variables:
 | `TELEGRAM_BOT_USERNAME` | *(empty)* | Bot username (without `@`), used to build the account-linking deep link. |
 | `TELEGRAM_WEBHOOK_URL` | *(empty)* | Public HTTPS URL of this app; registered via `setWebhook` at startup. |
 | `TELEGRAM_WEBHOOK_SECRET` | *(empty)* | Secret token Telegram sends in `X-Telegram-Bot-Api-Secret-Token`, verified on every update. |
+| `BOT_ENABLED` | `false` | Set `true` to run the ticket resale scanner loop. Results are logged only for now (no notifications yet). |
+| `BOT_SCAN_INTERVAL_SECS` | `300` | Seconds between two scans of the ticketing website. |
+| `PROXY_ENABLED` | `false` | Set `true` to route scanner requests through the proxy pool. |
+| `PROXIES_FILE` | *(empty)* | Path to a `ip:port` proxy list; required for a real pool (otherwise nothing to rotate). |
 
 See `.env.example` for a ready-to-copy template.
 
