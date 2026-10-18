@@ -5,10 +5,12 @@ use ovalbot::app;
 use ovalbot::common::db;
 use ovalbot::services::calendar::CalendarService;
 use ovalbot::services::mailer;
+use ovalbot::services::matching;
 use ovalbot::services::notifications;
 use ovalbot::services::state::AppState;
 use ovalbot::services::telegram;
 
+use calendar::Event;
 use parser::core::encounter::{Encounter, MatchNature};
 use parser::interface::club_manager;
 use parser::interface::curl::proxy::set_proxy_enabled;
@@ -108,15 +110,17 @@ fn collect_seat_keys(encounters: &[Encounter]) -> HashSet<SeatKey> {
 }
 
 /// Logs the results of a bot scan, diffed against the previous one: the info
-/// summary is emitted on every scan, but the per-seat details are only logged
-/// for seats that were not seen in the previous scan. Étape 1 only: no
-/// persistence, no notification — the goal is to validate the scan pipeline
-/// in the terminal.
+/// summary is emitted on every scan, every encounter is resolved against the
+/// calendar snapshot (match id = LNR id, the same one `ticket_requests` use),
+/// and the per-seat details are only logged for seats that were not seen in
+/// the previous scan. Étape 1 only: no persistence, no notification — the
+/// goal is to validate the scan pipeline in the terminal.
 ///
 /// Returns the full set of current seat keys, to be passed back as `previous`
 /// on the next iteration.
 fn log_scanned_encounters(
     encounters: &[Encounter],
+    events: &[Event],
     previous: &HashSet<SeatKey>,
 ) -> HashSet<SeatKey> {
     let current = collect_seat_keys(encounters);
@@ -131,6 +135,19 @@ fn log_scanned_encounters(
     );
 
     for encounter in encounters {
+        let event_id = match matching::resolve(encounter, events) {
+            Ok(match_id) => Some(match_id),
+            Err(e) => {
+                tracing::debug!(
+                    title = %encounter.title,
+                    date = %encounter.date,
+                    error = %e,
+                    "bot scan: encounter not resolved"
+                );
+                None
+            }
+        };
+
         let Some(seats) = encounter.seats.as_ref().filter(|seats| !seats.is_empty()) else {
             continue;
         };
@@ -144,7 +161,8 @@ fn log_scanned_encounters(
             if previous.contains(&key) {
                 continue;
             }
-            tracing::debug!(
+            tracing::info!(
+                event_id = ?event_id,
                 title = %encounter.title,
                 date = %encounter.date,
                 category = %seat.seat_info.composition.category,
@@ -163,7 +181,7 @@ fn log_scanned_encounters(
 /// Starts the ticket resale scanner loop (the bot). Disabled by default; enable
 /// with `BOT_ENABLED=true`, tune the interval with `BOT_SCAN_INTERVAL_SECS`.
 /// Proxies are off unless `PROXY_ENABLED=true` (and `PROXIES_FILE` set).
-fn spawn_bot_scan_loop() {
+fn spawn_bot_scan_loop(calendar: Arc<CalendarService>) {
     if !env_flag("BOT_ENABLED", true) {
         tracing::info!("bot scan disabled (set BOT_ENABLED=true to enable)");
         return;
@@ -181,14 +199,17 @@ fn spawn_bot_scan_loop() {
         loop {
             interval.tick().await;
             let encounters = run_scan(club.clone(), MatchNature::Rugby).await;
-            previous = log_scanned_encounters(&encounters, &previous);
+            // Resolve every encounter against the calendar snapshot: it is
+            // populated by the first sync, started before this loop.
+            let events = calendar.snapshot();
+            previous = log_scanned_encounters(&encounters, &events, &previous);
         }
     });
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initalize the mailing resend service
+    // Initialize the mailing resend service
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -223,7 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     telegram::register_webhook().await;
 
     // Start the ticket resale scanner (bot) if enabled
-    spawn_bot_scan_loop();
+    spawn_bot_scan_loop(state.calendar.clone());
 
     // Start the calendar sync service
     let sync_state = state.clone();
@@ -251,6 +272,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calendar::{Event, MatchStatus, Team, TeamType};
     use parser::core::club::ClubType;
     use parser::core::seat::{Seat, SeatComposition, SeatId, SeatInfo};
 
@@ -301,11 +323,11 @@ mod tests {
             ),
         ];
 
-        let first = log_scanned_encounters(&encounters, &HashSet::new());
+        let first = log_scanned_encounters(&encounters, &[], &HashSet::new());
         assert_eq!(first.len(), 3);
 
         // Identical scan: nothing new, same state returned.
-        let second = log_scanned_encounters(&encounters, &first);
+        let second = log_scanned_encounters(&encounters, &[], &first);
         assert_eq!(second, first);
         assert_eq!(second.difference(&first).count(), 0);
     }
@@ -324,8 +346,8 @@ mod tests {
             vec![seat(1001, "42", "45.00 €"), seat(1001, "43", "49.00 €")],
         )];
 
-        let previous = log_scanned_encounters(&before, &HashSet::new());
-        let current = log_scanned_encounters(&after, &previous);
+        let previous = log_scanned_encounters(&before, &[], &HashSet::new());
+        let current = log_scanned_encounters(&after, &[], &previous);
 
         let new_keys: Vec<_> = current.difference(&previous).collect();
         assert_eq!(new_keys.len(), 1);
@@ -343,7 +365,7 @@ mod tests {
             vec![seat(1001, "42", "45.00 €")],
         )];
 
-        let first = log_scanned_encounters(&encounters, &HashSet::new());
+        let first = log_scanned_encounters(&encounters, &[], &HashSet::new());
 
         // Seat sold: gone from resale.
         let sold_out = vec![encounter_with_seats(
@@ -351,11 +373,11 @@ mod tests {
             "dimanche 8 novembre à 21h05",
             vec![],
         )];
-        let emptied = log_scanned_encounters(&sold_out, &first);
+        let emptied = log_scanned_encounters(&sold_out, &[], &first);
         assert!(emptied.is_empty());
 
         // Seat re-listed with the same ids: detected as new again.
-        let back = log_scanned_encounters(&encounters, &emptied);
+        let back = log_scanned_encounters(&encounters, &[], &emptied);
         assert_eq!(back.difference(&emptied).count(), 1);
         assert_eq!(back, first);
     }
@@ -374,5 +396,34 @@ mod tests {
 
         let keys = collect_seat_keys(&[no_seats]);
         assert!(keys.is_empty());
+    }
+
+    // The calendar snapshot only feeds the event_id log field: the collected
+    // seat keys are identical with or without a matching event.
+    #[test]
+    fn events_do_not_change_the_collected_keys() {
+        let encounters = vec![encounter_with_seats(
+            "AVIRON BAYONNAIS",
+            "dimanche 8 novembre à 21h05",
+            vec![seat(1001, "42", "45.00 €")],
+        )];
+
+        let team = |team_type: TeamType| Team {
+            id: team_type.id().to_string(),
+            name: team_type.to_string(),
+            team_type,
+        };
+        let event = Event {
+            id: 11877,
+            team: team(TeamType::StadeRochelais),
+            opponent: team(TeamType::AvironBayonnais),
+            kickoff: "samedi 7 novembre – dimanche 8 novembre 21h05".to_string(),
+            status: MatchStatus::Scheduled,
+        };
+
+        assert_eq!(
+            log_scanned_encounters(&encounters, &[event], &HashSet::new()),
+            log_scanned_encounters(&encounters, &[], &HashSet::new())
+        );
     }
 }

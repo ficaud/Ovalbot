@@ -156,7 +156,7 @@ DATABASE_URL="sqlite:///tmp/test.db" cargo run --bin create_admin -- --email adm
 
 ## Database SQL commands for testing persistence
 
-_Note : These commands can also be run on .sqlite files created by the ovalbot on a raspberry pi for instance._
+_Note : These commands can also be run on .sqlite files created by the ovalbot on a raspberry pi for instance.
 
 How to get the list of ticket requests emit by users:
 

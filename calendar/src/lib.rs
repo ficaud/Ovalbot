@@ -15,6 +15,6 @@ pub mod team;
 pub use error::{FetchError, ParseError};
 pub use event::{Event, MatchStatus};
 pub use fetcher::WebPageFetcher;
-pub use match_date::MatchDate;
+pub use match_date::{parse_window, DateWindow, MatchDate};
 pub use schedule::{diff, for_team, upcoming, Change};
 pub use team::{Team, TeamType};

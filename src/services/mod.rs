@@ -2,6 +2,7 @@ pub mod auth;
 pub mod calendar;
 pub mod email;
 pub mod mailer;
+pub mod matching;
 pub mod notifications;
 pub mod state;
 pub mod telegram;
