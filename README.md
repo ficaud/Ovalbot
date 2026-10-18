@@ -24,6 +24,7 @@ OvalBot emails you when a TOP14 match gets a confirmed date, and shows the Stade
 
 - `src/` — Rust backend (Axum server + `create_admin` CLI)
 - `calendar/` - Rust backend responsible for parsing the Top14 calendar.
+- `bot/` - Rust bacj responsible for scanning the ticketing website.
 - `migrations/` — SQL migrations (sqlx, embedded at runtime).
 - `frontend/` — SvelteKit app (Svelte 5, `adapter-static`).
 - `doc/specs/` — specifications (`cdc.md` + per-phase specs).
@@ -149,17 +150,9 @@ Open http://localhost:5173 (ports 5173 and 3000 are forwarded in the devcontaine
 DATABASE_URL="sqlite:///tmp/test.db" cargo run --bin create_admin -- --email admin@example.com --password password123
 ```
 
-## Calendar crate testing
+## Database SQL commands for testing persistence
 
-The LNR parser tests (`calendar/src/parse/lnr.rs`) read committed HTML fixtures
-from `calendar/src/parse/fixtures/`. To regenerate those fixtures from the live
-site, run:
-
-```bash
-cargo test capture_lnr_fixture -- --ignored
-```
-
-### Useful SQL commands to check the databases
+_Note : These commands can also be run on .sqlite files created by the ovalbot on a raspberry pi for instance._
 
 How to get the list of ticket requests emit by users:
 
@@ -176,6 +169,41 @@ SELECT u.email,
 FROM ticket_requests tr
 JOIN users u ON u.id = tr.user_id
 ORDER BY u.email, tr.match_id;"
+```
+
+Detailed view : un match_id par ligne
+
+```sql
+sqlite3 -box ovalbot.db "
+SELECT u.email,
+       mn.match_id,
+       mn.created_at AS notified_at
+FROM match_notifications mn
+JOIN users u ON u.id = mn.user_id
+ORDER BY u.email, mn.match_id;"
+```
+
+Per user : one line with all his match_ids
+
+```sql
+sqlite3 -box ovalbot.db "
+SELECT u.email,
+       COUNT(*)              AS nb_alerts,
+       GROUP_CONCAT(mn.match_id) AS match_ids
+FROM match_notifications mn
+JOIN users u ON u.id = mn.user_id
+GROUP BY u.id
+ORDER BY nb_alerts DESC, u.email;"
+```
+
+## Calendar crate testing
+
+The LNR parser tests (`calendar/src/parse/lnr.rs`) read committed HTML fixtures
+from `calendar/src/parse/fixtures/`. To regenerate those fixtures from the live
+site, run:
+
+```bash
+cargo test capture_lnr_fixture -- --ignored
 ```
 
 ## Deployment (Raspberry Pi, arm64)
