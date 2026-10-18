@@ -5,7 +5,10 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::Router;
-use common::{insert_session, insert_user, insert_user_with_password, test_state, test_state_with};
+use common::{
+    insert_active_user, insert_session, insert_user, insert_user_with_password, test_state,
+    test_state_with,
+};
 use ovalbot::common::models::{Role, Status};
 use ovalbot::services::mailer::NoopMailer;
 use ovalbot::services::telegram::{create_link_token, NoopTelegram, TelegramConfig};
@@ -750,4 +753,227 @@ async fn ticket_request_requires_active_account(pool: SqlitePool) {
     )
     .await;
     assert_eq!(waiting, StatusCode::FORBIDDEN);
+}
+
+// ---- ticket requests: persistence ----
+
+#[sqlx::test]
+async fn ticket_request_is_persisted_and_listed(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    let app = app(pool.clone());
+
+    let body = json!({ "kind": "duo", "max_price_cents": 9000 });
+    let (put, _, _) = call(
+        &app,
+        request("PUT", "/api/requests/42", Some(&cookie), Some(body)),
+    )
+    .await;
+    assert_eq!(put, StatusCode::NO_CONTENT);
+
+    let (status, _, bytes) = call(&app, request("GET", "/api/requests", Some(&cookie), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    let requests = json(&bytes).as_array().unwrap().to_vec();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["match_id"], 42);
+    assert_eq!(requests[0]["kind"], "duo");
+    assert_eq!(requests[0]["max_price_cents"], 9000);
+    assert_eq!(requests[0]["quantity"], serde_json::Value::Null);
+    assert_eq!(requests[0]["status"], "pending");
+}
+
+#[sqlx::test]
+async fn ticket_request_put_twice_updates_in_place(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    let app = app(pool);
+
+    let duo = json!({ "kind": "duo", "max_price_cents": 9000 });
+    let (first, _, _) = call(
+        &app,
+        request("PUT", "/api/requests/42", Some(&cookie), Some(duo)),
+    )
+    .await;
+    assert_eq!(first, StatusCode::NO_CONTENT);
+
+    let single = json!({ "kind": "single", "quantity": 3, "max_price_cents": 4500 });
+    let (second, _, _) = call(
+        &app,
+        request("PUT", "/api/requests/42", Some(&cookie), Some(single)),
+    )
+    .await;
+    assert_eq!(second, StatusCode::NO_CONTENT);
+
+    let (status, _, bytes) = call(&app, request("GET", "/api/requests", Some(&cookie), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    let requests = json(&bytes).as_array().unwrap().to_vec();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["kind"], "single");
+    assert_eq!(requests[0]["quantity"], 3);
+    assert_eq!(requests[0]["max_price_cents"], 4500);
+}
+
+#[sqlx::test]
+async fn ticket_request_survives_a_new_app(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    let first_app = app(pool.clone());
+
+    let body = json!({ "kind": "group", "places": 4 });
+    let (put, _, _) = call(
+        &first_app,
+        request("PUT", "/api/requests/42", Some(&cookie), Some(body)),
+    )
+    .await;
+    assert_eq!(put, StatusCode::NO_CONTENT);
+
+    // A brand-new router over the same database still sees the request.
+    let second_app = app(pool);
+    let (status, _, bytes) = call(
+        &second_app,
+        request("GET", "/api/requests", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&bytes).as_array().unwrap().len(), 1);
+}
+
+#[sqlx::test]
+async fn ticket_request_delete_removes_it_from_list(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    let app = app(pool);
+
+    let body = json!({ "kind": "duo", "max_price_cents": 9000 });
+    let (_, _, _) = call(
+        &app,
+        request("PUT", "/api/requests/42", Some(&cookie), Some(body)),
+    )
+    .await;
+
+    let (deleted, _, _) = call(
+        &app,
+        request("DELETE", "/api/requests/42", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(deleted, StatusCode::NO_CONTENT);
+
+    let (status, _, bytes) = call(&app, request("GET", "/api/requests", Some(&cookie), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&bytes).as_array().unwrap().len(), 0);
+}
+
+#[sqlx::test]
+async fn ticket_request_list_is_scoped_to_user(pool: SqlitePool) {
+    let first_user = insert_active_user(&pool, "first@example.com").await;
+    let first_session = insert_session(&pool, first_user, &ovalbot::common::time::in_days(1)).await;
+    let first_cookie = cookie_for(&first_session);
+
+    let second_user = insert_active_user(&pool, "second@example.com").await;
+    let second_session =
+        insert_session(&pool, second_user, &ovalbot::common::time::in_days(1)).await;
+    let second_cookie = cookie_for(&second_session);
+
+    let app = app(pool);
+
+    let (first, _, _) = call(
+        &app,
+        request(
+            "PUT",
+            "/api/requests/9000",
+            Some(&first_cookie),
+            Some(json!({ "kind": "duo", "max_price_cents": 9000 })),
+        ),
+    )
+    .await;
+    assert_eq!(first, StatusCode::NO_CONTENT);
+
+    let (second, _, _) = call(
+        &app,
+        request(
+            "PUT",
+            "/api/requests/42",
+            Some(&second_cookie),
+            Some(json!({ "kind": "group", "places": 4 })),
+        ),
+    )
+    .await;
+    assert_eq!(second, StatusCode::NO_CONTENT);
+
+    let (status, _, bytes) = call(
+        &app,
+        request("GET", "/api/requests", Some(&first_cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let requests = json(&bytes).as_array().unwrap().to_vec();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["match_id"], 9000);
+    assert_eq!(requests[0]["kind"], "duo");
+
+    let (status, _, bytes) = call(
+        &app,
+        request("GET", "/api/requests", Some(&second_cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let requests = json(&bytes).as_array().unwrap().to_vec();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["match_id"], 42);
+    assert_eq!(requests[0]["kind"], "group");
+}
+
+#[sqlx::test]
+async fn ticket_request_list_requires_active_account(pool: SqlitePool) {
+    let (anonymous, _, _) = call(
+        &app(pool.clone()),
+        request("GET", "/api/requests", None, None),
+    )
+    .await;
+    assert_eq!(anonymous, StatusCode::UNAUTHORIZED);
+
+    let cookie = session_cookie(&pool, Status::Waiting, Role::User).await;
+    let (waiting, _, _) = call(
+        &app(pool),
+        request("GET", "/api/requests", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(waiting, StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+async fn ticket_request_delete_locked_returns_conflict(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "locked@example.com").await;
+    let session = insert_session(&pool, user, &ovalbot::common::time::in_days(1)).await;
+    let cookie = cookie_for(&session);
+
+    let now = ovalbot::common::time::now();
+    sqlx::query(
+        "INSERT INTO ticket_requests \
+             (user_id, match_id, kind, max_price_cents, status, created_at, updated_at) \
+         VALUES (?, ?, 'duo', 9000, 'accepted', ?, ?)",
+    )
+    .bind(user)
+    .bind(42)
+    .bind(&now)
+    .bind(&now)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, _, response) = call(
+        &app(pool.clone()),
+        request("DELETE", "/api/requests/42", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json(&response)["error"], "ticket_request_locked");
+
+    let (put_status, _, _) = call(
+        &app(pool),
+        request(
+            "PUT",
+            "/api/requests/42",
+            Some(&cookie),
+            Some(json!({ "kind": "duo", "max_price_cents": 9000 })),
+        ),
+    )
+    .await;
+    assert_eq!(put_status, StatusCode::CONFLICT);
 }

@@ -1,6 +1,5 @@
-use axum::http::StatusCode;
-use serde::Deserialize;
-use std::{collections::HashMap, sync::RwLock};
+use serde::{Deserialize, Serialize};
+use sqlx::{FromRow, SqlitePool};
 
 use crate::common::error::AppError;
 
@@ -10,7 +9,7 @@ use crate::common::error::AppError;
 const MAX_PRICE_CENTS: u32 = 100_000;
 
 // Ticket request parameters sent by the frontend for a single match in Json.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TicketRequestInput {
     Single { quantity: u8, max_price_cents: u32 },
@@ -18,7 +17,6 @@ pub enum TicketRequestInput {
     Group { places: u8 },
 }
 
-/// Defensive upper bound for a ticket price, in cents (1000 €).
 impl TicketRequestInput {
     // Bounds mirrored from the frontend modal.
     fn is_valid(&self) -> bool {
@@ -31,6 +29,23 @@ impl TicketRequestInput {
             Self::Group { places } => (2..=10).contains(places),
         }
     }
+
+    // Flattened representation of the request, following the `ticket_requests` columns.
+    fn columns(&self) -> (TicketKind, Option<u8>, Option<u32>, Option<u8>) {
+        match self {
+            Self::Single {
+                quantity,
+                max_price_cents,
+            } => (
+                TicketKind::Single,
+                Some(*quantity),
+                Some(*max_price_cents),
+                None,
+            ),
+            Self::Duo { max_price_cents } => (TicketKind::Duo, None, Some(*max_price_cents), None),
+            Self::Group { places } => (TicketKind::Group, None, None, Some(*places)),
+        }
+    }
 }
 
 /// Checks if the price is valid (not too high).
@@ -38,89 +53,169 @@ fn is_valid_price(cents: u32) -> bool {
     (1..=MAX_PRICE_CENTS).contains(&cents)
 }
 
-// ============================== TICKET MANAGER ==============================
-pub struct TicketManager {
-    // tickets are in memory cache, so that we can read them as we want without blocking the tokio runtime
-    // but the writing requires a write lock (only one write at the time).
-    tickets: RwLock<HashMap<(i64, i64), TicketRequestInput>>,
-}
-impl Default for TicketManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// ============================== TICKET REQUEST TYPES ==============================
 
-impl std::fmt::Debug for TicketManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let tickets = self.tickets.read().expect("tickets cache poisoned");
-        f.debug_map().entries(tickets.iter()).finish()
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
+pub enum TicketKind {
+    Single,
+    Duo,
+    Group,
 }
 
-impl TicketManager {
-    pub fn new() -> Self {
-        Self {
-            // event list is empty by default
-            tickets: RwLock::new(HashMap::new()),
-        }
-    }
-    pub fn upsert(&self, user_id: i64, match_id: i64, request: TicketRequestInput) {
-        let mut tickets = self.tickets.write().expect("tickets cache poisoned");
-
-        tickets.insert((user_id, match_id), request);
-    }
-
-    pub fn remove(&self, user_id: i64, match_id: i64) -> bool {
-        self.tickets
-            .write()
-            .expect("tickets cache poisoned")
-            .remove(&(user_id, match_id))
-            .is_some()
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
+pub enum TicketStatus {
+    Pending,
+    Accepted,
+    Purchased,
+    Failed,
+    Expired,
+    Cancelled,
 }
 
-/// Store the ticket request parameters for a match.
-/// The request will be added in cache memory (or modified if it already exists)
-/// and stored in the database.
-pub async fn put_request(
-    tickets: &TicketManager,
+/// A stored ticket request as returned by the API.
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct TicketRequestView {
+    pub match_id: i64,
+    pub kind: TicketKind,
+    pub quantity: Option<u8>,
+    pub max_price_cents: Option<u32>,
+    pub places: Option<u8>,
+    pub status: TicketStatus,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Outcome of a removal: the row may be gone, absent, or protected by its status.
+pub enum RemoveOutcome {
+    Removed,
+    NotFound,
+    Locked,
+}
+
+// ============================== SERVICE ==============================
+
+/// Insert the request, or update the existing one while it is still `pending`.
+///
+/// `created_at` is preserved on update. Returns `TicketRequestLocked` when the
+/// stored request has already left the `pending` state.
+pub async fn upsert(
+    pool: &SqlitePool,
     user_id: i64,
     match_id: i64,
-    ticket_request: TicketRequestInput,
-) -> Result<StatusCode, AppError> {
-    if !ticket_request.is_valid() {
+    input: &TicketRequestInput,
+) -> Result<TicketRequestView, AppError> {
+    if !input.is_valid() {
         return Err(AppError::InvalidTicketRequest);
     }
 
-    // insert or replace the ticket request in the cache.
-    tickets.upsert(user_id, match_id, ticket_request);
+    let now = crate::common::time::now();
+    let (kind, quantity, max_price_cents, places) = input.columns();
 
-    // Print all the tickets requests in the cache.
-    tracing::debug!("ticket cache:\n{:#?}", tickets);
+    let view = sqlx::query_as::<_, TicketRequestView>(
+        "INSERT INTO ticket_requests \
+             (user_id, match_id, kind, quantity, max_price_cents, places, status, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?) \
+         ON CONFLICT(user_id, match_id) DO UPDATE SET \
+             kind = excluded.kind, \
+             quantity = excluded.quantity, \
+             max_price_cents = excluded.max_price_cents, \
+             places = excluded.places, \
+             updated_at = excluded.updated_at \
+         WHERE ticket_requests.status = 'pending' \
+         RETURNING match_id, kind, quantity, max_price_cents, places, status, created_at, updated_at",
+    )
+    .bind(user_id)
+    .bind(match_id)
+    .bind(kind)
+    .bind(quantity)
+    .bind(max_price_cents)
+    .bind(places)
+    .bind(&now)
+    .bind(&now)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(AppError::TicketRequestLocked)?;
 
-    Ok(StatusCode::NO_CONTENT)
+    if view.created_at == now {
+        tracing::info!(user_id, match_id, "ticket request created");
+    } else {
+        tracing::info!(user_id, match_id, "ticket request updated");
+    }
+    Ok(view)
 }
 
-/// Delete a ticket request from the database.
-/// The request will be removed from cache memory.
-/// and removed from the database for persistence.
-pub async fn delete_request(
-    tickets: &TicketManager,
+/// Delete the request while it is still `pending`.
+///
+/// A request that left the `pending` state cannot be removed (`Locked`); a
+/// missing request is not an error (`NotFound`), so the operation stays
+/// idempotent at the HTTP level.
+pub async fn remove(
+    pool: &SqlitePool,
     user_id: i64,
     match_id: i64,
-) -> Result<StatusCode, AppError> {
-    tracing::info!(user_id = user_id, match_id, "ticket request removed");
+) -> Result<RemoveOutcome, AppError> {
+    let removed = sqlx::query_scalar::<_, i64>(
+        "DELETE FROM ticket_requests \
+         WHERE user_id = ? AND match_id = ? AND status = 'pending' \
+         RETURNING match_id",
+    )
+    .bind(user_id)
+    .bind(match_id)
+    .fetch_optional(pool)
+    .await?;
 
-    // remove the ticket request from the cache.
-    tickets.remove(user_id, match_id);
+    if removed.is_some() {
+        tracing::info!(user_id, match_id, "ticket request removed");
+        return Ok(RemoveOutcome::Removed);
+    }
 
-    // Print all the tickets requests in the cache.
-    tracing::debug!("ticket cache:\n{:#?}", tickets);
+    // Either the request does not exist, or it is no longer pending.
+    let status: Option<TicketStatus> =
+        sqlx::query_scalar("SELECT status FROM ticket_requests WHERE user_id = ? AND match_id = ?")
+            .bind(user_id)
+            .bind(match_id)
+            .fetch_optional(pool)
+            .await?;
 
-    Ok(StatusCode::NO_CONTENT)
+    match status {
+        Some(_) => {
+            tracing::info!(user_id, match_id, "ticket request locked, removal refused");
+            Ok(RemoveOutcome::Locked)
+        }
+        None => Ok(RemoveOutcome::NotFound),
+    }
 }
 
-// ============================== TICKET PROPOSAL ==============================
+/// List the ticket requests of a single user, ordered by match id.
+pub async fn list_for_user(
+    pool: &SqlitePool,
+    user_id: i64,
+) -> Result<Vec<TicketRequestView>, AppError> {
+    let views = sqlx::query_as::<_, TicketRequestView>(
+        "SELECT match_id, kind, quantity, max_price_cents, places, status, created_at, updated_at \
+         FROM ticket_requests \
+         WHERE user_id = ? \
+         ORDER BY match_id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(views)
+}
+
+// ============================== TICKET PROPOSAL TYPES ==============================
+
+// All the types that the proposal bot can sent to the backend of ovalbot.
+
+// ============================== TICKET PROPOSAL SERVICE ==============================
+
+// All the services that the proposal bot can send to the backend of ovalbot.
+
+// ============================== TESTS ==============================
 
 #[cfg(test)]
 mod tests {
@@ -183,86 +278,33 @@ mod tests {
         assert!(!TicketRequestInput::Group { places: 11 }.is_valid());
     }
 
-    /// The first upsert of a pair stores the request in the cache.
+    /// Each kind maps to its own columns, leaving the others empty.
     #[test]
-    fn upsert_inserts_a_new_request() {
-        let manager = TicketManager::new();
-        manager.upsert(
-            1,
-            42,
-            TicketRequestInput::Duo {
-                max_price_cents: 9000,
-            },
-        );
+    fn columns_maps_each_kind() {
+        let (kind, quantity, max_price_cents, places) = TicketRequestInput::Single {
+            quantity: 3,
+            max_price_cents: 4500,
+        }
+        .columns();
+        assert_eq!(kind, TicketKind::Single);
+        assert_eq!(quantity, Some(3));
+        assert_eq!(max_price_cents, Some(4500));
+        assert_eq!(places, None);
 
-        let tickets = manager.tickets.read().unwrap();
-        assert_eq!(tickets.len(), 1);
-        assert!(matches!(
-            tickets.get(&(1, 42)),
-            Some(TicketRequestInput::Duo {
-                max_price_cents: 9000
-            })
-        ));
-    }
+        let (kind, quantity, max_price_cents, places) = TicketRequestInput::Duo {
+            max_price_cents: 9000,
+        }
+        .columns();
+        assert_eq!(kind, TicketKind::Duo);
+        assert_eq!(quantity, None);
+        assert_eq!(max_price_cents, Some(9000));
+        assert_eq!(places, None);
 
-    /// A second upsert on the same pair replaces the previous request.
-    #[test]
-    fn upsert_replaces_an_existing_request() {
-        let manager = TicketManager::new();
-        manager.upsert(
-            1,
-            42,
-            TicketRequestInput::Duo {
-                max_price_cents: 9000,
-            },
-        );
-        manager.upsert(
-            1,
-            42,
-            TicketRequestInput::Single {
-                quantity: 3,
-                max_price_cents: 4500,
-            },
-        );
-
-        let tickets = manager.tickets.read().unwrap();
-        assert_eq!(tickets.len(), 1);
-        assert!(matches!(
-            tickets.get(&(1, 42)),
-            Some(TicketRequestInput::Single {
-                quantity: 3,
-                max_price_cents: 4500
-            })
-        ));
-    }
-
-    /// Two users requesting the same match do not overwrite each other.
-    #[test]
-    fn upsert_keeps_users_apart() {
-        let manager = TicketManager::new();
-        manager.upsert(1, 42, TicketRequestInput::Group { places: 4 });
-        manager.upsert(
-            2,
-            42,
-            TicketRequestInput::Duo {
-                max_price_cents: 9000,
-            },
-        );
-
-        let tickets = manager.tickets.read().unwrap();
-        assert_eq!(tickets.len(), 2);
-        assert!(tickets.contains_key(&(1, 42)));
-        assert!(tickets.contains_key(&(2, 42)));
-    }
-
-    /// Removing an existing request reports it and leaves the cache consistent.
-    #[test]
-    fn remove_deletes_the_request() {
-        let manager = TicketManager::new();
-        manager.upsert(1, 42, TicketRequestInput::Group { places: 4 });
-
-        assert!(manager.remove(1, 42));
-        assert!(!manager.remove(1, 42));
-        assert!(manager.tickets.read().unwrap().is_empty());
+        let (kind, quantity, max_price_cents, places) =
+            TicketRequestInput::Group { places: 4 }.columns();
+        assert_eq!(kind, TicketKind::Group);
+        assert_eq!(quantity, None);
+        assert_eq!(max_price_cents, None);
+        assert_eq!(places, Some(4));
     }
 }

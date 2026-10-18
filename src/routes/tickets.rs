@@ -5,24 +5,37 @@ use axum::Json;
 use crate::common::error::AppError;
 use crate::services::auth::ActiveUser;
 use crate::services::state::AppState;
-use crate::services::tickets::{self, TicketRequestInput};
+use crate::services::tickets::{self, RemoveOutcome, TicketRequestInput, TicketRequestView};
 
-/// New ticket request received from the frontend.
+/// Store the ticket request parameters for a match (`204`, body ignored).
 pub async fn new_ticket_request(
     State(state): State<AppState>,
     auth: ActiveUser,
     Path(match_id): Path<i64>,
     Json(input): Json<TicketRequestInput>,
 ) -> Result<StatusCode, AppError> {
-    // put_request returns the status code 200 if the request was successfully saved.
-    tickets::put_request(&state.tickets, auth.0.user.id, match_id, input).await
+    tickets::upsert(&state.pool, auth.0.user.id, match_id, &input).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
-/// Delete a ticket request from the frontend.
+/// Remove the ticket request for a match (`204`, idempotent; `409` when locked).
 pub async fn delete_ticket_request(
     State(state): State<AppState>,
     auth: ActiveUser,
     Path(match_id): Path<i64>,
 ) -> Result<StatusCode, AppError> {
-    tickets::delete_request(&state.tickets, auth.0.user.id, match_id).await
+    match tickets::remove(&state.pool, auth.0.user.id, match_id).await? {
+        RemoveOutcome::Removed | RemoveOutcome::NotFound => Ok(StatusCode::NO_CONTENT),
+        RemoveOutcome::Locked => Err(AppError::TicketRequestLocked),
+    }
+}
+
+/// List the ticket requests of the current user.
+pub async fn list_requests(
+    State(state): State<AppState>,
+    auth: ActiveUser,
+) -> Result<Json<Vec<TicketRequestView>>, AppError> {
+    Ok(Json(
+        tickets::list_for_user(&state.pool, auth.0.user.id).await?,
+    ))
 }
