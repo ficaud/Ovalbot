@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-24
+
+### Added
+
+- `frontend/src/lib/TicketRequestModal.svelte`, `src/services/tickets.rs` : Kind `notify`
+  for the ticket request modal and in the tikcets pending requesters list so that the
+  bot only notifies the user without adding it to basket.
+- `src/routes/tickets.rs` : ticket-request API — `PUT` / `DELETE /api/requests/{match_id}`
+  to transmit and remove the user's request (single / duo / group with max price), and
+  `GET /api/requests` to list the current user's requests.
+- `migrations/0009_create_ticket_requests.sql`, `src/services/tickets.rs` : SQLite
+  persistence for ticket requests.
+- `bot/parser`, `bot/scanner` : import of the resale bot — scrapes the Stade Rochelais
+  billetterie and exposes the found seats to the main crate.
+- `src/services/matching.rs`, `calendar::DateWindow` : resolver mapping a scraped
+  billetterie encounter to the calendar's stable LNR match id (title inference +
+  date-window overlap, tolerating week-end ranges)
+- `migrations/0010_create_ticket_offers.sql`, `src/services/notifications.rs` : new seats
+  are recorded durably (no repeat on restart or later scans) and notified to users with a
+  pending request on the match, via email and/or Telegram.
+- `migrations/0011_create_resale_links.sql`, `src/services/resale.rs` : resale links
+  discovered on the billetterie home page are persisted and polled directly.
+- `doc/SQL_HELPERS.md` : gathered the useful SQL queries to inspect the SQLite database.
+
+### Changed
+
+- `services/` : refactor services into modules to make the repo easier to navigate.
+- `frontend/src/lib/TicketRequestModal.svelte` : cleaner rewrite with exclusive modes
+  (single / duo / group), and existing requests are now loaded at page startup so the
+  modal is prefilled and locked requests cannot be modified.
+- `frontend/src/routes/+page.svelte`, `src/routes/tickets.rs` : ticket requests are now
+  only accepted for Stade Rochelais games.
+- `src/services/alerts.rs` : alert payloads (`MatchAlert`, `SeatAlert`, seats listing)
+  moved out of the mailer so email and Telegram share them.
+- `templates/seats_alert.html`, `src/services/mailer.rs` : redesigned seats-alert email.
+- `src/services/notifications.rs` : seats alerts are now sent on both channels.
+- `bot/`, `calendar/`, `src/` : documentation campaign — rustdoc on every function,
+  struct and module (including the imported bot crates).
+- `.devcontainer/Dockerfile`, `Dockerfile` : update the Debian/Ubuntu base images.
+- `.github/workflows/release.yml` : CI/CD release management on tags of the main branch.
+
+### Fixed
+
+- `templates/seats_alert.html`, `src/services/mailer.rs` : mobile seats-alert email
+  now is responsive and doesn't break to the next line the price column.
+- `src/services/matching.rs`, `bot/parser` : wrong match identification — a promotional
+  badge on a match card ("DERNIÈRE MISE EN VENTE…") used to override the title, causing
+  live rugby reservations to be skipped from the scan; badges no longer take precedence
+  and non-match cards (repas, parking…) are rejected explicitly instead of being aliased
+  to a nearby match.
+
+### Removed
+
+- `bot/` : The bot scanner of resale tickets doesn't includes proxies anymore.
+
 ## [0.2.0] - 2026-10-15
 
 ### Added
