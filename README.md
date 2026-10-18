@@ -36,6 +36,7 @@ OvalBot emails you when a TOP14 match gets a confirmed date, and shows the Stade
 
 ```bash
 cargo run --bin ovalbot          # start the API + static frontend (port 3000)
+RUST_LOG=ovalbot=debug cargo run --bin ovalbot          # start the API + static frontend (port 3000) with backend debug logs
 cargo run --bin create_admin -- --email <email> --password <pwd>
 cargo test --workspace          # unit + integration tests (both crates)
 cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings
