@@ -39,6 +39,7 @@ pub fn app(state: AppState) -> Router {
             "/api/notifications/{match_id}",
             post(notifications_routes::subscribe).delete(notifications_routes::unsubscribe),
         )
+        .route("/api/requests", get(tickets_routes::list_requests))
         .route(
             "/api/requests/{match_id}",
             put(tickets_routes::new_ticket_request).delete(tickets_routes::delete_ticket_request),

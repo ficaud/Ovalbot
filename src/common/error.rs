@@ -27,6 +27,8 @@ pub enum AppError {
     NotFound,
     #[error("invalid ticket request")]
     InvalidTicketRequest,
+    #[error("ticket request can no longer be modified")]
+    TicketRequestLocked,
     #[error("telegram unavailable")]
     TelegramUnavailable,
 }
@@ -66,6 +68,11 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST,
                 "invalid_ticket_request",
                 "invalid ticket request",
+            ),
+            AppError::TicketRequestLocked => (
+                StatusCode::CONFLICT,
+                "ticket_request_locked",
+                "ticket request can no longer be modified",
             ),
             AppError::Sqlx(_) | AppError::Migrate(_) | AppError::Argon2(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

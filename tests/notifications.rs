@@ -11,22 +11,15 @@ use ovalbot::services::notifications::{
 };
 use ovalbot::services::state::AppState;
 use ovalbot::services::telegram::{Telegram, TelegramConfig};
-use ovalbot::services::tickets::TicketManager;
 use sqlx::SqlitePool;
 
-fn state(
-    pool: SqlitePool,
-    mailer: Arc<dyn Mailer>,
-    telegram: Arc<dyn Telegram>,
-    tickets: Arc<TicketManager>,
-) -> AppState {
+fn state(pool: SqlitePool, mailer: Arc<dyn Mailer>, telegram: Arc<dyn Telegram>) -> AppState {
     AppState {
         pool,
         mailer,
         telegram,
         telegram_config: TelegramConfig::default(),
         calendar: Arc::new(CalendarService::new()),
-        tickets,
     }
 }
 
@@ -90,12 +83,7 @@ async fn process_emails_subscribers_once_and_clears_rows(pool: SqlitePool) {
 
     let mailer = Arc::new(RecordingMailer::new());
     let telegram = Arc::new(RecordingTelegram::new());
-    let state = state(
-        pool.clone(),
-        mailer.clone(),
-        telegram.clone(),
-        Arc::new(TicketManager::new()),
-    );
+    let state = state(pool.clone(), mailer.clone(), telegram.clone());
 
     process(
         &state,
@@ -141,12 +129,7 @@ async fn process_emails_subscribers_once_and_clears_rows(pool: SqlitePool) {
 async fn process_without_subscribers_sends_nothing(pool: SqlitePool) {
     let mailer = Arc::new(RecordingMailer::new());
     let telegram = Arc::new(RecordingTelegram::new());
-    let state = state(
-        pool.clone(),
-        mailer.clone(),
-        telegram.clone(),
-        Arc::new(TicketManager::new()),
-    );
+    let state = state(pool.clone(), mailer.clone(), telegram.clone());
 
     process(
         &state,
@@ -184,12 +167,7 @@ async fn process_respects_channel_preferences(pool: SqlitePool) {
 
     let mailer = Arc::new(RecordingMailer::new());
     let telegram = Arc::new(RecordingTelegram::new());
-    let state = state(
-        pool.clone(),
-        mailer.clone(),
-        telegram.clone(),
-        Arc::new(TicketManager::new()),
-    );
+    let state = state(pool.clone(), mailer.clone(), telegram.clone());
 
     process(
         &state,
@@ -226,12 +204,7 @@ async fn process_sends_nothing_when_all_channels_muted(pool: SqlitePool) {
 
     let mailer = Arc::new(RecordingMailer::new());
     let telegram = Arc::new(RecordingTelegram::new());
-    let state = state(
-        pool.clone(),
-        mailer.clone(),
-        telegram.clone(),
-        Arc::new(TicketManager::new()),
-    );
+    let state = state(pool.clone(), mailer.clone(), telegram.clone());
 
     process(
         &state,
