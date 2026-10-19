@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod bot;
 pub mod calendar;
 pub mod email;
 pub mod mailer;
