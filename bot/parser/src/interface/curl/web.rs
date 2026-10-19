@@ -11,16 +11,20 @@ pub struct WebClient {
 /// WebClient implementation: a plain GET client with proxy rotation/failover.
 /// The shop login / add-to-cart flows were removed (pure scanning only).
 impl WebClient {
+    /// Creates the client with the given proxy strategy (direct by default).
     pub fn new(proxy_mode: ProxyMode) -> Self {
         Self { proxy_mode }
     }
 
+    /// Swaps the proxy strategy at runtime (used by the proxy-mode tests and
+    /// by failover logic that downgrades to direct connections).
     pub fn set_proxy_mode(&mut self, proxy_mode: ProxyMode) {
         self.proxy_mode = proxy_mode;
     }
 }
 
 impl FetchHtml for WebClient {
+    /// Performs the GET and maps the error into the trait's string form.
     fn get_html(&self, url: &str) -> Result<String, String> {
         fetch_html(url, self.proxy_mode).map_err(|e| e.to_string())
     }

@@ -1,3 +1,11 @@
+//! OvalBot backend: an Axum HTTP server (the site + API) with an embedded
+//! SvelteKit frontend, SQLite persistence, and background services
+//! (calendar sync, match notifications, Telegram, ticket resale bot).
+//!
+//! The crate owns no business logic itself — it wires [`crate::common`]
+//! foundations, [`crate::services`] (business + integrations) and
+//! [`crate::routes`] (HTTP handlers) together via [`app`].
+
 pub mod common;
 pub mod routes;
 pub mod services;
@@ -15,6 +23,20 @@ use crate::routes::{
 };
 use crate::services::state::AppState;
 
+/// Builds the full HTTP application: every API route plus static serving of
+/// the pre-built SvelteKit frontend (`STATIC_DIR`, default `frontend/build`)
+/// with `index.html` as the SPA fallback.
+///
+/// The route table mirrors the frontend's `/api` proxy — auth/account,
+/// calendar reads, match-notification subscriptions and settings, ticket
+/// requests, Telegram linking/webhook, admin user management.
+///
+/// # Arguments
+/// * `state` — shared dependencies (pool, mailer, telegram, calendar) handed
+///   to all handlers.
+///
+/// # Returns
+/// An `axum::Router` ready to be served as-is.
 pub fn app(state: AppState) -> Router {
     let static_dir = std::env::var("STATIC_DIR").unwrap_or_else(|_| "frontend/build".to_owned());
     let index = PathBuf::from(&static_dir).join("index.html");

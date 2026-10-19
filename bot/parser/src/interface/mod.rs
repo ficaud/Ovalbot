@@ -1,3 +1,5 @@
+//! I/O adapters: HTTP client + proxies and the top-level match/seat API.
+
 pub mod club_manager;
 pub mod curl;
 pub mod match_manager;

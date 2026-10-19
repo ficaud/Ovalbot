@@ -1,17 +1,31 @@
+//! HTTP fetching of the LNR calendar pages (blocking `reqwest`, used from a
+//! dedicated thread by the parser).
+
 use crate::error::FetchError;
 use reqwest::blocking::Client;
 use reqwest::header;
 use reqwest::StatusCode;
 use std::time::Duration;
 
+/// Outward-facing page fetcher (kept as a struct so callers stay mockable).
 pub struct WebPageFetcher;
 
 impl WebPageFetcher {
+    /// Fetches a page's HTML; see [`fetch_html`].
     pub fn fetch(&self, url: &str) -> Result<String, FetchError> {
         fetch_html(url)
     }
 }
 
+/// Fetches `url` and returns its HTML body.
+///
+/// Sends a browser-like `User-Agent` (the LNR site refuses bare clients);
+/// an HTTP 404 is the pagination terminator, mapped to its own error so
+/// callers can stop cleanly.
+///
+/// # Errors
+/// `FetchError::NotFound` on 404, `FetchError::Http` otherwise (timeouts of
+/// 5 s connect / 30 s total are baked in).
 fn fetch_html(url: &str) -> Result<String, FetchError> {
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -38,6 +52,7 @@ mod tests {
 
     use super::*;
 
+    // Local HTTP mock: serves one canned response, returns the request text.
     fn serve_once(
         status_line: &'static str,
         body: &'static str,

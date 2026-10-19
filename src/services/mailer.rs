@@ -1,3 +1,9 @@
+//! Email transport behind the [`Mailer`] trait: the Resend API client, a
+//! no-op for disabled deployments, and the welcome/match-alert templates.
+//!
+//! Templates live in `TEMPLATE_DIR` (`welcome.html`, `match_alert.html`);
+//! missing files fall back to built-in defaults.
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -5,6 +11,8 @@ use async_trait::async_trait;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
+/// Failures while sending through Resend: network/serialization issues
+/// (`Http`) and non-2xx API responses (`Api`).
 #[derive(Debug, thiserror::Error)]
 pub enum MailError {
     #[error("http error: {0}")]
@@ -13,6 +21,7 @@ pub enum MailError {
     Api(String),
 }
 
+/// Content of one match-scheduling alert, shared by every channel.
 #[derive(Debug, Clone)]
 pub struct MatchAlert {
     pub team: String,
@@ -20,9 +29,21 @@ pub struct MatchAlert {
     pub kickoff: String,
 }
 
+/// Email transport abstraction: injected into [`crate::services::state::AppState`]
+/// (`ResendMailer` in production, [`NoopMailer`] when disabled) so tests and
+/// offline runs never hit the network.
 #[async_trait]
 pub trait Mailer: Send + Sync {
+    /// Sends the account-activation welcome email.
+    ///
+    /// # Errors
+    /// [`MailError`] on network or Resend API failure.
     async fn send_welcome(&self, email: &str) -> Result<(), MailError>;
+
+    /// Sends a match-scheduling alert for one (team, opponent, kickoff) tuple.
+    ///
+    /// # Errors
+    /// [`MailError`] on network or Resend API failure.
     async fn send_match_alert(&self, email: &str, alert: &MatchAlert) -> Result<(), MailError>;
 }
 
@@ -37,13 +58,18 @@ const DEFAULT_WELCOME_HTML: &str = "<p>Your OvalBot account is now active.</p>\
 const DEFAULT_MATCH_ALERT_HTML: &str =
     "<p>Good news! <strong>{{team}} vs {{opponent}}</strong> has been scheduled for {{kickoff}}.</p>";
 
+/// The two HTML bodies, loaded from `TEMPLATE_DIR` (see [`load_templates`]).
 #[derive(Debug, Clone)]
 pub struct EmailTemplates {
+    /// Account-activation email body (default variant needs no placeholder).
     pub welcome_html: String,
+    /// Match-scheduling alert body with `{{team}}` / `{{opponent}}` /
+    /// `{{kickoff}}` placeholders.
     pub match_alert_html: String,
 }
 
 impl EmailTemplates {
+    /// The built-in default bodies used when template files are missing.
     pub fn defaults() -> Self {
         Self {
             welcome_html: DEFAULT_WELCOME_HTML.to_string(),
@@ -52,6 +78,14 @@ impl EmailTemplates {
     }
 }
 
+/// Loads `welcome.html` and `match_alert.html` from `dir`.
+///
+/// # Returns
+/// The two templates, falling back to [`EmailTemplates::defaults`] per file
+/// (a `warning` is logged for each missing file, never a hard error).
+///
+/// # Panics
+/// None.
 pub fn load_templates(dir: &Path) -> EmailTemplates {
     let mut templates = EmailTemplates::defaults();
     if let Ok(welcome) = std::fs::read_to_string(dir.join("welcome.html")) {
@@ -73,6 +107,17 @@ pub fn load_templates(dir: &Path) -> EmailTemplates {
     templates
 }
 
+/// Substitutes `{{key}}` placeholders in a template with `vars` values, in
+/// argument order (a later value overwrites an earlier duplicate key);
+/// unknown placeholders are left verbatim.
+///
+/// # Arguments
+/// * `template` — HTML/straight text with `{{key}}` slots.
+/// * `vars` — `(key, value)` pairs; values are inserted unescaped.
+///
+/// # Returns
+/// The rendered string.
+#[must_use]
 pub fn render(template: &str, vars: &[(&str, &str)]) -> String {
     let mut out = template.to_string();
     for (key, value) in vars {
@@ -81,6 +126,7 @@ pub fn render(template: &str, vars: &[(&str, &str)]) -> String {
     out
 }
 
+/// Resend API request body for `POST /emails`.
 #[derive(Serialize)]
 struct OutgoingEmail<'a> {
     from: &'a str,
@@ -92,6 +138,8 @@ struct OutgoingEmail<'a> {
 
 const RESEND_API_URL: &str = "https://api.resend.com";
 
+/// Production [`Mailer`]: sends through the Resend HTTP API with a bearer
+/// token (`base_url` is injectable for tests — see `tests/mailer.rs`).
 #[derive(Clone)]
 pub struct ResendMailer {
     client: reqwest::Client,
@@ -102,10 +150,14 @@ pub struct ResendMailer {
 }
 
 impl ResendMailer {
+    /// Creates a mailer targeting the public Resend API; see
+    /// [`Self::with_base_url`] to redirect.
     pub fn new(api_key: String, from: String, templates: EmailTemplates) -> Self {
         Self::with_base_url(api_key, from, templates, RESEND_API_URL.to_string())
     }
 
+    /// Same as [`Self::new`] but against a custom `base_url` — the escape
+    /// hatch used by transport tests (in-process mock) and by staging.
     pub fn with_base_url(
         api_key: String,
         from: String,
@@ -121,6 +173,14 @@ impl ResendMailer {
         }
     }
 
+    /// POSTs one email to `POST {base_url}/emails` with the bearer token.
+    ///
+    /// Shared plumbing of [`Mailer::send_welcome`] /
+    /// [`Mailer::send_match_alert`]; the caller renders subject/body.
+    ///
+    /// # Errors
+    /// `MailError::Http` on network failure, `MailError::Api` on any non-2xx
+    /// response (status text is carried in the error).
     async fn send(
         &self,
         email: &str,
@@ -153,12 +213,15 @@ impl ResendMailer {
 #[async_trait]
 impl Mailer for ResendMailer {
     // send the welcome email
+    /// The default welcome subject/body, no placeholder to render.
     async fn send_welcome(&self, email: &str) -> Result<(), MailError> {
         let html = render(&self.templates.welcome_html, &[]);
         self.send(email, WELCOME_SUBJECT, &html, WELCOME_TEXT).await
     }
 
     // send the match alert email
+    /// Subject and text are built from the alert; the rendered HTML template
+    /// fills `{{team}}` / `{{opponent}}` / `{{kickoff}}`.
     async fn send_match_alert(&self, email: &str, alert: &MatchAlert) -> Result<(), MailError> {
         let subject = format!("Match scheduled: {} vs {}", alert.team, alert.opponent);
         let text = format!(
@@ -177,19 +240,30 @@ impl Mailer for ResendMailer {
     }
 }
 
+/// The always-succeeding [`Mailer`] used when `RESEND_ENABLED` is not `true`:
+/// every send is dropped (no-op).
 pub struct NoopMailer;
 
 #[async_trait]
 impl Mailer for NoopMailer {
+    /// Does nothing, always `Ok(())`.
     async fn send_welcome(&self, _email: &str) -> Result<(), MailError> {
         Ok(())
     }
 
+    /// Does nothing, always `Ok(())`.
     async fn send_match_alert(&self, _email: &str, _alert: &MatchAlert) -> Result<(), MailError> {
         Ok(())
     }
 }
 
+/// Builds the mailer from the environment:
+/// RESEND_ENABLED=false → [`NoopMailer`]; otherwise a [`ResendMailer`] with
+/// RESEND_API_KEY, RESEND_FROM and the TEMPLATE_DIR templates.
+///
+/// # Panics
+/// None (missing api key yields an empty-token mailer; sending will fail at
+/// the API level rather than here).
 pub fn from_env() -> Arc<dyn Mailer> {
     let enabled = std::env::var("RESEND_ENABLED")
         .map(|v| v == "true")
@@ -205,6 +279,19 @@ pub fn from_env() -> Arc<dyn Mailer> {
     Arc::new(ResendMailer::new(api_key, from, templates))
 }
 
+/// Sends the welcome email to a freshly active user at most once.
+///
+/// Best-effort by design: every outcome other than a successful send is
+/// logged and dropped, never returned. The `welcome_email_sent_at` column (set right after
+/// a successful send) makes the send idempotent across repeated calls, so
+/// direct registrations, auto-promotions and manual activations can all call
+/// this blindly.
+///
+/// # Arguments
+/// * `user_id` — the row the anti-double-send marker is read/written on.
+///
+/// # Panics
+/// None.
 pub async fn send_welcome_if_unsent(
     mailer: &dyn Mailer,
     pool: &SqlitePool,

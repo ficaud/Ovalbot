@@ -1,8 +1,11 @@
 use curl::easy::Easy;
 use std::sync::Mutex;
 
+/// One proxy endpoint and its normalized URL (see
+/// [`ProxyManager::normalize_proxy_url`] for the accepted line shapes).
 #[derive(Debug, Clone)]
 pub(crate) struct Proxy {
+    /// Full proxy URL ready for curl, e.g. `http://user:pass@1.2.3.4:8080`.
     pub(crate) url: String,
 }
 

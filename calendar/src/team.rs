@@ -2,6 +2,10 @@
 
 use std::fmt;
 
+/// One Top 14 club (plus `Unknown` for scrapes that could not name a team).
+///
+/// Copy-easy identity used as: home/away classifier in [`Team`], alias source
+/// for `from_name` (scraped display names), and slug source for API ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TeamType {
     StadeRochelais,
@@ -10,6 +14,7 @@ pub enum TeamType {
     RcVannes,
     AvironBayonnais,
     Racing92,
+    /// USA Perpignan (acronym USAP is matched too).
     Usap,
     AsmClermont,
     LouRugby,
@@ -18,10 +23,20 @@ pub enum TeamType {
     MontpellierHeraultRugby,
     StadeFrancaisParis,
     UnionBordeauxBegles,
+    /// Not a real club: fallback for unrecognized names (never in [`TeamType::all`]).
     Unknown,
 }
 
 impl TeamType {
+    /// Maps a free-form club name (scraped display name, e.g. "UNION BORDEAUX
+    /// BÈGLES" or "RC Toulon") to a team, by substring matching of distinctive
+    /// fragments, case- and accent-insensitively.
+    ///
+    /// Careful: "toulon" is checked before "toulouse" so both clubs resolve.
+    ///
+    /// # Returns
+    /// The detected team, or `None` for unknown input ("Unknown" names no team).
+    #[must_use]
     pub fn from_name(raw: &str) -> Option<TeamType> {
         let s = raw.trim().to_lowercase();
         match s {
@@ -55,6 +70,9 @@ impl TeamType {
         }
     }
 
+    /// Every of the 14 Top 14 clubs, in canonical calendar order (`Unknown`
+    /// excluded).
+    #[must_use]
     pub fn all() -> [TeamType; 14] {
         [
             TeamType::StadeRochelais,
@@ -74,6 +92,9 @@ impl TeamType {
         ]
     }
 
+    /// The URL-slug id of the team, unique across teams — the API path
+    /// parameter (`/api/teams/{team}/...`) and storage key.
+    #[must_use]
     pub fn id(&self) -> &'static str {
         match self {
             TeamType::StadeRochelais => "stade-rochelais",
@@ -94,12 +115,19 @@ impl TeamType {
         }
     }
 
+    /// Inverse of [`TeamType::id`]: resolves an API slug to its team.
+    ///
+    /// # Returns
+    /// The team, or `None` when the slug is unknown.
+    #[must_use]
     pub fn from_id(id: &str) -> Option<TeamType> {
         TeamType::all().into_iter().find(|team| team.id() == id)
     }
 }
 
 impl fmt::Display for TeamType {
+    /// The canonical French club name ("Stade Rochelais", "ASM Clermont
+    /// Auvergne"…), as shown on the site.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             TeamType::StadeRochelais => "Stade Rochelais",
@@ -122,6 +150,9 @@ impl fmt::Display for TeamType {
     }
 }
 
+/// An event's participant, denormalized from [`TeamType`]: the stable slug
+/// ([`TeamType::id`]), the display name (via `Display`), and the enum itself
+/// for classification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Team {
     pub id: String,

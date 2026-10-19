@@ -8,6 +8,7 @@ pub enum ParseError {
     MissingField(&'static str),
 }
 
+/// Fetch failures while downloading an LNR page.
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
     #[error("page not found")]

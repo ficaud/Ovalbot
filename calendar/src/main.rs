@@ -2,6 +2,8 @@ use calendar::parse::{EventParser, LnrParser};
 use calendar::schedule::{for_team, upcoming};
 use calendar::TeamType;
 
+// Tiny demo binary for the calendar crate: syncs the season once and prints
+// it (no server, no DB — `cargo run -p calendar`).
 fn main() {
     // Create parser for the current season.
     let parser = LnrParser::new("2026-2027");

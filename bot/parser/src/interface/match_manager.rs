@@ -1,3 +1,7 @@
+//! Top-level API of the parser crate: retrieves the match list and the resale
+//! seats for the supported club. It holds no persistent state and performs no
+//! notification — the caller (OvalBot) owns matching, dedup and notifications.
+
 use crate::app::clubs::{
     larochelle::{parse_match::LarochellMatchParser, parse_seat::LarochellSeatParser},
     parsers::{ParseMatch, ParseSeat},
@@ -7,9 +11,6 @@ use crate::core::club::Club;
 use crate::core::encounter::{Encounter, MatchNature};
 use crate::core::seat::Seat;
 use crate::interface::curl::proxy::ProxyMode;
-/// This module is the top-level API of the parser crate: it retrieves the match list and
-/// the resale seats for the supported club. It holds no persistent state and performs no
-/// notification — the caller (OvalBot) owns matching, dedup and notifications.
 use crate::interface::curl::web::WebClient;
 
 /// Fetches encounters with seats for a given club and match nature: parse the match list
@@ -115,28 +116,33 @@ mod tests {
     const MATCH_LIST: &str = include_str!("../app/clubs/larochelle/fixtures/match_list.html");
     const SEAT_PAGE: &str = include_str!("../app/clubs/larochelle/fixtures/seat_page.html");
 
+    // Minimal FetchHtml double: always answers with the canned result.
     struct Stub {
         html: Result<String, String>,
     }
 
     impl FetchHtml for Stub {
+        /// Always answers with the stub's canned result.
         fn get_html(&self, _url: &str) -> Result<String, String> {
             self.html.clone()
         }
     }
 
+    // Setting successful: `get_html` answers the given static page.
     fn ok(html: &'static str) -> Stub {
         Stub {
             html: Ok(html.to_string()),
         }
     }
 
+    // Failure setting: `get_html` simulates a network error.
     fn failing() -> Stub {
         Stub {
             html: Err("connection reset".to_string()),
         }
     }
 
+    // The ticketing home page splits into the 5 rugby cards and the other natures.
     #[test]
     fn get_matches_filters_by_nature() {
         let club = club_manager::stade_rochelais();
@@ -151,6 +157,7 @@ mod tests {
         assert_eq!(other.len(), 19);
     }
 
+    // A fetch error yields no matches at all (fail empty, not fail hard).
     #[test]
     fn get_matches_returns_empty_on_fetch_error() {
         let club = club_manager::stade_rochelais();
@@ -158,6 +165,7 @@ mod tests {
         assert!(empty.is_empty());
     }
 
+    // Encounters with an open resale link get their seats parsed from that page.
     #[test]
     fn get_encounters_with_seats_populates_seats_from_resale_page() {
         let encounter = Encounter::new(
@@ -172,6 +180,7 @@ mod tests {
         assert_eq!(out[0].seats.as_ref().map(|s| s.len()), Some(3));
     }
 
+    // No resale link → empty (not `None`) seat list.
     #[test]
     fn get_encounters_without_resale_link_get_empty_seats() {
         let encounter = Encounter::new(
@@ -185,6 +194,7 @@ mod tests {
         assert_eq!(out[0].seats.as_ref().map(|s| s.len()), Some(0));
     }
 
+    // A fetch error leaves `seats` untouched (`None`), not emptied.
     #[test]
     fn get_encounters_keep_seats_unset_on_fetch_error() {
         let encounter = Encounter::new(

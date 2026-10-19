@@ -26,6 +26,7 @@ pub enum ResolveError {
     Ambiguous,
 }
 
+/// One-line spelling of a resolution failure, used by the scan-loop debug log.
 impl std::fmt::Display for ResolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let msg = match self {
@@ -79,6 +80,7 @@ mod tests {
     use calendar::Team;
     use parser::core::club::ClubType;
 
+    // Builds a calendar `Team` whose id/name follow the TeamType conventions.
     fn team(team_type: TeamType) -> Team {
         Team {
             id: team_type.id().to_string(),
@@ -87,6 +89,7 @@ mod tests {
         }
     }
 
+    // Builds a calendar event: home = `home`, away = `away`.
     fn event(id: u32, home: TeamType, away: TeamType, kickoff: &str, status: MatchStatus) -> Event {
         Event {
             id,
@@ -97,6 +100,7 @@ mod tests {
         }
     }
 
+    // Builds a billetterie encounter with the given title/date/nature.
     fn encounter(title: &str, date: &str, nature: MatchNature) -> Encounter {
         Encounter::new(
             ClubType::StadeRochelais,

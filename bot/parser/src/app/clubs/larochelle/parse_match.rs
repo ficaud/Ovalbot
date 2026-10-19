@@ -1,3 +1,6 @@
+//! Match-list parser for Stade Rochelais: extracts one [`Encounter`] per
+//! billetterie card (title, date, resale link when open, nature badge).
+
 use crate::{
     app::clubs::parsers::ParseMatch,
     core::{
@@ -6,8 +9,6 @@ use crate::{
     },
 };
 use scraper::{Html, Selector};
-/// This module contains the implementation of the match parser for Stade Rochelais,
-/// which extracts match information from the club's website.
 use std::collections::HashSet;
 
 /// The `LarochellMatchParser` struct implements the `ParseMatch` trait, providing functionality to parse match information from HTML content specific to Stade Rochelais.
@@ -90,6 +91,7 @@ pub fn parse_match(html: &str) -> Vec<Encounter> {
 
 /// Implements the `ParseMatch` trait for the `LarochellMatchParser` struct, allowing it to be used as a match parser for Stade Rochelais.
 impl ParseMatch for LarochellMatchParser {
+    /// Delegates to the free function (see its doc for the parsing rules).
     fn parse_match(&self, html: &str) -> Vec<Encounter> {
         parse_match(html)
     }

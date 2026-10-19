@@ -16,29 +16,44 @@ use crate::services::waitlist::status_for;
 
 const SESSION_DAYS: i64 = 30;
 
+/// Registration payload (`POST /api/register` body).
 #[derive(Debug, Deserialize)]
 pub struct RegisterRequest {
     pub email: String,
     pub password: String,
 }
 
+/// Login payload (`POST /api/login` body).
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
 }
 
+/// Registration answer: how the account landed (`active` admission or
+/// `waiting` on the waitlist), echoed to the frontend.
 #[derive(Debug, Serialize)]
 pub struct RegisterResponse {
     pub email: String,
     pub status: Status,
 }
 
+/// `GET /api/version` payload (crate version, used by the site footer badge).
 #[derive(Debug, Serialize)]
 pub struct VersionResponse {
     pub version: &'static str,
 }
 
+/// `POST /api/register` — validates email/password, hashes the password, then
+/// admits or queues by the active count ([`status_for`]). Newly active users
+/// get their welcome email right away (best-effort).
+///
+/// # Returns
+/// `201` with the [`RegisterResponse`].
+///
+/// # Errors
+/// `AppError::InvalidEmail` (400), `AppError::InvalidPassword` (< 8 chars),
+/// `AppError::EmailTaken` (409, unique violation), `AppError::Sqlx`/`Argon2`.
 pub async fn register(
     State(state): State<AppState>,
     Json(body): Json<RegisterRequest>,
@@ -94,6 +109,17 @@ pub async fn register(
     Ok((StatusCode::CREATED, body).into_response())
 }
 
+/// `POST /api/login` — authenticates by email + password and opens a session:
+/// a 64-hex token stored in `sessions` (30-day expiry) and set as the
+/// HttpOnly `session` cookie.
+///
+/// # Returns
+/// 200 with the current [`UserView`]-style view of the user plus the session
+/// cookie (the frontend's root `+layout.ts` guards routes on it).
+///
+/// # Errors
+/// `AppError::InvalidCredentials` when the email or password does not match
+/// (deliberately indistinguishable), `AppError::Sqlx`/`Argon2` internally.
 pub async fn login(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -134,6 +160,9 @@ pub async fn login(
     Ok((jar, Json(UserView::from(user))).into_response())
 }
 
+/// `POST /api/logout` — deletes the session row server-side and clears the
+/// cookie; requires a logged-in user (the [`AuthUser`] extractor carries both
+/// the user and the session id to delete).
 pub async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -148,10 +177,13 @@ pub async fn logout(
     Ok((jar, StatusCode::OK).into_response())
 }
 
+/// `GET /api/me` — the current account, as seen by the frontend (the root
+/// `+layout.ts` builds its route guards on this including the flags).
 pub async fn me(auth: AuthUser) -> Json<UserView> {
     Json(UserView::from(auth.user))
 }
 
+/// `GET /api/version` — crate version, shown as the discreet site footer badge.
 pub async fn version() -> Json<VersionResponse> {
     Json(VersionResponse {
         version: env!("CARGO_PKG_VERSION"),

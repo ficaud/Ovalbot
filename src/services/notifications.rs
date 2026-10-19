@@ -1,3 +1,11 @@
+//! Match-scheduling alerts: subscriptions per (user, match) and the
+//! notification fan-out run after each calendar sync.
+//!
+//! Flow: `calendar.sync()` reports `Change::Scheduled` flips → the caller
+//! passes them to [`process`] → every subscriber of that match gets an email
+//! and/or Telegram message (per-channel preferences respected) → the
+//! subscriptions for the match are cleared so everybody is notified once.
+
 use calendar::Change;
 use sqlx::SqlitePool;
 
@@ -5,6 +13,11 @@ use crate::common::error::AppError;
 use crate::services::mailer::MatchAlert;
 use crate::services::state::AppState;
 
+/// Subscribes a user to a match: records the row in `match_notifications`
+/// (idempotent — an existing subscription is kept via `DO NOTHING`).
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
 pub async fn subscribe(pool: &SqlitePool, user_id: i64, match_id: i64) -> Result<(), AppError> {
     let now = crate::common::time::now();
     sqlx::query(
@@ -19,6 +32,11 @@ pub async fn subscribe(pool: &SqlitePool, user_id: i64, match_id: i64) -> Result
     Ok(())
 }
 
+/// Removes a user's subscription to a match (idempotent: deleting an absent
+/// row succeeds).
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
 pub async fn unsubscribe(pool: &SqlitePool, user_id: i64, match_id: i64) -> Result<(), AppError> {
     sqlx::query("DELETE FROM match_notifications WHERE user_id = ? AND match_id = ?")
         .bind(user_id)
@@ -28,6 +46,13 @@ pub async fn unsubscribe(pool: &SqlitePool, user_id: i64, match_id: i64) -> Resu
     Ok(())
 }
 
+/// Lists every match id the user subscribed to, ascending.
+///
+/// # Returns
+/// One LNR match id per subscription row; empty when unsubscribed from all.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
 pub async fn list_for_user(pool: &SqlitePool, user_id: i64) -> Result<Vec<i64>, AppError> {
     let ids = sqlx::query_scalar::<_, i64>(
         "SELECT match_id FROM match_notifications WHERE user_id = ? ORDER BY match_id",
@@ -38,6 +63,11 @@ pub async fn list_for_user(pool: &SqlitePool, user_id: i64) -> Result<Vec<i64>, 
     Ok(ids)
 }
 
+/// Saves the user's two per-channel alert preferences (`users.notify_email` /
+/// `users.notify_telegram`); values are booleans, both may be muted.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
 pub async fn update_settings(
     pool: &SqlitePool,
     user_id: i64,
@@ -53,6 +83,14 @@ pub async fn update_settings(
     Ok(())
 }
 
+/// Fans out one notification round for the changes produced by a calendar
+/// sync. Only `Change::Scheduled` flips are handled (Tbd → Scheduled with the
+/// final kickoff); best-effort per message — send failures are logged, never
+/// propagated, so one dead channel cannot skip the others.
+///
+/// # Arguments
+/// * `state` — shared dependencies (pool, mailer, telegram).
+/// * `changes` — changes from a single `calendar.sync()` call; consumed.
 pub async fn process(state: &AppState, changes: Vec<Change>) {
     // if there is no change, we don't do anything here
     for change in changes {
@@ -68,6 +106,15 @@ pub async fn process(state: &AppState, changes: Vec<Change>) {
     }
 }
 
+/// Notifies all subscribers of one scheduled match, then deletes their
+/// subscription rows (single-fire semantics: a match change is announced once).
+///
+/// Per subscriber: email when `notify_email`, Telegram when `notify_telegram`
+/// AND a linked chat id exists (unlinked users simply get nothing on that
+/// channel). Send/DB failures warn and continue.
+///
+/// # Arguments
+/// * `match_id` — LNR id identifying `match_notifications` rows.
 async fn process_one(
     state: &AppState,
     match_id: u32,

@@ -4,6 +4,8 @@
 //! implicit Europe/Paris timezone. This module only checks whether a kickoff is
 //! precise enough to consider a match `Scheduled`; it does not build timestamps.
 
+//! A precise kickoff day+time, without year or timestamp.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchDate {
     pub day: u8,
@@ -57,6 +59,11 @@ impl MatchDate {
     }
 }
 
+/// The month index (1..=12) of a French month token ("octobre", "féVRier"),
+/// after accent normalization.
+///
+/// # Returns
+/// `Some(1..=12)`, or `None` for a non-month token.
 fn month_number(token: &str) -> Option<u8> {
     let normalized = normalize(token);
     FRENCH_MONTHS
@@ -120,6 +127,8 @@ pub fn parse_window(date: &str) -> Option<DateWindow> {
     })
 }
 
+/// Lower-cases the input and drops French accents, so month/day matching
+/// works whatever accents the page uses ("février" == "fevrier").
 fn normalize(input: &str) -> String {
     input
         .to_lowercase()

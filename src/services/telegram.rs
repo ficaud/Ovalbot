@@ -1,3 +1,11 @@
+//! Telegram integration: bot transport, account chat linking (via the deep
+//! link + `/start <token>` flow on the public webhook), and access control of
+//! inbound updates.
+//!
+//! The raw chat id is stored only in `users.telegram_id` and exposed to the
+//! API as a boolean; link tokens are single-use, expire after
+//! [`LINK_TTL_MINUTES`], and live in `telegram_link_tokens`.
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -6,10 +14,13 @@ use sqlx::SqlitePool;
 
 use crate::common::error::AppError;
 
+/// Validity window of a Telegram link token (minutes); expired tokens are
+/// rejected on consume even though the row is deleted either way.
 pub const LINK_TTL_MINUTES: i64 = 15;
 
 // ============================== TELEGRAM CLIENT ==============================
 
+/// Failures while talking to the Bot API (network vs non-2xx response).
 #[derive(Debug, thiserror::Error)]
 pub enum TelegramError {
     #[error("http error: {0}")]
@@ -18,25 +29,38 @@ pub enum TelegramError {
     Api(String),
 }
 
+/// Outbound transport to the Telegram Bot API, injected into
+/// [`crate::services::state::AppState`] (real client in production,
+/// [`NoopTelegram`] when `TELEGRAM_ENABLED` is not `true`).
 #[async_trait]
 pub trait Telegram: Send + Sync {
+    /// Sends a plain-text message to one chat.
+    ///
+    /// # Errors
+    /// [`TelegramError`] on network or Bot API failure.
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<(), TelegramError>;
 }
 
+/// Static Telegram settings handed to handlers: the bot username (to build
+/// deep links) and the webhook secret (to authenticate inbound updates).
 #[derive(Clone, Debug, Default)]
 pub struct TelegramConfig {
+    /// Bot handle, e.g. `OvalBot` — absent when the integration is off.
     pub bot_username: Option<String>,
+    /// Secret the webhook must carry in `X-Telegram-Bot-Api-Secret-Token`.
     pub webhook_secret: Option<String>,
 }
 
 /// Telegram client implementation of the Telegram trait,
 /// containing a reqwest client and a bot token.
+/// Real [`Telegram`] backed by the Bot API over HTTPS (reqwest JSON POSTs).
 #[derive(Clone)]
 pub struct TelegramClient {
     client: reqwest::Client,
     token: String,
 }
 
+/// Bot API `sendMessage` request body.
 #[derive(Serialize)]
 struct OutgoingMessage<'a> {
     chat_id: &'a str,
@@ -44,6 +68,7 @@ struct OutgoingMessage<'a> {
 }
 
 impl TelegramClient {
+    /// Builds the client around a bot token issued by @BotFather.
     pub fn new(token: String) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -51,6 +76,8 @@ impl TelegramClient {
         }
     }
 
+    /// Full `https://api.telegram.org/bot{token}/{method}` endpoint URL for a
+    /// Bot API method name (e.g. `sendMessage`, `setWebhook`).
     fn api_url(&self, method: &str) -> String {
         format!("https://api.telegram.org/bot{}/{method}", self.token)
     }
@@ -163,17 +190,21 @@ pub async fn register_webhook() {
 
 // ============================== TELEGRAM UPDATES =============================
 
+/// One inbound webhook update, restricted to the fields OvalBot cares about
+/// (only messages are of interest — no inline queries etc.).
 #[derive(Debug, Deserialize)]
 pub struct Update {
     pub message: Option<Message>,
 }
 
+/// An update's message nested body.
 #[derive(Debug, Deserialize)]
 pub struct Message {
     pub chat: Chat,
     pub text: Option<String>,
 }
 
+/// The chat a message came from (private chats only, in practice).
 #[derive(Debug, Deserialize)]
 pub struct Chat {
     pub id: i64,
@@ -289,6 +320,7 @@ pub fn deep_link(bot_username: &str, token: &str) -> String {
 mod tests {
     use super::*;
 
+    // Builds an [`Update`] whose message is `text` posted by chat `chat_id`.
     fn update(text: &str, chat_id: i64) -> Update {
         Update {
             message: Some(Message {

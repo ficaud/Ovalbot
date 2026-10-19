@@ -1,8 +1,10 @@
-/// This module defines the Club struct and the ClubType enum, which represent rugby clubs and their types.
-///
-/// ClubType is the type of club parsed by the application.
-/// Currently only Stade Rochelais is implemented; new clubs would be added here
-/// together with the parser modules in `app/clubs/`.
+//! Rugby club identities known to the parser.
+//!
+//! [`ClubType`] is the club a scan targets. Only Stade Rochelais is
+//! implemented today; new clubs would be added here together with their
+//! parser modules under `app/clubs/`.
+
+/// The club a scan is run for (currently a single-variant enum).
 #[derive(Debug, Clone)]
 pub enum ClubType {
     StadeRochelais,

@@ -9,6 +9,7 @@ use crate::services::auth::ActiveUser;
 use crate::services::notifications;
 use crate::services::state::AppState;
 
+/// Channel-preference payload for `PUT /api/notifications/settings`.
 #[derive(Debug, Deserialize)]
 pub struct SettingsRequest {
     pub email_enabled: bool,
@@ -16,6 +17,9 @@ pub struct SettingsRequest {
 }
 
 /// List the notifications for the user.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
 pub async fn list(
     State(state): State<AppState>,
     auth: ActiveUser,
@@ -35,6 +39,8 @@ pub async fn subscribe(
 }
 
 /// Unsubscribe from notifications for a match.
+///
+/// Idempotent (204 even when nothing was subscribed).
 pub async fn unsubscribe(
     State(state): State<AppState>,
     auth: ActiveUser,
@@ -45,6 +51,9 @@ pub async fn unsubscribe(
 }
 
 /// Update the notification settings for the user.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
 pub async fn update_settings(
     State(state): State<AppState>,
     auth: ActiveUser,

@@ -9,11 +9,22 @@ use crate::services::auth::ActiveUser;
 use crate::services::state::AppState;
 use crate::services::telegram::{self, Update};
 
+/// `POST /api/telegram/link` — answer payload: the `t.me` deep link.
 #[derive(Debug, Serialize)]
 pub struct LinkResponse {
+    /// Opens the bot chat pre-filled with `/start <token>` (one-shot link).
     pub url: String,
 }
 
+/// `POST /api/telegram/link` — mints a single-use 15-minute link token and
+/// returns a Telegram deep link; the user pastes `/start <token>` from the bot.
+///
+/// # Returns
+/// The [`LinkResponse`].
+///
+/// # Errors
+/// `AppError::TelegramUnavailable` when the bot is not configured
+/// (username/secret missing), DB errors otherwise.
 pub async fn link(
     State(state): State<AppState>,
     auth: ActiveUser,
@@ -28,11 +39,27 @@ pub async fn link(
     Ok(Json(LinkResponse { url }))
 }
 
+/// `DELETE /api/telegram/link` — unbinds the current user's chat
+/// (clears `users.telegram_id`).
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
 pub async fn unlink(State(state): State<AppState>, auth: ActiveUser) -> Result<Response, AppError> {
     telegram::unlink(&state.pool, auth.0.user.id).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// `POST /api/telegram/webhook` — the PUBLIC callback Telegram pushes every
+/// bot update to. Authenticated by the constant-time comparison of the
+/// `X-Telegram-Bot-Api-Secret-Token` header against the configured secret.
+///
+/// Only `/start <token>` commands matter: a valid token binds the sending
+/// chat to the token's user (`consume_link_token`) and the bot replies
+/// in-chat (success/failure text). Any other update is acknowledged 200.
+///
+/// # Errors
+/// `AppError::Unauthorized` on a bad/missing secret header,
+/// `AppError::TelegramUnavailable` when no webhook secret is configured.
 pub async fn webhook(
     State(state): State<AppState>,
     headers: HeaderMap,

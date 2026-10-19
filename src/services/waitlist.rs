@@ -1,10 +1,27 @@
+//! Waitlist admission logic: how many accounts may be `active` and who is
+//! promoted next when a slot frees up.
+//!
+//! Registration uses [`status_for`] to either admit or queue the account;
+//! `promote_next_waiting` (called by admin activation/deletion flows) fills
+//! the first stale slot.
+
 use sqlx::SqlitePool;
 
 use crate::common::error::AppError;
 use crate::common::models::{Status, User};
 
+/// Maximum number of simultaneously `active` accounts (the handful of beta
+/// seats the site can serve).
 pub const ACTIVE_LIMIT: i64 = 10;
 
+/// Maps the current active count to the status of a brand-new registration:
+/// `Active` while under [`ACTIVE_LIMIT`], `Waiting` from there on.
+///
+/// # Arguments
+/// * `active_count` — number of users with `status = 'active'`.
+///
+/// # Returns
+/// The status to give the new account.
 pub fn status_for(active_count: i64) -> Status {
     if active_count < ACTIVE_LIMIT {
         Status::Active
@@ -13,6 +30,16 @@ pub fn status_for(active_count: i64) -> Status {
     }
 }
 
+/// Promotes the longest-waiting account from the waitlist: the first
+/// `status = 'waiting'` row in creation order is switched to `active` with
+/// `activated_at = now`.
+///
+/// # Returns
+/// The promoted user (already updated in DB), or `None` when no one is
+/// waiting — the caller then sends no welcome email.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
 pub async fn promote_next_waiting(pool: &SqlitePool) -> Result<Option<User>, AppError> {
     let now = crate::common::time::now();
     let user = sqlx::query_as::<_, User>(

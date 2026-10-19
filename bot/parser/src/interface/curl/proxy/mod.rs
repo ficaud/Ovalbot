@@ -1,3 +1,5 @@
+//! Proxy pool management: normalized lines, round-robin rotation, failover.
+
 mod proxy_api;
 mod proxy_core;
 
