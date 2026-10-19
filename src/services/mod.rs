@@ -1,3 +1,6 @@
+//! Business + integration services: auth/waitlist, calendar cache, mailer,
+//! Telegram, match notifications, ticket requests and the bot scan loop.
+
 pub mod auth;
 pub mod bot;
 pub mod calendar;

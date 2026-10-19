@@ -9,6 +9,11 @@ use crate::services::mailer::send_welcome_if_unsent;
 use crate::services::state::AppState;
 use crate::services::waitlist::promote_next_waiting;
 
+/// `GET /api/admin/users` — every account as [`UserView`] (admin only),
+/// ordered by id.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
 pub async fn list_users(
     State(state): State<AppState>,
     _admin: AdminUser,
@@ -21,6 +26,11 @@ pub async fn list_users(
     Ok(Json(users.into_iter().map(UserView::from).collect()))
 }
 
+/// `POST /api/admin/users/{id}/activate` — force-activates a waitlist account
+/// and sends its welcome email if none went out yet.
+///
+/// # Errors
+/// `AppError::NotFound` when the id is unknown, `AppError::Sqlx` on DB failure.
 pub async fn activate_user(
     State(state): State<AppState>,
     _admin: AdminUser,
@@ -43,6 +53,13 @@ pub async fn activate_user(
     Ok(StatusCode::OK)
 }
 
+/// `DELETE /api/admin/users/{id}` — deletes a non-admin account (cascade on
+/// sessions/tickets via FK), its sessions, then promotes the next waiting
+/// account into the freed slot (with its welcome email).
+///
+/// # Errors
+/// `AppError::NotFound` (unknown id), `AppError::Forbidden` (an admin cannot
+/// delete another admin), `AppError::Sqlx` on DB failure.
 pub async fn delete_user(
     State(state): State<AppState>,
     _admin: AdminUser,

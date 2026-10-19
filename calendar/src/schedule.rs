@@ -8,12 +8,20 @@ use crate::event::MatchStatus;
 use crate::team::TeamType;
 use crate::Event;
 
+/// A calendar change between two snapshots. Today only one kind of change
+/// matters commercially: a match that gets its kickoff (Tbd → Scheduled).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
+    /// A match that was `Tbd`, now `Scheduled` — the trigger of one alert
+    /// round (email/Telegram) for its subscribers.
     Scheduled {
+        /// LNR match id the alert is about.
         id: u32,
+        /// Home club.
         team: TeamType,
+        /// Away club.
         opponent: TeamType,
+        /// The new kickoff text, as scraped (may be a single date+time).
         kickoff: String,
     },
 }
@@ -79,6 +87,7 @@ mod tests {
     use crate::team::{Team, TeamType};
     use crate::Event;
 
+    // Test fixture: a `Team` description matching the TeamType conventions.
     fn team(team_type: TeamType) -> Team {
         Team {
             id: team_type.id().to_string(),
@@ -87,6 +96,7 @@ mod tests {
         }
     }
 
+    // Test fixture: event with id `id`, home `team_type`, away `opponent`.
     fn event(id: u32, team_type: TeamType, opponent: TeamType, status: MatchStatus) -> Event {
         Event {
             id,

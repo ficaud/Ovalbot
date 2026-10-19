@@ -1,3 +1,10 @@
+//! Account authN/authZ: password hashing (Argon2id), session tokens, and the
+//! three Axum extractors that protect routes.
+//!
+//! Extractors read the `session` cookie, resolve it to a user via
+//! `load_session`/`load_user` and reject with [`AppError::Unauthorized`]
+//! (missing/unknown/expired) or [`AppError::Forbidden`] (role/status unfit).
+
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use argon2::Argon2;
 use axum::extract::FromRequestParts;
@@ -9,21 +16,38 @@ use crate::common::error::AppError;
 use crate::common::models::{Role, Session, Status, User};
 use crate::services::state::AppState;
 
+/// Hashes a clear password with Argon2id (default parameters) into the PHC
+/// string stored in `users.password_hash`.
+///
+/// # Errors
+/// `AppError::Argon2` if hashing fails.
 pub fn hash_password(password: &str) -> Result<String, AppError> {
     Ok(Argon2::default()
         .hash_password(password.as_bytes())?
         .to_string())
 }
 
+/// Checks a clear password against a stored PHC string (no side channels
+/// beyond Argon2's own timing).
+///
+/// # Returns
+/// `Ok(())` when the password matches; the error carries nothing sensitive.
+///
+/// # Errors
+/// `AppError::Argon2` when the hash is malformed or the password differs.
 pub fn verify_password(password: &str, hash: &str) -> Result<(), AppError> {
     Ok(Argon2::default().verify_password(password.as_bytes(), hash)?)
 }
 
+/// Generates a new session token: 32 random bytes rendered as 64 lowercase
+/// hex chars, used both as the cookie value and the `sessions.id` primary key.
 pub fn generate_session_token() -> String {
     let bytes: [u8; 32] = rand::random();
     hex::encode(bytes)
 }
 
+/// The successful outcome of [`AuthUser`]'s extraction: the account and the
+/// session id that authorized this request (used by logout to delete the row).
 pub struct AuthUser {
     pub user: User,
     pub session_id: String,
@@ -32,6 +56,14 @@ pub struct AuthUser {
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = AppError;
 
+    /// Reads the `session` cookie, resolves it to a live session and its user.
+    ///
+    /// # Returns
+    /// `AuthUser` with the full `users` row.
+    ///
+    /// # Errors
+    /// `AppError::Unauthorized` when the cookie is missing, unknown, or the
+    /// session is expired/deleted (`# Panics`: none).
     async fn from_request_parts(
         parts: &mut Parts,
         state: &AppState,
@@ -54,11 +86,20 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
+/// Requires a logged-in user with the `admin` role (admin-only routes).
+///
+/// Infallible-checked wrapper of [`AuthUser`]; the inner value is the auth it
+/// wraps, so handlers get both user and session id.
 pub struct AdminUser(pub AuthUser);
 
 impl FromRequestParts<AppState> for AdminUser {
     type Rejection = AppError;
 
+    /// Delegates to [`AuthUser`] then checks `role == admin`.
+    ///
+    /// # Errors
+    /// `AppError::Unauthorized` (delegated) or `AppError::Forbidden` when the
+    /// account is not an admin.
     async fn from_request_parts(
         parts: &mut Parts,
         state: &AppState,
@@ -71,11 +112,18 @@ impl FromRequestParts<AppState> for AdminUser {
     }
 }
 
+/// Requires a logged-in user whose account is `active` (guards user-facing
+/// routes such as ticket requests — waitlist accounts cannot act yet).
 pub struct ActiveUser(pub AuthUser);
 
 impl FromRequestParts<AppState> for ActiveUser {
     type Rejection = AppError;
 
+    /// Delegates to [`AuthUser`] then checks `status == active`.
+    ///
+    /// # Errors
+    /// `AppError::Unauthorized` (delegated) or `AppError::Forbidden` when the
+    /// account still sits on the waitlist.
     async fn from_request_parts(
         parts: &mut Parts,
         state: &AppState,
@@ -88,6 +136,11 @@ impl FromRequestParts<AppState> for ActiveUser {
     }
 }
 
+/// Loads a session row by cookie id. Unknown/missing id maps to
+/// `AppError::Unauthorized`; expiry is checked by the caller.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
 async fn load_session(pool: &SqlitePool, session_id: &str) -> Result<Session, AppError> {
     sqlx::query_as::<_, Session>(
         "SELECT id, user_id, created_at, expires_at FROM sessions WHERE id = ?",
@@ -98,6 +151,11 @@ async fn load_session(pool: &SqlitePool, session_id: &str) -> Result<Session, Ap
     .ok_or(AppError::Unauthorized)
 }
 
+/// Loads the full `users` row for a session's user. A missing row (deleted
+/// account still holding a session) maps to `AppError::Unauthorized`.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
 async fn load_user(pool: &SqlitePool, user_id: i64) -> Result<User, AppError> {
     sqlx::query_as::<_, User>(
         "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at, telegram_id, notify_email, notify_telegram FROM users WHERE id = ?",

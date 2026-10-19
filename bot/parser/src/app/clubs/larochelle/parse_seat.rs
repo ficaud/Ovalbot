@@ -1,3 +1,6 @@
+//! Seat-page parser for Stade Rochelais: reads the resale seats out of a
+//! billetterie product page (pack JSON blobs + Drupal settings for categories).
+
 use crate::{
     app::clubs::parsers::ParseSeat,
     core::{
@@ -6,8 +9,6 @@ use crate::{
     },
 };
 use scraper::{Html, Selector};
-/// This module contains the implementation of the `ParseSeat` trait for the Stade Rochelais website,
-/// allowing the application to parse seat information from the HTML content of the Stade Rochelais ticketing pages.
 use std::collections::HashMap;
 
 /// Private module containing the JSON structures used for deserializing the seat information from the HTML content
@@ -16,31 +17,44 @@ mod json {
     use serde::Deserialize;
     use std::collections::HashMap;
 
+    /// One resale pack: its id, category, tickets and unit price.
     #[derive(Deserialize)]
     pub struct Pack {
+        /// Pack id from the billetterie (stable seat-group identifier).
         pub pack_id: u64,
+        /// Category id into the Drupal settings map, if any.
         pub category_id: Option<String>,
+        /// Ticket id -> seat description (HTML fragment).
         pub tickets: HashMap<String, Ticket>,
+        /// Unit price as displayed, e.g. `"32.00"`.
         pub amount_by_ticket: String,
     }
 
+    /// One ticket inside a pack.
     #[derive(Deserialize)]
     pub struct Ticket {
+        /// HTML fragment describing the seat ("Rang H • Siège 57").
         pub seat_info: String,
     }
 
+    /// Root of the `drupal-settings-json` script.
     #[derive(Deserialize)]
     pub struct PageSettings {
+        /// Resale settings, absent on non-resale pages.
         pub resale: Option<ResaleSettings>,
     }
 
+    /// Category id -> attribute entries of the resale settings.
     #[derive(Deserialize)]
     pub struct ResaleSettings {
+        /// Category entries keyed by id.
         pub attributes: HashMap<String, ResaleAttribute>,
     }
 
+    /// One resale category (id -> human name, e.g. "Pelouse").
     #[derive(Deserialize)]
     pub struct ResaleAttribute {
+        /// Display name of the category.
         pub name: String,
     }
 }
@@ -188,6 +202,7 @@ fn get_seat_composition(seat_info: &str, category: &str) -> SeatComposition {
 /// Implementation of the `ParseSeat` trait for the `LarochellSeatParser`,
 /// allowing it to parse seat information from HTML content specific to Stade Rochelais.
 impl ParseSeat for LarochellSeatParser {
+    /// Delegates to the free function (see its doc for the parsing rules).
     fn parse_seat(&self, html: &str, encounter: Encounter) -> Vec<Seat> {
         parse_seat(html, encounter)
     }
@@ -202,6 +217,7 @@ mod tests {
     // https://billetterie.staderochelais.com/fr/product/1368/revente_j6_23_oct_stade_rochelais_evreux
     const FIXTURE: &str = include_str!("fixtures/seat_page.html");
 
+    // Minimal encounter fixture passed through to `parse_seat` (unused).
     fn sample_encounter() -> Encounter {
         Encounter::new(
             ClubType::StadeRochelais,
@@ -212,6 +228,7 @@ mod tests {
         )
     }
 
+    // The committed fixture page yields the 3 known seats with their prices/categories.
     #[test]
     fn fixture_seats_parsed() {
         let seats = parse_seat(FIXTURE, sample_encounter());
@@ -242,6 +259,7 @@ mod tests {
         assert_eq!(s3.seat_info.composition.seat_number, 6);
     }
 
+    // A pack whose `data-json` is garbage is dropped, valid packs still parse.
     #[test]
     fn malformed_pack_json_is_skipped() {
         let html = r#"
@@ -259,11 +277,13 @@ mod tests {
         assert_eq!(seats[0].seat_info.composition.seat_number, 42);
     }
 
+    // An empty page parses to zero seats (no panic on missing markup).
     #[test]
     fn page_without_settings_or_packs_yields_no_seats() {
         assert!(parse_seat("<html><body></body></html>", sample_encounter()).is_empty());
     }
 
+    // A category id absent from the Drupal settings degrades to an empty name.
     #[test]
     fn unknown_category_id_falls_back_to_empty_name() {
         let html = r#"
@@ -274,6 +294,7 @@ mod tests {
         assert_eq!(seats[0].seat_info.composition.category, "");
     }
 
+    // Composition parsing: prefixes Bloc/Rang/Siège are stripped one by one.
     #[test]
     fn get_seat_composition_parses_known_parts() {
         let composition =
@@ -289,6 +310,7 @@ mod tests {
         assert_eq!(composition.seat_number, 8);
     }
 
+    // Missing/absent details leave zero values instead of failing.
     #[test]
     fn get_seat_composition_defaults_to_zeroes() {
         let composition = get_seat_composition("", "");

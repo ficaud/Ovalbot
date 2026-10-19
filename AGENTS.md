@@ -29,16 +29,28 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 
 ## Conventions
 
+- Documentation: every function (pub and private) carries a rustdoc `///` comment — with `# Arguments` / `# Returns` / `# Errors` / `# Panics` sections when relevant — every struct/enum gets a doc line (fields where it clarifies), and every module opens with a `//!` header. Local variables stay uncommented unless non-obvious. Keep docs factual and short; comments stay in English.
 - Unit tests are mandatory for every business function implemented.
 - Code and comments are written in English.
-- No superfluous comments in the code.
 - Section separators use plain `//` comments (never `///`, reserved for doc comments that attach to the next item).
+- Test functions get a one-line `//` intent comment when their name alone doesn't tell the story.
 - Axum 0.8 : path params use `{id}` (not `:id`).
 - Cookies : `axum-extra` (feature `cookie`).
 - Migrations : `sqlx::migrate!()` embedded at runtime + `sqlx-cli` (sqlite) in dev to create files.
 - SQL : runtime-checked `query`/`query_as` for Phase 1.
 
 ## Journal
+
+### 2026-10-19 — Documentation campaign (lots 1–4)
+- Goal: a newcomer can understand the codebase by reading it — every function/struct/module documented, English only, no behavior change.
+- Convention adopted (see Conventions): rustdoc `///` on every fn (incl. private, `# Arguments`/`# Returns`/`# Errors`/`# Panics` when relevant), `///` on structs/enums/fields where it clarifies, `//!` module headers, plain `//` for intent lines and one-liners on tests when the name doesn't suffice. "No superfluous comments" relaxed accordingly.
+- Lot 1 foundations: `src/common/{error,models,time,db}.rs` (AppError → HTTP mapping policy, User/Session/UserView field semantics, RFC 3339 helpers incl. the fail-closed `is_past`, pool with FKs + 5-conn cap), `src/lib.rs` (`app` route map), `src/main.rs` (6-step startup order), `bin/create_admin.rs`.
+- Lot 2 services: `auth` (3 extractors + password/session helpers), `calendar` (cache/locking, sync diff contract, Team/MatchView), `notifications` (fan-out flow, single-fire, per-channel gating), `waitlist`, `email`, `state`, `mailer` (trait/Resend/Noop, templates, `render` placeholders, best-effort `send_welcome_if_unsent`), `telegram` (client, link-token flow, webhook structs), `tickets` (input bounds, kind→columns flattening, status lifecycle, RemoveOutcome — the TicketKind/TicketStatus/TicketRequestView docs were initially lost to a failed edit and reapplied), `matching` (Display + test helpers), plus all `routes/*` handlers (endpoint one-liners with status/error contracts).
+- Lot 3 `calendar` crate: `Event`/`MatchStatus` (LNR stable id!), `Change`, `TeamType`/`Team`, `WebPageFetcher` (`fetch_html`, 404-terminates-pagination), `MatchDate` internals (`month_number`, `normalize`), `LnrParser` (parse_rules, pagination, `build_team`), `EventParser` trait.
+- Lot 4 `bot/parser`: misplaced `///` module docs converted to real `//!` headers (`match_manager`, `parse_match`, `parse_seat`, `parsers`, `club`, `club_manager`); all `mod.rs` files got headers; seat `json` deserialization structs documented; trait impl delegates get one-line docs; `Proxy`, `WebClient::new`/`set_proxy_mode` documented. Test-only `//` intent lines partially added (descriptive test names left as-is — full test-comment pass deferred).
+- Gotchas fixed along the way: doc lines stranded between `use` statements and after `#[tokio::main]` (needed an attribute-aware survey script — the naive prev-line detector false-positives on `#[derive]`), `//!` after `pub mod` in `lib.rs` → E0753, unused import + stray empty `impl` cleaned up.
+- Verification: `cargo fmt --check` green, `cargo clippy --workspace --all-targets -- -D warnings` green, `cargo doc --no-deps` 0 warnings (fixed 3 broken intra-doc links to private items), `cargo test --workspace --jobs 2` all green (17 suites).
+- Remaining (noted, not done): `#![warn(missing_docs)]` guard lot + full test-intent pass (both deferred deliberately).
 
 ### 2026-10-07 — Planning & CI/CD
 - Moved specs to `doc/specs/` + logo to `doc/assets/`.

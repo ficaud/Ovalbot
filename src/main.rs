@@ -11,6 +11,17 @@ use ovalbot::services::telegram;
 
 const SYNC_INTERVAL_SECS: u64 = 20 * 60;
 
+/// Server entry point. Startup order (each step logs its own failures):
+///
+/// 1. tracing (JSON-ish default filter `ovalbot=info,tower_http=info`,
+///    overridable via `RUST_LOG`),
+/// 2. SQLite connect + migrations (`DATABASE_URL`, default `sqlite://ovalbot.db`),
+/// 3. calendar service + a first LNR sync (best-effort — the bot loop needs
+///    the snapshot, so it is started before any HTTP traffic),
+/// 4. `AppState` (pool, mailer, telegram), Telegram webhook registration,
+/// 5. background tasks: ticket resale scanner (bot) and the periodic calendar
+///    sync feeding match notifications,
+/// 6. Axum listener on `0.0.0.0:3000` serving [`ovalbot::app`].
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize the mailing resend service

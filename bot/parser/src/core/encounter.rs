@@ -275,6 +275,7 @@ mod tests {
     use crate::core::club::ClubType;
     use chrono::Timelike;
 
+    // Builds a minimal encounter (Rugby, "Test") for date parsing checks.
     fn enc(date: &str) -> Encounter {
         Encounter::new(
             ClubType::StadeRochelais,

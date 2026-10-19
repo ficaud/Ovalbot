@@ -1,3 +1,12 @@
+//! Ticket requests: the per-user, per-match "what I want to buy" parameters
+//! persisted in SQLite (`ticket_requests`), validated server-side against the
+//! bounds the frontend modal enforces.
+//!
+//! The rows double as the bot's matching source: an accepted request can be
+//! switched out of `pending` (accepted/purchased/…) by the Phase 4 flow, and
+//! the atomic conditional `UPDATE`s here guarantee a claim can't race.
+//! APIs: `upsert` / `remove` / `list_for_user` (called by `routes::tickets`).
+
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 
@@ -8,17 +17,31 @@ use crate::common::error::AppError;
 // Defensive upper bound for a ticket price, in cents (1000 €).
 const MAX_PRICE_CENTS: u32 = 100_000;
 
-// Ticket request parameters sent by the frontend for a single match in Json.
+/// Per-match ticket request, tagged on the buying mode (`{"kind": ...}`).
+///
+/// Each kind fills exactly the columns it needs (`columns()`), the others are
+/// NULL — kills the ambiguity of one generic row shape.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TicketRequestInput {
+    /// One-at-a-time buying (`quantity` in 1..=10 tickets, each ≤
+    /// `max_price_cents`), bought as they become available.
     Single { quantity: u8, max_price_cents: u32 },
+    /// A single pair, priced as a whole (`max_price_cents` for the duo).
     Duo { max_price_cents: u32 },
+    /// 2..=10-standing seats on a shared billing; the pelouse rate applies
+    /// automatically, so no price is requested.
     Group { places: u8 },
 }
 
 impl TicketRequestInput {
     // Bounds mirrored from the frontend modal.
+    /// Validates the variant against the same bounds the frontend enforces
+    /// (Single: quantity 1..=10 and price 1..=[`MAX_PRICE_CENTS`]; Duo:
+    /// price; Group: places 2..=10).
+    ///
+    /// # Returns
+    /// `true` when the payload may be stored; the route answers 400 otherwise.
     fn is_valid(&self) -> bool {
         match self {
             Self::Single {
@@ -30,7 +53,12 @@ impl TicketRequestInput {
         }
     }
 
-    // Flattened representation of the request, following the `ticket_requests` columns.
+    /// Flattens the variant into the `ticket_requests` columns
+    /// `(kind, quantity, max_price_cents, places)` — exactly one of the three
+    /// payload columns is `Some`, per the SQL CHECK constraints.
+    ///
+    /// # Returns
+    /// The column tuple to bind in the upsert statement.
     fn columns(&self) -> (TicketKind, Option<u8>, Option<u32>, Option<u8>) {
         match self {
             Self::Single {
@@ -55,6 +83,8 @@ fn is_valid_price(cents: u32) -> bool {
 
 // ============================== TICKET REQUEST TYPES ==============================
 
+/// Buying mode of a stored request — serialized as `"single"`/`"duo"`/`"group"`
+/// and stored with the same spelling (sqlx `rename_all`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]
@@ -64,35 +94,56 @@ pub enum TicketKind {
     Group,
 }
 
+/// Lifecycle of a request. Fresh rows are `Pending`; the Phase 4 claim flow
+/// moves them out of it (upsert/remove refuse everything but `Pending`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]
 pub enum TicketStatus {
+    /// Waiting for a matching offer; still modifiable.
     Pending,
+    /// An offer matched and was claimed.
     Accepted,
+    /// Tickets bought; terminal success.
     Purchased,
+    /// The attempt failed terminally.
     Failed,
+    /// Expired without ever being claimed.
     Expired,
+    /// Withdrawn by the user (or removed after a bot claim attempt).
     Cancelled,
 }
 
-/// A stored ticket request as returned by the API.
+/// One stored request as serialized by `GET /api/requests` (flat shape; the
+/// payload columns unused by `kind` are `None`).
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct TicketRequestView {
+    /// LNR match id the request targets (the bot resolves offers to it too).
     pub match_id: i64,
+    /// Buying mode; drives which payload columns are set.
     pub kind: TicketKind,
+    /// `Single` only: how many individual tickets are wanted (1..=10).
     pub quantity: Option<u8>,
+    /// `Single`/`Duo` only: per-ticket / per-duo budget in cents.
     pub max_price_cents: Option<u32>,
+    /// `Group` only: how many pelouse places (2..=10, shared billing).
     pub places: Option<u8>,
+    /// Lifecycle state (`pending` until Phase 4 claims or closes it).
     pub status: TicketStatus,
+    /// First-insert timestamp (RFC 3339), preserved across updates.
     pub created_at: String,
+    /// Last modification timestamp (RFC 3339).
     pub updated_at: String,
 }
 
-/// Outcome of a removal: the row may be gone, absent, or protected by its status.
+/// Outcome of [`remove`]: distinguishes the plain "ok" from the two requests
+/// that leave the DB untouched (missing row vs no longer modifiable).
 pub enum RemoveOutcome {
+    /// The `pending` row was deleted.
     Removed,
+    /// No row matched; the HTTP layer answers 204 anyway (idempotent).
     NotFound,
+    /// The row exists but left `pending`; modification is refused.
     Locked,
 }
 

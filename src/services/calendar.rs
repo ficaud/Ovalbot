@@ -1,28 +1,51 @@
+//! Read model over the LNR calendar: an in-memory event cache refreshed by
+//! [`CalendarService::sync`], served to the API as team/match views.
+//!
+//! The `calendar` crate owns parsing/diffing; this service owns the cache and
+//! its locking (a `std::sync::RwLock` so reads never block the tokio runtime).
+
 use std::sync::RwLock;
 
 use calendar::parse::{EventParser, LnrParser};
 use calendar::{diff, for_team, upcoming, Change, Event, MatchStatus, TeamType};
 use serde::Serialize;
 
+/// LNR season scraped by the parser (fixes the pages fetched on the calendar site).
 const SEASON: &str = "2026-2027";
 
+/// One team as served by `GET /api/teams`.
 #[derive(Debug, Serialize)]
 pub struct TeamView {
+    /// URL-safe slug used as the `team` path parameter (e.g. `stade-rochelais`).
     pub id: String,
+    /// Human-readable display name (e.g. `Stade Rochelais`).
     pub name: String,
 }
 
+/// One match as served by `GET /api/teams/{team}/matches`.
 #[derive(Debug, Serialize)]
 pub struct MatchView {
+    /// Stable LNR match id — also the id referenced by ticket requests and
+    /// match notification subscriptions.
     pub id: u32,
+    /// Home team display name / slug.
     pub team: String,
     pub team_id: String,
+    /// Away team display name / slug.
     pub opponent: String,
     pub opponent_id: String,
+    /// Free-form French kickoff text copied from the LNR page (may be a range
+    /// for TBD fixtures, e.g. "samedi 28 novembre – dimanche 29 novembre").
     pub kickoff: String,
+    /// `"scheduled"` / `"not scheduled"` / `"finished"` (raw `MatchStatus`).
     pub status: String,
 }
 
+/// In-memory calendar cache: the latest successfully synced `Vec<Event>`,
+/// refreshed every 20 minutes by the background loop in `main.rs`.
+///
+/// All reads use a read lock so the API never waits on the bot scanner, and
+/// each response works on an isolated clone.
 pub struct CalendarService {
     // events are in memory cache, so that we can read them as we want without blocking the tokio runtime
     // but the writing requires a write lock (only one write at the time).
@@ -30,6 +53,7 @@ pub struct CalendarService {
 }
 
 impl CalendarService {
+    /// Creates the service with an empty cache (`Default::default`).
     pub fn new() -> Self {
         Self {
             // event list is empty by default
@@ -37,6 +61,20 @@ impl CalendarService {
         }
     }
 
+    /// Re-fetches the LNR calendar and updates the cache.
+    ///
+    /// The blocking fetch/parse work runs on a dedicated thread (`spawn_blocking`)
+    /// so the tokio workers stay free; then the old snapshot is diffed against
+    /// the new one and only `Tbd → Scheduled`-style atomic values are detected
+    /// (that's [`Change`]).
+    ///
+    /// # Returns
+    /// The list of changes between the previous and the new calendar, in
+    /// calendar order — fed to `notifications::process` by the caller.
+    ///
+    /// # Errors
+    /// Network/parse failures from the LNR fetch (opaque boxed error); the
+    /// cache is left untouched in that case.
     pub async fn sync(&self) -> Result<Vec<Change>, Box<dyn std::error::Error + Send + Sync>> {
         // Event retrival and parsing is blocking so we spawn it on a separate thread.
         let events = tokio::task::spawn_blocking(|| {
@@ -55,6 +93,8 @@ impl CalendarService {
         Ok(changes)
     }
 
+    /// Every of the 14 known Top 14 teams, in [`TeamType::all`] order —
+    /// no database hit, the list is static.
     pub fn list_teams(&self) -> Vec<TeamView> {
         TeamType::all()
             .into_iter()
@@ -71,6 +111,14 @@ impl CalendarService {
         self.events.read().expect("calendar cache poisoned").clone()
     }
 
+    /// The team's upcoming home games mapped to [`MatchView`]: finished and
+    /// away matches are filtered out (`upcoming` + `for_team`).
+    ///
+    /// # Arguments
+    /// * `team` — the home team to list (usually `TeamType::StadeRochelais`).
+    ///
+    /// # Returns
+    /// Matches in calendar order; empty when nothing is scheduled yet.
     pub fn home_matches(&self, team: TeamType) -> Vec<MatchView> {
         let events = self.events.read().expect("calendar cache poisoned");
         let upcoming = upcoming(&events);
@@ -90,11 +138,14 @@ impl CalendarService {
 }
 
 impl Default for CalendarService {
+    /// Empty cache, same as [`CalendarService::new`].
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// The API-facing spelling of a [`MatchStatus`]: `Tbd` is rendered as
+/// "not scheduled" so the frontend can show TBD fixtures distinctly.
 fn status_str(status: MatchStatus) -> String {
     match status {
         MatchStatus::Tbd => "not scheduled".to_string(),

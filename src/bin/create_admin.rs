@@ -1,9 +1,23 @@
+//! Admin bootstrap CLI: creates the first (or any) admin account directly in
+//! the database, bypassing the public registration/waitlist flow.
+//!
+//! Usage: `create_admin --email <email> --password <password>`
+
 use std::env;
 
 use ovalbot::common::db;
 use ovalbot::services::auth::hash_password;
 
 #[tokio::main]
+/// CLI entry point. Parses `--email`/`--password`, validates them locally
+/// (lower-cased email must contain `@`; password ≥ 8 chars), connects +
+/// migrates the database (`DATABASE_URL`, default `sqlite://ovalbot.db`), then
+/// inserts an already-`active` `admin` user to the `users` table.
+///
+/// # Errors
+/// Returns on connect/migrate/hash or any SQL failure other than a unique
+/// violation; a re-registration is reported as `error: email already
+/// registered` with exit code 1 instead.
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let mut email = None;
@@ -63,6 +77,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/// Prints usage and terminates the process with exit code 1 (`!` marks the
+/// divergence as non-returning so callers stop without a `return`).
 fn usage() -> ! {
     eprintln!("usage: create_admin --email <email> --password <password>");
     std::process::exit(1);

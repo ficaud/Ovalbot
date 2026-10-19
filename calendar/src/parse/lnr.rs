@@ -8,6 +8,8 @@ use crate::team::{Team, TeamType};
 use crate::{Event, FetchError, ParseError};
 use scraper::{ElementRef, Html, Selector};
 
+// CSS selectors of the calendar page + the pages cap. `EVENT_SELECTOR`/... are
+// class names of the day page; a journée that 404s ends the pagination.
 const LNR_CALENDAR_BASE_URL: &str = "https://top14.lnr.fr/calendrier-et-resultats";
 const MAX_JOURNEES: u8 = 50;
 const EVENT_SELECTOR: &str = ".calendar-results__line";
@@ -17,33 +19,61 @@ const DATE_SELECTOR: &str = ".calendar-results__fixture-date";
 const SCORE_SELECTOR: &str = ".match-line__score";
 const MATCH_LINK_SELECTOR: &str = r#"a[href*="feuille-de-match"]"#;
 
+/// The LNR calendar scraper: fetches day-by-day pages of one season and parses
+/// each into [`Event`] rows. [`MAX_JOURNEES`] pages at most; the day listing
+/// one past the season ends the fetch.
 pub struct LnrParser {
     season: String,
 }
 
 impl LnrParser {
+    /// Creates a parser bound to an LNR season slug, e.g. `"2026-2027"`.
     pub fn new(season: impl Into<String>) -> Self {
         Self {
             season: season.into(),
         }
     }
 
+    /// The paginated listing URL minus the journée number
+    /// (`…/calendrier-et-resultats/{season}/j`).
     fn calendar_base_url(&self) -> String {
         format!("{LNR_CALENDAR_BASE_URL}/{}/j", self.season)
     }
 }
 
 impl EventParser for LnrParser {
+    /// Parses one already-fetched calendar page (see [`Self::parse_events`]).
     fn parse(&self, raw: &str) -> Result<Vec<Event>, ParseError> {
         self.parse_events(raw)
     }
 
+    /// Fetches every journée of the season, stopping at the first 404
+    /// (network + parse, blocking — the caller is expected to `spawn_blocking`).
+    ///
+    /// # Errors
+    /// Wrapped parse errors per page and fetch errors other than the 404 that
+    /// terminates the pagination.
     fn parse_all(&self) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
         self.fetch_all_events_from(&self.calendar_base_url())
     }
 }
 
 impl LnrParser {
+    /// Parses one journée page into events.
+    ///
+    /// Walks date blocks and match rows in document order: each match row
+    /// inherits the last seen date. Per row, two `club-line__name`
+    /// elements are required (home, away); the score presence marks the match
+    /// as `Finished`, a precise `MatchDate` makes it `Scheduled`, anything
+    /// less is `Tbd`.
+    ///
+    /// # Returns
+    /// Events in page order — including non-La-Rochelle fixtures; filtering
+    /// is a caller concern.
+    ///
+    /// # Errors
+    /// `ParseError::InvalidData` when a CSS selector fails to compile (a wrong
+    /// implementation constant, not site drift).
     fn parse_events(&self, raw: &str) -> Result<Vec<Event>, ParseError> {
         // Parse the raw HTML into a traversable document tree.
         let doc = Html::parse_document(raw);
@@ -123,15 +153,29 @@ impl LnrParser {
         Ok(events)
     }
 
+    /// Fetches the HTML of the `day_num`-th journée (1-based).
+    ///
+    /// # Errors
+    /// [`FetchError`] from the underlying fetch (network/404).
     pub fn get_calendar_events(&self, day_num: u8) -> Result<String, FetchError> {
         self.fetch_day(&self.calendar_base_url(), day_num)
     }
 
+    /// One page fetch against `base_url{day_num}` (network call, blocking).
     fn fetch_day(&self, base_url: &str, day_num: u8) -> Result<String, FetchError> {
         let fetcher = WebPageFetcher;
         fetcher.fetch(&format!("{base_url}{day_num}"))
     }
 
+    /// Fetches journée 1..=[`MAX_JOURNEES`] until a 404 terminates pagination.
+    ///
+    /// # Returns
+    /// Every parsed event of the season, in page then row order.
+    ///
+    /// # Errors
+    /// Any fetch error other than the terminating 404; parse failures abort
+    /// the whole run (exceptionally tall: a malformed page is a signal the
+    /// selectors are out of date).
     fn fetch_all_events_from(
         &self,
         base_url: &str,
@@ -156,6 +200,9 @@ fn parse_match_id_from_href(href: &str) -> Option<u32> {
     href.rsplit('/').next()?.split('-').next()?.parse().ok()
 }
 
+/// Assembles a [`Team`] from the club-name element: visible name, slug id
+/// read from its `href` (last path segment), and the [`TeamType`] guessed by
+/// alias (falling back to `Unknown`).
 fn build_team(el: ElementRef<'_>) -> Team {
     // Read the visible club name from the element text.
     let name = el.text().collect::<String>().trim().to_string();
@@ -187,6 +234,7 @@ mod tests {
     const PLAYED_FIXTURE_PATH: &str = "src/parse/fixtures/lnr_played.html";
     const CAPTURE_DIR: &str = "src/parse/fixtures/captured";
 
+    // Reads a committed fixture file (regenerate with the ignored capture test).
     fn load_fixture(path: &str) -> String {
         std::fs::read_to_string(path).unwrap_or_else(|_| {
             panic!(
@@ -290,6 +338,7 @@ mod tests {
             .all(|event| event.status == MatchStatus::Finished));
     }
 
+    // Test HTTP mock: one canned response per accepted connection.
     fn respond(listener: &TcpListener, status_line: &str, body: &str) {
         let (mut stream, _) = listener.accept().unwrap();
         let mut request = Vec::new();
@@ -312,6 +361,7 @@ mod tests {
         stream.write_all(response.as_bytes()).unwrap();
     }
 
+    // Mock server serving `days` HTTP 200 pages then one 404 (pagination end).
     fn serve_journees(days: usize, body: String) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();

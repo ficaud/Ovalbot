@@ -3,6 +3,13 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 
+/// Domain errors for every backend operation, mapped in [`IntoResponse`] to a
+/// single JSON error shape `{ "error": code, "message": text }`.
+///
+/// Third-party errors wrapped with `#[from]` (`Sqlx`, `Migrate`, `Argon2`) are
+/// internal: they always collapse into a generic `internal` 500 so their
+/// details never leak to the client. Every other variant is user-facing and
+/// carries its own status code and stable error code.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("database error")]
@@ -34,6 +41,8 @@ pub enum AppError {
 }
 
 impl IntoResponse for AppError {
+    /// Builds the JSON error response `{ error, message }` with the status the
+    /// variant maps to; `# Panics`: none.
     fn into_response(self) -> Response {
         let (status, code, message) = match self {
             AppError::InvalidCredentials => (
