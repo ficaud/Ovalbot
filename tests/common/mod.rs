@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use ovalbot::common::models::{Role, Status};
 use ovalbot::services::auth::generate_session_token;
 use ovalbot::services::calendar::CalendarService;
-use ovalbot::services::mailer::{MailError, Mailer, MatchAlert, NoopMailer};
+use ovalbot::services::mailer::{MailError, Mailer, MatchAlert, NoopMailer, SeatAlert};
 use ovalbot::services::state::AppState;
 use ovalbot::services::telegram::{NoopTelegram, Telegram, TelegramConfig, TelegramError};
 use sqlx::SqlitePool;
@@ -14,6 +14,7 @@ use sqlx::SqlitePool;
 pub struct RecordingMailer {
     pub welcome: Mutex<Vec<String>>,
     pub alerts: Mutex<Vec<(String, MatchAlert)>>,
+    pub seats_alerts: Mutex<Vec<(String, SeatAlert)>>,
 }
 
 impl RecordingMailer {
@@ -21,6 +22,7 @@ impl RecordingMailer {
         Self {
             welcome: Mutex::new(Vec::new()),
             alerts: Mutex::new(Vec::new()),
+            seats_alerts: Mutex::new(Vec::new()),
         }
     }
 }
@@ -34,6 +36,14 @@ impl Mailer for RecordingMailer {
 
     async fn send_match_alert(&self, email: &str, alert: &MatchAlert) -> Result<(), MailError> {
         self.alerts
+            .lock()
+            .unwrap()
+            .push((email.to_string(), alert.clone()));
+        Ok(())
+    }
+
+    async fn send_seats_alert(&self, email: &str, alert: &SeatAlert) -> Result<(), MailError> {
+        self.seats_alerts
             .lock()
             .unwrap()
             .push((email.to_string(), alert.clone()));

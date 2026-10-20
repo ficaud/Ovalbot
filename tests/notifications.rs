@@ -5,13 +5,32 @@ use std::sync::Arc;
 use calendar::{Change, TeamType};
 use common::{insert_active_user, RecordingMailer, RecordingTelegram};
 use ovalbot::services::calendar::CalendarService;
-use ovalbot::services::mailer::Mailer;
+use ovalbot::services::mailer::{Mailer, SeatAlert, SeatBrief};
 use ovalbot::services::notifications::{
-    list_for_user, process, subscribe, unsubscribe, update_settings,
+    list_for_user, notify_new_seats, process, subscribe, unsubscribe, update_settings,
 };
 use ovalbot::services::state::AppState;
 use ovalbot::services::telegram::{Telegram, TelegramConfig};
+use ovalbot::services::tickets::upsert;
 use sqlx::SqlitePool;
+
+/// Builds the seats alert fixture (one pelouse seat, one cat 2).
+fn seats_alert() -> SeatAlert {
+    SeatAlert {
+        opponent: "Aviron Bayonnais".to_string(),
+        date: "dimanche 8 novembre à 21h05".to_string(),
+        seats: vec![
+            SeatBrief {
+                category: "Pelouse".to_string(),
+                price: "45.00 €".to_string(),
+            },
+            SeatBrief {
+                category: "Catégorie 2".to_string(),
+                price: "99.00 €".to_string(),
+            },
+        ],
+    }
+}
 
 fn state(pool: SqlitePool, mailer: Arc<dyn Mailer>, telegram: Arc<dyn Telegram>) -> AppState {
     AppState {
@@ -236,4 +255,128 @@ async fn update_settings_persists_preferences(pool: SqlitePool) {
             .unwrap();
     assert!(!email_enabled);
     assert!(telegram_enabled);
+}
+
+// ============================== SEATS ALERTS (BOT) ==============================
+
+/// Emails (and telegraphically for the linked ones) every pending requester
+/// of the match, with the alert content intact; unlinked Telegram users only
+/// get the email.
+#[sqlx::test]
+async fn notify_new_seats_alerts_pending_requesters_per_channel(pool: SqlitePool) {
+    let linked = insert_active_user(&pool, "linked@example.com").await;
+    let unlinked = insert_active_user(&pool, "unlinked@example.com").await;
+    upsert(
+        &pool,
+        linked,
+        11877,
+        &ovalbot::services::tickets::TicketRequestInput::Single {
+            quantity: 2,
+            max_price_cents: 5000,
+        },
+    )
+    .await
+    .unwrap();
+    upsert(
+        &pool,
+        unlinked,
+        11877,
+        &ovalbot::services::tickets::TicketRequestInput::Duo {
+            max_price_cents: 9000,
+        },
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET telegram_id = '123' WHERE id = ?")
+        .bind(linked)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let state = state(pool.clone(), mailer.clone(), telegram.clone());
+
+    notify_new_seats(&state, 11877, &seats_alert()).await;
+
+    let alert = seats_alert();
+    let sent = mailer.seats_alerts.lock().unwrap().clone();
+    assert_eq!(
+        sent.iter()
+            .map(|(email, _)| email.as_str())
+            .collect::<Vec<_>>(),
+        vec!["linked@example.com", "unlinked@example.com"]
+    );
+    assert_eq!(sent[0].1.opponent, alert.opponent);
+    assert_eq!(sent[0].1.date, alert.date);
+    assert_eq!(sent[0].1.seats_listing(), alert.seats_listing());
+
+    let messages = telegram.messages.lock().unwrap().clone();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].0, "123");
+    assert!(messages[0].1.contains("Aviron Bayonnais"));
+    assert!(messages[0].1.contains("45.00 €"));
+}
+
+/// The same per-channel preferences gate the seats alerts: an email-muted
+/// user only gets Telegram, a Telegram-muted user only the email.
+#[sqlx::test]
+async fn notify_new_seats_respects_channel_preferences(pool: SqlitePool) {
+    let email_only = insert_active_user(&pool, "email-only@example.com").await;
+    let telegram_only = insert_active_user(&pool, "telegram-only@example.com").await;
+    upsert(
+        &pool,
+        email_only,
+        11877,
+        &ovalbot::services::tickets::TicketRequestInput::Duo {
+            max_price_cents: 9000,
+        },
+    )
+    .await
+    .unwrap();
+    upsert(
+        &pool,
+        telegram_only,
+        11877,
+        &ovalbot::services::tickets::TicketRequestInput::Group { places: 4 },
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET notify_telegram = 0, telegram_id = '2' WHERE id = ?")
+        .bind(email_only)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET notify_email = 0, telegram_id = '1' WHERE id = ?")
+        .bind(telegram_only)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let state = state(pool.clone(), mailer.clone(), telegram.clone());
+
+    notify_new_seats(&state, 11877, &seats_alert()).await;
+
+    let emails = mailer.seats_alerts.lock().unwrap().clone();
+    assert_eq!(emails.len(), 1);
+    assert_eq!(emails[0].0, "email-only@example.com");
+
+    let messages = telegram.messages.lock().unwrap().clone();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].0, "1");
+}
+
+/// A match with no pending requester triggers no send at all.
+#[sqlx::test]
+async fn notify_new_seats_sends_nothing_without_pending_requesters(pool: SqlitePool) {
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let state = state(pool.clone(), mailer.clone(), telegram.clone());
+
+    notify_new_seats(&state, 11877, &seats_alert()).await;
+
+    assert!(mailer.seats_alerts.lock().unwrap().is_empty());
+    assert!(telegram.messages.lock().unwrap().is_empty());
 }

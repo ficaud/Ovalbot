@@ -1,8 +1,9 @@
 //! Email transport behind the [`Mailer`] trait: the Resend API client, a
-//! no-op for disabled deployments, and the welcome/match-alert templates.
+//! no-op for disabled deployments, and the welcome/match-alert/seat-alert
+//! templates.
 //!
-//! Templates live in `TEMPLATE_DIR` (`welcome.html`, `match_alert.html`);
-//! missing files fall back to built-in defaults.
+//! Templates live in `TEMPLATE_DIR` (`welcome.html`, `match_alert.html`,
+//! `seats_alert.html`); missing files fall back to built-in defaults.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -29,6 +30,41 @@ pub struct MatchAlert {
     pub kickoff: String,
 }
 
+/// One resale seat as displayed to the user: category and price exactly as
+/// seen on the billetterie ("Pelouse", "49.00 €").
+#[derive(Debug, Clone)]
+pub struct SeatBrief {
+    /// Seat category name (empty string when the parser did not map it).
+    pub category: String,
+    /// Raw price string from the site.
+    pub price: String,
+}
+
+/// Content of one seats-on-resale alert, shared by every channel: a resolved
+/// encounter whose resale gained seats the user never heard of before.
+#[derive(Debug, Clone)]
+pub struct SeatAlert {
+    /// Encounter title from the billetterie (the opponent's display name).
+    pub opponent: String,
+    /// Encounter date, free-form French string from the site.
+    pub date: String,
+    /// The new seats, in scan order.
+    pub seats: Vec<SeatBrief>,
+}
+
+impl SeatAlert {
+    /// Compact one-line listing of the new seats, shared by the email body
+    /// and the Telegram message ("Cat 2 · 49.00 €, Cat 3 · 45.00 €").
+    #[must_use]
+    pub fn seats_listing(&self) -> String {
+        self.seats
+            .iter()
+            .map(|seat| format!("{} · {}", seat.category, seat.price))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 /// Email transport abstraction: injected into [`crate::services::state::AppState`]
 /// (`ResendMailer` in production, [`NoopMailer`] when disabled) so tests and
 /// offline runs never hit the network.
@@ -45,6 +81,13 @@ pub trait Mailer: Send + Sync {
     /// # Errors
     /// [`MailError`] on network or Resend API failure.
     async fn send_match_alert(&self, email: &str, alert: &MatchAlert) -> Result<(), MailError>;
+
+    /// Sends a seats-on-resale alert (new seats for a match the user requested
+    /// places for).
+    ///
+    /// # Errors
+    /// [`MailError`] on network or Resend API failure.
+    async fn send_seats_alert(&self, email: &str, alert: &SeatAlert) -> Result<(), MailError>;
 }
 
 const WELCOME_SUBJECT: &str = "Welcome to OvalBot";
@@ -58,6 +101,9 @@ const DEFAULT_WELCOME_HTML: &str = "<p>Your OvalBot account is now active.</p>\
 const DEFAULT_MATCH_ALERT_HTML: &str =
     "<p>Good news! <strong>{{team}} vs {{opponent}}</strong> has been scheduled for {{kickoff}}.</p>";
 
+const DEFAULT_SEATS_ALERT_HTML: &str = "<p>Seats on resale for <strong>Stade Rochelais \
+ vs {{opponent}}</strong> ({{date}}): {{seats}}.</p>";
+
 /// The two HTML bodies, loaded from `TEMPLATE_DIR` (see [`load_templates`]).
 #[derive(Debug, Clone)]
 pub struct EmailTemplates {
@@ -66,6 +112,9 @@ pub struct EmailTemplates {
     /// Match-scheduling alert body with `{{team}}` / `{{opponent}}` /
     /// `{{kickoff}}` placeholders.
     pub match_alert_html: String,
+    /// Seats-on-resale alert body with `{{opponent}}` / `{{date}}` /
+    /// `{{seats}}` placeholders.
+    pub seats_alert_html: String,
 }
 
 impl EmailTemplates {
@@ -74,11 +123,12 @@ impl EmailTemplates {
         Self {
             welcome_html: DEFAULT_WELCOME_HTML.to_string(),
             match_alert_html: DEFAULT_MATCH_ALERT_HTML.to_string(),
+            seats_alert_html: DEFAULT_SEATS_ALERT_HTML.to_string(),
         }
     }
 }
 
-/// Loads `welcome.html` and `match_alert.html` from `dir`.
+/// Loads `welcome.html`, `match_alert.html` and `seats_alert.html` from `dir`.
 ///
 /// # Returns
 /// The two templates, falling back to [`EmailTemplates::defaults`] per file
@@ -101,6 +151,14 @@ pub fn load_templates(dir: &Path) -> EmailTemplates {
     } else {
         tracing::warn!(
             "match_alert.html template not found in {}, using default",
+            dir.display()
+        );
+    }
+    if let Ok(seats_alert) = std::fs::read_to_string(dir.join("seats_alert.html")) {
+        templates.seats_alert_html = seats_alert;
+    } else {
+        tracing::warn!(
+            "seats_alert.html template not found in {}, using default",
             dir.display()
         );
     }
@@ -238,6 +296,28 @@ impl Mailer for ResendMailer {
         );
         self.send(email, &subject, &html, &text).await
     }
+
+    // send the seats alert email
+    /// Subject and text are built from the alert; the rendered HTML template
+    /// fills `{{opponent}}` / `{{date}}` / `{{seats}}`.
+    async fn send_seats_alert(&self, email: &str, alert: &SeatAlert) -> Result<(), MailError> {
+        let subject = format!("Seats on resale: Stade Rochelais vs {}", alert.opponent);
+        let text = format!(
+            "Seats on resale for Stade Rochelais vs {} ({}): {}.",
+            alert.opponent,
+            alert.date,
+            alert.seats_listing()
+        );
+        let html = render(
+            &self.templates.seats_alert_html,
+            &[
+                ("opponent", &alert.opponent),
+                ("date", &alert.date),
+                ("seats", &alert.seats_listing()),
+            ],
+        );
+        self.send(email, &subject, &html, &text).await
+    }
 }
 
 /// The always-succeeding [`Mailer`] used when `RESEND_ENABLED` is not `true`:
@@ -253,6 +333,11 @@ impl Mailer for NoopMailer {
 
     /// Does nothing, always `Ok(())`.
     async fn send_match_alert(&self, _email: &str, _alert: &MatchAlert) -> Result<(), MailError> {
+        Ok(())
+    }
+
+    /// Does nothing, always `Ok(())`.
+    async fn send_seats_alert(&self, _email: &str, _alert: &SeatAlert) -> Result<(), MailError> {
         Ok(())
     }
 }
@@ -400,6 +485,18 @@ mod tests {
         };
         assert!(mailer
             .send_match_alert("a@example.com", &alert)
+            .await
+            .is_ok());
+        let seats = SeatAlert {
+            opponent: "RC Toulon".to_string(),
+            date: "dimanche 20 décembre à 15h15".to_string(),
+            seats: vec![SeatBrief {
+                category: "Pelouse".to_string(),
+                price: "49.00 €".to_string(),
+            }],
+        };
+        assert!(mailer
+            .send_seats_alert("a@example.com", &seats)
             .await
             .is_ok());
     }

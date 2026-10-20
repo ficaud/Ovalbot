@@ -5,8 +5,12 @@
 //! The rows double as the bot's matching source: an accepted request can be
 //! switched out of `pending` (accepted/purchased/…) by the Phase 4 flow, and
 //! the atomic conditional `UPDATE`s here guarantee a claim can't race.
-//! APIs: `upsert` / `remove` / `list_for_user` (called by `routes::tickets`).
+//! APIs: `upsert` / `remove` / `list_for_user` (called by `routes::tickets`),
+//! `pending_requesters` + `record_offers` (called by the bot scan loop: who to
+//! alert, and which resale seats are genuinely new — the durable anti-spam
+//! guard over `ticket_offers`).
 
+use parser::core::seat::Seat;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 
@@ -256,6 +260,135 @@ pub async fn list_for_user(
     .fetch_all(pool)
     .await?;
     Ok(views)
+}
+
+/// One pending ticket request fetched by [`pending_requesters`] for the bot:
+/// the requester's contact + channel gates, plus the raw per-kind parameters,
+/// with no eligibility filtering applied.
+#[derive(Debug, Clone, PartialEq, FromRow)]
+pub struct PendingRequester {
+    /// User who made the request (`users.id`).
+    pub user_id: i64,
+    /// Email address to alert ([`crate::services::mailer::Mailer::send_seats_alert`]).
+    pub email: String,
+    /// Linked Telegram chat id; unlinked users get nothing on that channel.
+    pub telegram_id: Option<String>,
+    /// Per-channel gate: the user must accept email alerts.
+    pub notify_email: bool,
+    /// Per-channel gate: the user must accept Telegram alerts.
+    pub notify_telegram: bool,
+    /// Buying mode; drives which parameter columns are set.
+    pub kind: TicketKind,
+    /// `Single` only: how many individual tickets are wanted (1..=10).
+    pub quantity: Option<u8>,
+    /// `Single`/`Duo` only: per-ticket / per-duo budget in cents.
+    pub max_price_cents: Option<u32>,
+    /// `Group` only: how many pelouse places (2..=10).
+    pub places: Option<u8>,
+}
+
+/// Lists every `pending` requester of a single match, ordered by user id.
+///
+/// The bot scan loop calls this (through
+/// [`crate::services::notifications::notify_new_seats`]) when a match's resale
+/// gained seats: every `pending` requester is an alert candidate, regardless
+/// of kind, quantity or budget — per-kind eligibility filtering comes later.
+/// Contact info and the per-channel gates ride along, one query total.
+///
+/// # Returns
+/// One [`PendingRequester`] per requester, keyed and ordered by user id;
+/// empty when nobody requested places for the match.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
+pub async fn pending_requesters(
+    pool: &SqlitePool,
+    match_id: i64,
+) -> Result<Vec<PendingRequester>, AppError> {
+    let requesters = sqlx::query_as::<_, PendingRequester>(
+        "SELECT tr.user_id, u.email, u.telegram_id, u.notify_email, u.notify_telegram, \
+             tr.kind, tr.quantity, tr.max_price_cents, tr.places \
+         FROM ticket_requests tr \
+         JOIN users u ON u.id = tr.user_id \
+         WHERE tr.match_id = ? AND tr.status = 'pending' \
+         ORDER BY tr.user_id",
+    )
+    .bind(match_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(requesters)
+}
+
+/// Site-native identity of one resale seat, as recorded in `ticket_offers`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OfferKey {
+    /// Product/pack the ticket belongs to on the billetterie.
+    pub pack_id: u64,
+    /// Site-native ticket id inside the pack.
+    pub ticket_id: String,
+}
+
+/// Records a match's resale seats durably in `ticket_offers` — the bot's
+/// anti-spam guard.
+///
+/// Image semantics: `ON CONFLICT DO NOTHING` keyed on
+/// `(match_id, pack_id, ticket_id)`. Anything already recorded (or recorded by
+/// an earlier scan/restart) is ignored; what this call actually inserted is
+/// reported back, so a seat can alert the match's requesters exactly once —
+/// even across server restarts.
+///
+/// # Arguments
+/// * `title` / `date` — the encounter's display identity, stored as-is from
+///   the first time the seat is seen (display-only columns).
+/// * `seats` — the seats currently on resale for the encounter.
+///
+/// # Returns
+/// The [`OfferKey`] of the seats inserted by this call (truly new ones).
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
+pub async fn record_offers(
+    pool: &SqlitePool,
+    match_id: i64,
+    title: &str,
+    date: &str,
+    seats: &[Seat],
+) -> Result<Vec<OfferKey>, AppError> {
+    let now = crate::common::time::now();
+    let mut fresh = Vec::with_capacity(seats.len());
+    for seat in seats {
+        let key = sqlx::query_as::<_, (i64, String)>(
+            "INSERT INTO ticket_offers (match_id, title, date, pack_id, ticket_id, first_seen_at) \
+             VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(match_id, pack_id, ticket_id) DO NOTHING \
+             RETURNING pack_id, ticket_id",
+        )
+        .bind(match_id)
+        .bind(title)
+        .bind(date)
+        .bind(seat.id.pack_id as i64)
+        .bind(&seat.id.ticket_id)
+        .bind(&now)
+        .fetch_optional(pool)
+        .await?
+        .map(|(pack_id, ticket_id)| OfferKey {
+            pack_id: pack_id as u64,
+            ticket_id,
+        });
+        // Rows that hit the conflict clause are neither inserted nor returned.
+        if let Some(key) = key {
+            fresh.push(key);
+        }
+    }
+    if !fresh.is_empty() {
+        tracing::debug!(
+            match_id,
+            seats = seats.len(),
+            fresh = fresh.len(),
+            "ticket offers recorded"
+        );
+    }
+    Ok(fresh)
 }
 
 // ============================== TICKET PROPOSAL TYPES ==============================

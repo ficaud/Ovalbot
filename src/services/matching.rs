@@ -54,6 +54,8 @@ pub fn resolve(encounter: &Encounter, events: &[Event]) -> Result<u32, ResolveEr
     let opponent = TeamType::from_name(&encounter.title).ok_or(ResolveError::UnknownOpponent)?;
     let window = parse_window(&encounter.date).ok_or(ResolveError::UnparseableDate)?;
 
+    // Filter the events to find the one that matches the encounter
+    // this filter apply on the team type, the opponent and the kickoff window
     let candidates: Vec<u32> = events
         .iter()
         .filter(|event| {
