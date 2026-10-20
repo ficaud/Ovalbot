@@ -1,17 +1,23 @@
-//! Match-scheduling alerts: subscriptions per (user, match) and the
-//! notification fan-out run after each calendar sync.
+//! Per-match notification fan-out: scheduling alerts (calendar-driven) and
+//! seats-on-resale alerts (bot-driven).
 //!
-//! Flow: `calendar.sync()` reports `Change::Scheduled` flips → the caller
-//! passes them to [`process`] → every subscriber of that match gets an email
-//! and/or Telegram message (per-channel preferences respected) → the
+//! Scheduling: `calendar.sync()` reports `Change::Scheduled` flips → the
+//! caller passes them to [`process`] → every subscriber of that match gets an
+//! email and/or Telegram message (per-channel preferences respected) → the
 //! subscriptions for the match are cleared so everybody is notified once.
+//!
+//! Seats: when the bot records genuinely new resale seats for one match, it
+//! calls [`notify_new_seats`] → every pending `ticket_requests` requester of
+//! that match gets an email and/or Telegram message gated by the same
+//! per-channel preferences.
 
 use calendar::Change;
 use sqlx::SqlitePool;
 
 use crate::common::error::AppError;
-use crate::services::mailer::MatchAlert;
+use crate::services::mailer::{MatchAlert, SeatAlert};
 use crate::services::state::AppState;
+use crate::services::tickets;
 
 /// Subscribes a user to a match: records the row in `match_notifications`
 /// (idempotent — an existing subscription is kept via `DO NOTHING`).
@@ -181,4 +187,71 @@ async fn process_one(
     {
         tracing::warn!("failed to clear notifications for match {match_id}: {e}");
     }
+}
+
+// ============================== SEATS ALERTS ==============================
+
+/// Alerts every pending requester of one match about its newly-seen resale
+/// seats.
+///
+/// The recipients come from [`crate::services::tickets::pending_requesters`]
+/// (one row per pending requester, contact info + channel gates included):
+/// email when `notify_email`, Telegram when `notify_telegram` and a linked
+/// chat id exists. Best-effort per channel — a failed send is warned and
+/// never blocks the other requesters or channels. Nothing is sent when
+/// nobody holds a pending request for the match.
+///
+/// # Arguments
+/// * `match_id` — LNR id selecting the `ticket_requests` rows.
+/// * `alert` — the alert content (opponent, date, the new seats only).
+pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert) {
+    let requesters = match tickets::pending_requesters(&state.pool, i64::from(match_id)).await {
+        Ok(requesters) => requesters,
+        Err(e) => {
+            tracing::warn!("failed to load pending requesters for match {match_id}: {e}");
+            return;
+        }
+    };
+    if requesters.is_empty() {
+        return;
+    }
+
+    let text = format!(
+        "Seats on resale: Stade Rochelais vs {} ({}). New seats: {}.",
+        alert.opponent,
+        alert.date,
+        alert.seats_listing()
+    );
+    let (mut emailed, mut messaged) = (0, 0);
+    for requester in requesters {
+        // If notify_email is enabled, send the seats alert email
+        if requester.notify_email {
+            match state.mailer.send_seats_alert(&requester.email, alert).await {
+                Ok(()) => emailed += 1,
+                Err(e) => tracing::warn!(
+                    "failed to send seats alert email for user {}: {e}",
+                    requester.user_id
+                ),
+            }
+        }
+        // If notify_telegram is enabled, send the Telegram message
+        if requester.notify_telegram {
+            // An unlinked Telegram account has no chat id to message
+            if let Some(chat_id) = &requester.telegram_id {
+                match state.telegram.send_message(chat_id, &text).await {
+                    Ok(()) => messaged += 1,
+                    Err(e) => tracing::warn!(
+                        "failed to send seats alert on telegram for user {}: {e}",
+                        requester.user_id
+                    ),
+                }
+            }
+        }
+    }
+    tracing::info!(
+        match_id,
+        emailed,
+        messaged,
+        "seats alert processed for pending requesters"
+    );
 }

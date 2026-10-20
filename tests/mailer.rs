@@ -10,7 +10,8 @@ use axum::routing::post;
 use axum::Router;
 use common::{insert_active_user, RecordingMailer};
 use ovalbot::services::mailer::{
-    send_welcome_if_unsent, EmailTemplates, MailError, Mailer, MatchAlert, ResendMailer,
+    send_welcome_if_unsent, EmailTemplates, MailError, Mailer, MatchAlert, ResendMailer, SeatAlert,
+    SeatBrief,
 };
 use sqlx::SqlitePool;
 
@@ -23,6 +24,10 @@ impl Mailer for FailingMailer {
     }
 
     async fn send_match_alert(&self, _email: &str, _alert: &MatchAlert) -> Result<(), MailError> {
+        Err(MailError::Api("boom".to_string()))
+    }
+
+    async fn send_seats_alert(&self, _email: &str, _alert: &SeatAlert) -> Result<(), MailError> {
         Err(MailError::Api("boom".to_string()))
     }
 }
@@ -176,4 +181,33 @@ async fn send_returns_api_error_on_failure() {
         .await
         .unwrap_err();
     assert!(matches!(err, MailError::Api(_)));
+}
+
+/// Sends the seats alert with the opponent in the subject and the new seats
+/// (category · price) in the body.
+#[tokio::test]
+async fn send_seats_alert_posts_expected_request() {
+    let (base_url, captured) = mock_resend(200).await;
+
+    let alert = SeatAlert {
+        opponent: "RC Toulon".to_string(),
+        date: "dimanche 20 décembre à 15h15".to_string(),
+        seats: vec![SeatBrief {
+            category: "Pelouse".to_string(),
+            price: "49.00 €".to_string(),
+        }],
+    };
+    mailer(&base_url)
+        .send_seats_alert("c@example.com", &alert)
+        .await
+        .unwrap();
+
+    let body = captured_body(&captured);
+    assert_eq!(body["to"], "c@example.com");
+    assert_eq!(
+        body["subject"],
+        "Seats on resale: Stade Rochelais vs RC Toulon"
+    );
+    assert!(body["text"].as_str().unwrap().contains("Pelouse · 49.00 €"));
+    assert!(body["html"].as_str().unwrap().contains("Pelouse · 49.00 €"));
 }

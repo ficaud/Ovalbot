@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     telegram::register_webhook().await;
 
     // Start the ticket resale scanner (bot) if enabled
-    ovalbot::services::bot::spawn(state.calendar.clone());
+    ovalbot::services::bot::spawn(state.clone());
 
     // Start the calendar sync service
     let sync_state = state.clone();
