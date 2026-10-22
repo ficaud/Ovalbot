@@ -35,6 +35,27 @@
   let settingsModal: ReturnType<typeof NotificationSettingsModal> | undefined;
   let requestModal: ReturnType<typeof TicketRequestModal> | undefined;
 
+  // The tickets bot currently only scrapes the Stade Rochelais billetterie
+  // (the club's upcoming home games); requests for any other team cannot be
+  // serviced. Extend when a new club parser is added.
+  const BOT_SUPPORTED_TEAM_IDS = ['stade-rochelais'];
+
+  const BOT_UNAVAILABLE_TITLE =
+    'The bot only covers Stade Rochelais home games for now.';
+
+  function isBotSupported(match: MatchView): boolean {
+    return BOT_SUPPORTED_TEAM_IDS.includes(match.team_id);
+  }
+
+  function isRequestable(match: MatchView): boolean {
+    // Existing requests stay reachable so they can still be removed.
+    return (
+      isBotSupported(match) ||
+      requests[match.id] !== undefined ||
+      statuses[match.id] !== undefined
+    );
+  }
+
   async function saveRequest(draft: TicketRequestDraft) {
     await putRequest(draft);
     requests = { ...requests, [draft.matchId]: draft };
@@ -155,8 +176,11 @@
                   class="bell"
                   class:bell--active={requests[match.id] !== undefined}
                   type="button"
+                  disabled={!isRequestable(match)}
                   aria-label="Ticket request"
-                  title="Ticket request"
+                  title={isRequestable(match)
+                    ? 'Ticket request'
+                    : BOT_UNAVAILABLE_TITLE}
                   onclick={() =>
                     requestModal?.open(match, requests[match.id] ?? null, statuses[match.id])}
                 >
@@ -306,7 +330,7 @@
 
   .bell:disabled {
     opacity: 0.5;
-    cursor: default;
+    cursor: not-allowed;
   }
 
   .bell--active {

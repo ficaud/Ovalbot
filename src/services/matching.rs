@@ -103,6 +103,34 @@ pub fn resolve(encounter: &Encounter, events: &[Event]) -> Result<u32, ResolveEr
     }
 }
 
+/// Tells whether a calendar match can currently be serviced by the tickets
+/// bot: the scan covers the Stade Rochelais billetterie only, which lists the
+/// club's upcoming home games. Requests for any other id (away fixtures,
+/// other clubs' matches, finished games, unknown ids) can never get an offer.
+///
+/// Fail-closed: ids absent from the current calendar snapshot are refused,
+/// which also holds while the cache is empty (right after startup, before the
+/// first sync).
+///
+/// # Arguments
+/// * `events` — the full calendar snapshot.
+/// * `match_id` — the LNR id carried by the request path (`i64` route param;
+///   values outside the `u32` id range can never be calendar ids).
+///
+/// # Returns
+/// `true` when `PUT /api/requests/{match_id}` should be accepted.
+#[must_use]
+pub fn is_bot_covered_match(events: &[Event], match_id: i64) -> bool {
+    let Some(id) = u32::try_from(match_id).ok() else {
+        return false;
+    };
+    events.iter().any(|event| {
+        event.id == id
+            && event.team.team_type == TeamType::StadeRochelais
+            && event.status != MatchStatus::Finished
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +448,64 @@ mod tests {
             ),
         ];
         assert_eq!(resolve(&encounter, &events), Err(ResolveError::Ambiguous));
+    }
+
+    /// An upcoming Stade Rochelais home game is covered, whatever its
+    /// scheduling state (`Tbd` matches are serviced too).
+    #[test]
+    fn covers_upcoming_home_matches() {
+        let events = [
+            event(
+                101,
+                TeamType::StadeRochelais,
+                TeamType::UnionBordeauxBegles,
+                "dimanche 25 octobre 21h05",
+                MatchStatus::Scheduled,
+            ),
+            event(
+                102,
+                TeamType::StadeRochelais,
+                TeamType::AvironBayonnais,
+                "samedi 7 novembre 21h05",
+                MatchStatus::Tbd,
+            ),
+        ];
+        assert!(is_bot_covered_match(&events, 101));
+        assert!(is_bot_covered_match(&events, 102));
+    }
+
+    /// Every other shape is refused: finished games, Stade Rochelais away
+    /// fixtures, other clubs' home games, unknown ids and ids outside the
+    /// u32 range.
+    #[test]
+    fn refuses_uncovered_match_ids() {
+        let events = [
+            event(
+                101,
+                TeamType::StadeRochelais,
+                TeamType::UnionBordeauxBegles,
+                "dimanche 25 octobre 21h05",
+                MatchStatus::Finished,
+            ),
+            event(
+                102,
+                TeamType::UnionBordeauxBegles,
+                TeamType::StadeRochelais,
+                "dimanche 25 octobre 21h05",
+                MatchStatus::Scheduled,
+            ),
+            event(
+                103,
+                TeamType::RcToulon,
+                TeamType::StadeToulousain,
+                "dimanche 25 octobre 21h05",
+                MatchStatus::Scheduled,
+            ),
+        ];
+        assert!(!is_bot_covered_match(&events, 101));
+        assert!(!is_bot_covered_match(&events, 102));
+        assert!(!is_bot_covered_match(&events, 103));
+        assert!(!is_bot_covered_match(&events, 42));
+        assert!(!is_bot_covered_match(&events, -1));
     }
 }

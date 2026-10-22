@@ -34,6 +34,8 @@ pub enum AppError {
     NotFound,
     #[error("invalid ticket request")]
     InvalidTicketRequest,
+    #[error("ticket request for a match the bot does not cover")]
+    UnsupportedTicketRequest,
     #[error("ticket request can no longer be modified")]
     TicketRequestLocked,
     #[error("telegram unavailable")]
@@ -77,6 +79,11 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST,
                 "invalid_ticket_request",
                 "invalid ticket request",
+            ),
+            AppError::UnsupportedTicketRequest => (
+                StatusCode::BAD_REQUEST,
+                "unsupported_ticket_request",
+                "the bot only covers Stade Rochelais home games",
             ),
             AppError::TicketRequestLocked => (
                 StatusCode::CONFLICT,

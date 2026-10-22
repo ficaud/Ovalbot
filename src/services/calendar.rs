@@ -111,6 +111,20 @@ impl CalendarService {
         self.events.read().expect("calendar cache poisoned").clone()
     }
 
+    /// Replaces the whole cache with the given events.
+    ///
+    /// Test-only injection point: [`CalendarService::sync`] fetches the live
+    /// LNR pages, which integration tests cannot use. `#[doc(hidden)]` keeps
+    /// it out of the rendered documentation; it must never be used outside
+    /// test code.
+    ///
+    /// # Arguments
+    /// * `events` — the synthetic calendar (old cache is discarded).
+    #[doc(hidden)]
+    pub fn seed_events(&self, events: Vec<Event>) {
+        *self.events.write().expect("calendar cache poisoned") = events;
+    }
+
     /// The team's upcoming home games mapped to [`MatchView`]: finished and
     /// away matches are filtered out (`upcoming` + `for_team`).
     ///
@@ -184,6 +198,29 @@ mod tests {
         let teams = service.list_teams();
         assert_eq!(teams.len(), 14);
         assert!(teams.iter().any(|t| t.id == "stade-rochelais"));
+    }
+
+    /// `seed_events` replaces the cache: the seeded ids are the ones
+    /// `snapshot` then serves (and the API guard validates against).
+    #[test]
+    fn seed_events_replaces_the_cache() {
+        let service = CalendarService::new();
+        assert!(service.snapshot().is_empty());
+
+        service.seed_events(vec![event(
+            42,
+            TeamType::StadeRochelais,
+            TeamType::RcToulon,
+            MatchStatus::Scheduled,
+        )]);
+        assert_eq!(
+            service.snapshot().iter().map(|e| e.id).collect::<Vec<_>>(),
+            [42]
+        );
+
+        // A second seed discards the first calendar entirely.
+        service.seed_events(vec![]);
+        assert!(service.snapshot().is_empty());
     }
 
     /// `home_matches` returns only the team's home games (excluding finished and
