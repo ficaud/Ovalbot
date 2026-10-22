@@ -222,15 +222,15 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
         alert.date,
         alert.seats_listing()
     );
-    let (mut emailed, mut messaged) = (0, 0);
+    let (mut emailed, mut messaged) = (0u32, 0u32);
     for requester in requesters {
         // If notify_email is enabled, send the seats alert email
         if requester.notify_email {
             match state.mailer.send_seats_alert(&requester.email, alert).await {
-                Ok(()) => tracing::info!(
-                    "seats alert email sent for user {}",
-                    requester.user_id
-                ),
+                Ok(()) => {
+                    emailed += 1;
+                    tracing::info!("seats alert email sent for user {}", requester.user_id);
+                }
                 Err(e) => tracing::warn!(
                     "failed to send seats alert email for user {}: {e}",
                     requester.user_id
@@ -242,10 +242,13 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
             // An unlinked Telegram account has no chat id to message
             if let Some(chat_id) = &requester.telegram_id {
                 match state.telegram.send_message(chat_id, &text).await {
-                    Ok(()) => tracing::info!(
-                        "seats alert telegram message sent for user {}",
-                        requester.user_id
-                    ),
+                    Ok(()) => {
+                        messaged += 1;
+                        tracing::info!(
+                            "seats alert telegram message sent for user {}",
+                            requester.user_id
+                        );
+                    }
                     Err(e) => tracing::warn!(
                         "failed to send seats alert on telegram for user {}: {e}",
                         requester.user_id

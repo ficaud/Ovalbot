@@ -1,6 +1,8 @@
-//! Top-level API of the parser crate: retrieves the match list and the resale
-//! seats for the supported club. It holds no persistent state and performs no
-//! notification — the caller (OvalBot) owns matching, dedup and notifications.
+//! Top-level API of the parser crate: the two fetches OvalBot needs from the
+//! billetterie — the home page (discovery of the cards and their resale
+//! links) and a single resale product page (the seats). It holds no persistent
+//! state and performs no notification — the caller (OvalBot) owns matching,
+//! dedup and notifications.
 
 use crate::app::clubs::{
     larochelle::{parse_match::LarochellMatchParser, parse_seat::LarochellSeatParser},
@@ -13,78 +15,149 @@ use crate::core::seat::Seat;
 use crate::interface::curl::proxy::ProxyMode;
 use crate::interface::curl::web::WebClient;
 
-/// Fetches encounters with seats for a given club: parse the match list, then
-/// fetch and parse the seat pages of the encounters that have an open resale
-/// link. Cards are **not** filtered by nature — classification is unreliable
-/// (promotional badges overwrite the sport on nearing matches) — the caller
-/// (OvalBot) matches the encounters against its calendar and drops the rest.
+// ============================== ERRORS ==============================
+
+/// Why a billetterie fetch could not deliver its content.
 ///
-/// # Arguments
-/// * `club` - The club to fetch matches for
-/// # Returns
-/// A list of encounters with their seats information populated when the
-/// resale is open
-pub fn get_seats_from_matches(club: Club) -> Vec<Encounter> {
-    let mut client = WebClient::new(ProxyMode::Rotating);
-
-    // Parse the match list from the ticketing home page.
-    let matches = get_matches(&club, &client);
-
-    // Keep the same proxy for the seat pages to stay consistent between the
-    // match list and the individual resale pages.
-    client.set_proxy_mode(ProxyMode::Sticky);
-    get_encounters_with_seats(matches, &client)
+/// The waiting queue is distinct from a plain network failure: the shop
+/// redirects there under load (an intermittent, site-side state), and the
+/// caller should not treat it like a broken scan — stored links keep polling
+/// and the fetch is simply retried later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanError {
+    /// The HTTP fetch itself failed (timeout, connection reset, DNS…).
+    Fetch(String),
+    /// The billetterie served its waiting-queue page instead of the content.
+    WaitingQueue,
 }
 
-/// Internal function to fetch seats for a list of encounters, given a client to fetch HTML content.
-///
-/// # Arguments
-/// * `matches` - The list of encounters to retrieve seats for
-/// * `client` - The client to use for fetching HTML content
-/// # Returns
-/// A list of encounters with their seats information populated
-fn get_encounters_with_seats(matches: Vec<Encounter>, client: &impl FetchHtml) -> Vec<Encounter> {
-    matches
-        .into_iter()
-        .map(|mut encounter| {
-            if let Some(link) = encounter.resale_link.clone() {
-                match client.get_html(&link) {
-                    Ok(html) => encounter.set_seats(get_seats(&html, encounter.clone())),
-                    Err(e) => log::error!("Error fetching {}: {}", link, e),
-                }
-            } else {
-                encounter.set_seats(Vec::new());
-            }
-            encounter
-        })
-        .collect()
+/// One-line spelling of a scan error, used by the caller's logs.
+impl std::fmt::Display for ScanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScanError::Fetch(e) => f.write_str(&format!("fetch error: {e}")),
+            ScanError::WaitingQueue => f.write_str("billetterie waiting queue"),
+        }
+    }
 }
 
-/// Internal function to parse the match list for a given club, with no nature
-/// filter: every card (rugby, basketball, meals…) is returned, nature included
-/// for information only.
+/// Tells whether a fetched page is the billetterie waiting-queue page.
+///
+/// The shop redirects there under load: either the request never left the
+/// queue host (`wetix-agency.fr`), or it was answered with the bare
+/// "Move to waiting queue" body.
+///
+/// # Arguments
+/// * `final_url` - The effective URL the request landed on, after redirects
+/// * `body` - The fetched response body
+/// # Returns
+/// `true` when the page is the waiting queue, and the content must not be
+/// parsed
+pub fn is_waiting_queue(final_url: &str, body: &str) -> bool {
+    if final_url.contains("wetix-agency.fr") {
+        return true;
+    }
+    body.trim().eq_ignore_ascii_case("move to waiting queue")
+}
+
+// ============================== DISCOVERY ==============================
+
+/// Fetches and parses the billetterie home page: one [`Encounter`] per card
+/// (title, date, resale link when open), **without fetching any resale page**.
+///
+/// This is the discovery pass: it is the only place the resale links are
+/// exposed, and the caller persists them so the seat pages can be polled
+/// directly afterwards.
+///
+/// # Arguments
+/// * `club` - The club whose ticketing home page to fetch
+/// # Returns
+/// The list of encounters found on the match list
+/// # Errors
+/// [`ScanError::WaitingQueue`] when the shop served its waiting-queue page,
+/// [`ScanError::Fetch`] on any other fetch failure
+pub fn get_home_encounters(club: Club) -> Result<Vec<Encounter>, ScanError> {
+    let client = WebClient::new(ProxyMode::Rotating);
+    get_matches(&club, &client)
+}
+
+/// Internal fetch of the home page through the client — testable part of
+/// [`get_home_encounters`].
 ///
 /// # Arguments
 /// * `club` - The club to fetch matches for
 /// * `client` - The client to use for fetching HTML content
 /// # Returns
 /// A list of encounters matching the specified criteria
-fn get_matches(club: &Club, client: &impl FetchHtml) -> Vec<Encounter> {
+/// # Errors
+/// [`ScanError::WaitingQueue`] when the shop served its waiting-queue page,
+/// [`ScanError::Fetch`] on any other fetch failure
+fn get_matches(club: &Club, client: &impl FetchHtml) -> Result<Vec<Encounter>, ScanError> {
     // SR only: the Stade Rochelais match-list parser is the only implementation.
     let parser: &dyn ParseMatch = &LarochellMatchParser;
 
-    // Step 1: fetch the HTML of the club's ticketing home page.
-    let content = client.get_html(club.get_url());
+    // Step 1: fetch the HTML of the club's ticketing home page (tracked, to
+    // spot the waiting-queue redirect). A failed fetch used to be silently
+    // swallowed into an empty parse — it is now surfaced to the caller.
+    let page = client
+        .get_html_tracked(club.get_url())
+        .map_err(ScanError::Fetch)?;
+    if is_waiting_queue(&page.final_url, &page.body) {
+        return Err(ScanError::WaitingQueue);
+    }
 
     // Step 2: parse the HTML content to find matches (encounters) information.
-    parser.parse_match(&content.unwrap_or_default())
+    Ok(parser.parse_match(&page.body))
 }
 
-/// Internal function to fetch seats for a given encounter from its resale page HTML.
+// ============================== SEAT POLLING ==============================
+
+/// Fetches and parses the resale product page of one encounter: the direct
+/// poll of a link discovered earlier (persisted by the caller in
+/// `resale_links`).
+///
+/// # Arguments
+/// * `encounter` - The encounter to poll; its `resale_link` must be set
+/// # Returns
+/// The seats currently on the resale page (empty when none are left)
+/// # Errors
+/// [`ScanError::WaitingQueue`] when the shop served its waiting-queue page,
+/// [`ScanError::Fetch`] on any other fetch failure
+pub fn get_seats_for_encounter(encounter: Encounter) -> Result<Vec<Seat>, ScanError> {
+    if encounter.resale_link.is_none() {
+        return Ok(Vec::new());
+    }
+
+    // Sticky like the old batch scan: one proxy choice serves all the links
+    // polled during the same pass, keeping match list and product pages
+    // consistent.
+    let client = WebClient::new(ProxyMode::Sticky);
+    get_seats_with(&client, encounter)
+}
+
+/// Internal seat poll through the client — testable part of
+/// [`get_seats_for_encounters`](get_seats_for_encounter).
+///
+/// # Errors
+/// [`ScanError::WaitingQueue`] when the shop served its waiting-queue page,
+/// [`ScanError::Fetch`] on any other fetch failure
+fn get_seats_with(client: &impl FetchHtml, encounter: Encounter) -> Result<Vec<Seat>, ScanError> {
+    let Some(link) = encounter.resale_link.clone() else {
+        return Ok(Vec::new());
+    };
+
+    let page = client.get_html_tracked(&link).map_err(ScanError::Fetch)?;
+    if is_waiting_queue(&page.final_url, &page.body) {
+        return Err(ScanError::WaitingQueue);
+    }
+    Ok(get_seats(&page.body, encounter))
+}
+
+/// Internal function to parse the seat list of a resale page HTML.
 ///
 /// # Arguments
 /// * `html` - The HTML content to parse for seat information
-/// * `encounter` - The encounter for which to fetch seats information
+/// * `encounter` - The encounter the resale page belongs to
 /// # Returns
 /// A list of seats associated with the given encounter
 fn get_seats(html: &str, encounter: Encounter) -> Vec<Seat> {
@@ -103,7 +176,6 @@ mod tests {
     use crate::interface::club_manager;
 
     const MATCH_LIST: &str = include_str!("../app/clubs/larochelle/fixtures/match_list.html");
-    const SEAT_PAGE: &str = include_str!("../app/clubs/larochelle/fixtures/seat_page.html");
     const MATCH_LIST_RESALE_OPEN: &str =
         include_str!("../app/clubs/larochelle/fixtures/match_list_promo_badge.html");
     const SEAT_PAGE_RESALE_OPEN: &str =
@@ -135,21 +207,57 @@ mod tests {
         }
     }
 
+    // Queue detection: the redirect landing on the queue host and the bare
+    // queue body are both rejected; a real page and a normal URL are not.
+    #[test]
+    fn is_waiting_queue_detects_the_queue_page() {
+        assert!(is_waiting_queue(
+            "https://static-staderochelais.mutu.fa.wetix-agency.fr/?destination=x",
+            "full queue page"
+        ));
+        assert!(is_waiting_queue(
+            "https://billetterie.staderochelais.com/fr",
+            "Move to waiting queue"
+        ));
+        assert!(!is_waiting_queue(
+            "https://billetterie.staderochelais.com/fr",
+            "<html>real home page</html>"
+        ));
+        // A shop URL merely containing the words must not trip the check.
+        assert!(!is_waiting_queue(
+            "https://billetterie.staderochelais.com/fr/queue-information",
+            "nothing here"
+        ));
+    }
+
     // The ticketing home page returns every card, whatever its nature: the
     // list is only a catalog, the caller matches against the calendar.
     #[test]
     fn get_matches_returns_every_card() {
         let club = club_manager::stade_rochelais();
-        let all = get_matches(&club, &ok(MATCH_LIST));
+        let all = get_matches(&club, &ok(MATCH_LIST)).unwrap();
         assert_eq!(all.len(), 31);
     }
 
-    // A fetch error yields no matches at all (fail empty, not fail hard).
+    // A fetch failure is surfaced, not silently swallowed into an empty list.
     #[test]
-    fn get_matches_returns_empty_on_fetch_error() {
+    fn get_matches_reports_fetch_errors() {
         let club = club_manager::stade_rochelais();
-        let empty = get_matches(&club, &failing());
-        assert!(empty.is_empty());
+        match get_matches(&club, &failing()) {
+            Err(ScanError::Fetch(e)) => assert_eq!(e, "connection reset"),
+            other => panic!("expected Fetch error, got {other:?}"),
+        }
+    }
+
+    // When the shop serves its waiting queue instead of the home page, the
+    // caller must get the distinct error (not a silent empty list).
+    #[test]
+    fn get_matches_reports_the_waiting_queue() {
+        let club = club_manager::stade_rochelais();
+        assert!(matches!(
+            get_matches(&club, &ok("Move to waiting queue")),
+            Err(ScanError::WaitingQueue)
+        ));
     }
 
     // Live 2026-10-21: the UBB card lost its RUGBY badge (replaced by its
@@ -159,7 +267,7 @@ mod tests {
     #[test]
     fn open_resale_links_are_scanned_regardless_of_nature() {
         let club = club_manager::stade_rochelais();
-        let matches = get_matches(&club, &ok(MATCH_LIST_RESALE_OPEN));
+        let matches = get_matches(&club, &ok(MATCH_LIST_RESALE_OPEN)).unwrap();
 
         let ubb = matches
             .iter()
@@ -185,11 +293,8 @@ mod tests {
         // 2 in the duo pack 33853 (one seat per ticket). The seats are keyed
         // as (pack_id, ticket_id); the ticket map is a HashMap, so the duo
         // tickets are compared order-insensitively.
-        let with_seats = get_encounters_with_seats(vec![ubb.clone()], &ok(SEAT_PAGE_RESALE_OPEN));
-        let ids: BTreeSet<(u64, &str)> = with_seats[0]
-            .seats
-            .as_ref()
-            .unwrap()
+        let seats = get_seats(SEAT_PAGE_RESALE_OPEN, ubb.clone());
+        let ids: BTreeSet<(u64, &str)> = seats
             .iter()
             .map(|seat| (seat.id.pack_id, seat.id.ticket_id.as_str()))
             .collect();
@@ -199,33 +304,49 @@ mod tests {
         );
         // The single ticket of pack 33850 costs 44.00 € wherever it lands.
         assert!(
-            with_seats[0]
-                .seats
-                .as_ref()
-                .unwrap()
+            seats
                 .iter()
                 .any(|seat| seat.id.pack_id == 33850 && seat.price == "44.00")
         );
     }
 
-    // Encounters with an open resale link get their seats parsed from that page.
+    // The direct poll maps a failed fetch to `ScanError::Fetch` (never a
+    // silent empty list).
     #[test]
-    fn get_encounters_with_seats_populates_seats_from_resale_page() {
-        let encounter = Encounter::new(
+    fn get_seats_for_encounter_reports_fetch_errors() {
+        let dead = Encounter::new(
+            ClubType::StadeRochelais,
+            "REVENTE - ÉVREUX".to_string(),
+            "vendredi 23 octobre à 20h00".to_string(),
+            MatchNature::Other,
+            Some("https://billetterie.staderochelais.com/fr/product/9999/x".to_string()),
+        );
+        match get_seats_with(&failing(), dead) {
+            Err(ScanError::Fetch(e)) => assert_eq!(e, "connection reset"),
+            other => panic!("expected Fetch error, got {other:?}"),
+        }
+    }
+
+    // The direct poll also detects the waiting queue on the product page.
+    #[test]
+    fn get_seats_for_encounter_reports_the_waiting_queue() {
+        let queued = Encounter::new(
             ClubType::StadeRochelais,
             "REVENTE - ÉVREUX".to_string(),
             "vendredi 23 octobre à 20h00".to_string(),
             MatchNature::Other,
             Some("https://billetterie.staderochelais.com/fr/product/1368/x".to_string()),
         );
-        let out = get_encounters_with_seats(vec![encounter], &ok(SEAT_PAGE));
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].seats.as_ref().map(|s| s.len()), Some(3));
+        assert!(matches!(
+            get_seats_with(&ok("Move to waiting queue"), queued),
+            Err(ScanError::WaitingQueue)
+        ));
     }
 
-    // No resale link → empty (not `None`) seat list.
+    // A poll of an encounter without a resale link finds no seats and performs
+    // no fetch.
     #[test]
-    fn get_encounters_without_resale_link_get_empty_seats() {
+    fn get_seats_for_encounter_without_link_is_empty() {
         let encounter = Encounter::new(
             ClubType::StadeRochelais,
             "AVIRON BAYONNAIS".to_string(),
@@ -233,23 +354,6 @@ mod tests {
             MatchNature::Rugby,
             None,
         );
-        let out = get_encounters_with_seats(vec![encounter], &ok(MATCH_LIST));
-        assert_eq!(out[0].seats.as_ref().map(|s| s.len()), Some(0));
-    }
-
-    // A fetch error leaves `seats` untouched (`None`), not emptied.
-    #[test]
-    fn get_encounters_keep_seats_unset_on_fetch_error() {
-        let encounter = Encounter::new(
-            ClubType::StadeRochelais,
-            "UNION BORDEAUX BÈGLES".to_string(),
-            "dimanche 25 octobre à 21h05".to_string(),
-            MatchNature::Rugby,
-            Some("https://billetterie.staderochelais.com/fr/product/1357/x".to_string()),
-        );
-        let out = get_encounters_with_seats(vec![encounter], &failing());
-        assert_eq!(out.len(), 1);
-        assert!(out[0].seats.is_none());
-        assert!(out[0].resale_link.is_some());
+        assert!(get_seats_for_encounter(encounter).unwrap().is_empty());
     }
 }

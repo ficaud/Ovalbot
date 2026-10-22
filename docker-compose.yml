@@ -16,7 +16,8 @@ services:
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
       # Ticket resale scanner (bot). Off by default; see .env.example.
       BOT_ENABLED: ${BOT_ENABLED:-false}
-      BOT_SCAN_INTERVAL_SECS: ${BOT_SCAN_INTERVAL_SECS:-300}
+      BOT_SCAN_INTERVAL_SECS: ${BOT_SCAN_INTERVAL_SECS:-60}
+      BOT_HOME_REFRESH_SECS: ${BOT_HOME_REFRESH_SECS:-60}
       PROXY_ENABLED: ${PROXY_ENABLED:-false}
       PROXIES_FILE: ${PROXIES_FILE:-}
     volumes:
