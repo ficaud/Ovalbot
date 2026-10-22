@@ -33,23 +33,27 @@ impl MatchNature {
         }
     }
 
-    /// Determines the MatchNature based on the badge text of a match card.
+    /// Determines the MatchNature from a badge, when the badge names a sport.
     ///
-    /// The ticketing site now shows the sport as a badge (e.g. "RUGBY", "BASKET")
-    /// while the card title only contains the opponent name.
+    /// The ticketing site shows the sport as a badge (e.g. "RUGBY", "BASKET"),
+    /// but promotional badges also exist ("DERNIÈRE MISE EN VENTE À 18H00",
+    /// "REPAS", "INSIDE XPERIENCE"…). Those must not classify a card: the
+    /// caller falls back on the title so that, say, a rugby card flagged with
+    /// the resale deadline still reaches the seat pages.
     ///
     /// # Arguments
     /// * `badge` - The badge text of the match card
     /// # Returns
-    /// The corresponding MatchNature enum variant based on the badge content
-    pub fn from_badge(badge: &str) -> Self {
+    /// `Some` with the detected nature for sport-naming badges, `None` for
+    /// unknown (promotional) badges
+    pub fn from_badge(badge: &str) -> Option<MatchNature> {
         let upper = badge.to_uppercase();
         if upper.contains("RUGBY") {
-            MatchNature::Rugby
+            Some(MatchNature::Rugby)
         } else if upper.contains("BASKET") {
-            MatchNature::Basketball
+            Some(MatchNature::Basketball)
         } else {
-            MatchNature::Other
+            None
         }
     }
 }
@@ -405,5 +409,25 @@ mod tests {
         assert_eq!(dt.year(), 2025);
         assert_eq!(dt.month(), 6);
         assert_eq!(dt.day(), 6);
+    }
+
+    // Sport-naming badges classify; promotional badges return `None` so the
+    // caller falls back on the title.
+    #[test]
+    fn from_badge_classifies_sports_and_ignores_promos() {
+        assert_eq!(MatchNature::from_badge("RUGBY"), Some(MatchNature::Rugby));
+        assert_eq!(MatchNature::from_badge("rugby"), Some(MatchNature::Rugby));
+        assert_eq!(
+            MatchNature::from_badge("BASKET"),
+            Some(MatchNature::Basketball)
+        );
+        // Live 2026-10-21: the UBB card shows its resale deadline as badge.
+        assert_eq!(
+            MatchNature::from_badge("DERNIÈRE MISE EN VENTE À 18H00"),
+            None
+        );
+        assert_eq!(MatchNature::from_badge("REPAS"), None);
+        assert_eq!(MatchNature::from_badge("INSIDE XPERIENCE"), None);
+        assert_eq!(MatchNature::from_badge(""), None);
     }
 }

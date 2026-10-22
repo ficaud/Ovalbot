@@ -57,11 +57,11 @@ pub fn parse_match(html: &str) -> Vec<Encounter> {
             .unwrap_or_default();
 
         if !title.is_empty() {
-            let nature = if badge.is_empty() {
-                MatchNature::from_title(&title)
-            } else {
-                MatchNature::from_badge(&badge)
-            };
+            // A sport-naming badge ("RUGBY", "BASKET") classifies the card; any
+            // other badge (promotional, e.g. "DERNIÈRE MISE EN VENTE À 18H00")
+            // must not, so the title gets its chance.
+            let nature =
+                MatchNature::from_badge(&badge).unwrap_or_else(|| MatchNature::from_title(&title));
             let resale_link = meeting
                 .select(&link_selector)
                 .next()
@@ -103,6 +103,11 @@ mod tests {
 
     // Captured live from https://billetterie.staderochelais.com/fr on 2026-10-18.
     const FIXTURE: &str = include_str!("fixtures/match_list.html");
+
+    // Captured live from https://billetterie.staderochelais.com/fr on
+    // 2026-10-21: the UBB card shows the resale deadline ("DERNIÈRE MISE EN
+    // VENTE À 18H00") as badge, and its resale is open.
+    const FIXTURE_PROMO_BADGE: &str = include_str!("fixtures/match_list_promo_badge.html");
 
     #[test]
     fn fixture_extracts_all_encounters() {
@@ -202,6 +207,65 @@ mod tests {
         assert_eq!(encounters[0].nature, MatchNature::Basketball);
         assert_eq!(encounters[1].nature, MatchNature::Rugby);
         assert_eq!(encounters[2].nature, MatchNature::Other);
+    }
+
+    // Sport-naming badges keep priority over the title; a promotional badge
+    // ("DERNIÈRE MISE EN VENTE") must not override the title inference.
+    #[test]
+    fn promo_badge_falls_back_to_title_inference() {
+        let html = r#"<ul>
+            <li class="cards-grid__item">
+                <h3 class="title">STADE ROCHELAIS - UNION BORDEAUX BÈGLES</h3>
+                <span class="date">dimanche 25 octobre à 21h05</span>
+                <span class="badge-event">DERNIÈRE MISE EN VENTE À 18H00</span>
+            </li>
+        </ul>"#;
+        let encounters = parse_match(html);
+        assert_eq!(encounters[0].nature, MatchNature::Rugby);
+    }
+
+    // Live regression (2026-10-21): the UBB card lost its RUGBY badge (replaced
+    // by its resale deadline) and keeps its resale link even though the title
+    // alone cannot infer the nature.
+    #[test]
+    fn fixture_promo_badge_ubb_keeps_resale_link() {
+        let encounters = parse_match(FIXTURE_PROMO_BADGE);
+        let rugby: Vec<&str> = encounters
+            .iter()
+            .filter(|e| e.nature == MatchNature::Rugby)
+            .map(|e| e.title.as_str())
+            .collect();
+        assert_eq!(
+            rugby,
+            vec![
+                "AVIRON BAYONNAIS",
+                "USA PERPIGNAN",
+                "CASTRES OLYMPIQUE",
+                "SECTION PALOISE"
+            ]
+        );
+
+        let ubb = encounters
+            .iter()
+            .find(|e| e.title == "UNION BORDEAUX BÈGLES")
+            .unwrap();
+        assert_eq!(ubb.nature, MatchNature::Other);
+        assert_eq!(
+            ubb.resale_link.as_deref(),
+            Some(
+                "https://billetterie.staderochelais.com/fr/product/1357/revente_j7_24_25_oct_stade_rochelais_ubb"
+            )
+        );
+
+        // The disabled resale button of ÉVREUX still carries no offer.
+        assert_eq!(
+            encounters
+                .iter()
+                .find(|e| e.title == "ÉVREUX")
+                .unwrap()
+                .resale_link,
+            None
+        );
     }
 
     #[test]

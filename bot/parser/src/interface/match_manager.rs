@@ -8,24 +8,27 @@ use crate::app::clubs::{
 };
 use crate::controller::html_extract::FetchHtml;
 use crate::core::club::Club;
-use crate::core::encounter::{Encounter, MatchNature};
+use crate::core::encounter::Encounter;
 use crate::core::seat::Seat;
 use crate::interface::curl::proxy::ProxyMode;
 use crate::interface::curl::web::WebClient;
 
-/// Fetches encounters with seats for a given club and match nature: parse the match list
-/// (each card carries its resale link when open), then fetch and parse the seat pages.
+/// Fetches encounters with seats for a given club: parse the match list, then
+/// fetch and parse the seat pages of the encounters that have an open resale
+/// link. Cards are **not** filtered by nature — classification is unreliable
+/// (promotional badges overwrite the sport on nearing matches) — the caller
+/// (OvalBot) matches the encounters against its calendar and drops the rest.
 ///
 /// # Arguments
 /// * `club` - The club to fetch matches for
-/// * `match_type` - The nature of the matches to fetch (Rugby filters out other events)
 /// # Returns
-/// A list of encounters with their seats information populated
-pub fn get_seats_from_matches(club: Club, match_type: MatchNature) -> Vec<Encounter> {
+/// A list of encounters with their seats information populated when the
+/// resale is open
+pub fn get_seats_from_matches(club: Club) -> Vec<Encounter> {
     let mut client = WebClient::new(ProxyMode::Rotating);
 
     // Parse the match list from the ticketing home page.
-    let matches = get_matches_from_type_and_club(match_type, club);
+    let matches = get_matches(&club, &client);
 
     // Keep the same proxy for the seat pages to stay consistent between the
     // match list and the individual resale pages.
@@ -57,15 +60,16 @@ fn get_encounters_with_seats(matches: Vec<Encounter>, client: &impl FetchHtml) -
         .collect()
 }
 
-/// Internal function to parse the match list for a given club and filter by match nature.
+/// Internal function to parse the match list for a given club, with no nature
+/// filter: every card (rugby, basketball, meals…) is returned, nature included
+/// for information only.
 ///
 /// # Arguments
 /// * `club` - The club to fetch matches for
 /// * `client` - The client to use for fetching HTML content
-/// * `match_type` - Filter to return only matches of a specific nature
 /// # Returns
 /// A list of encounters matching the specified criteria
-fn get_matches(club: &Club, client: &impl FetchHtml, match_type: MatchNature) -> Vec<Encounter> {
+fn get_matches(club: &Club, client: &impl FetchHtml) -> Vec<Encounter> {
     // SR only: the Stade Rochelais match-list parser is the only implementation.
     let parser: &dyn ParseMatch = &LarochellMatchParser;
 
@@ -73,25 +77,7 @@ fn get_matches(club: &Club, client: &impl FetchHtml, match_type: MatchNature) ->
     let content = client.get_html(club.get_url());
 
     // Step 2: parse the HTML content to find matches (encounters) information.
-    let matches = parser.parse_match(&content.unwrap_or_default());
-
-    // Step 3: filter by nature.
-    matches
-        .into_iter()
-        .filter(|encounter| encounter.nature == match_type)
-        .collect()
-}
-
-/// Internal function to fetch matches for a given club and match nature.
-///
-/// # Arguments
-/// * `match_type` - Filter to return only matches of a specific nature
-/// * `club` - The club to fetch matches for
-/// # Returns
-/// A list of encounters matching the specified criteria
-fn get_matches_from_type_and_club(match_type: MatchNature, club: Club) -> Vec<Encounter> {
-    let client = WebClient::new(ProxyMode::Rotating);
-    get_matches(&club, &client, match_type)
+    parser.parse_match(&content.unwrap_or_default())
 }
 
 /// Internal function to fetch seats for a given encounter from its resale page HTML.
@@ -109,12 +95,19 @@ fn get_seats(html: &str, encounter: Encounter) -> Vec<Seat> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::core::club::ClubType;
+    use crate::core::encounter::MatchNature;
     use crate::interface::club_manager;
 
     const MATCH_LIST: &str = include_str!("../app/clubs/larochelle/fixtures/match_list.html");
     const SEAT_PAGE: &str = include_str!("../app/clubs/larochelle/fixtures/seat_page.html");
+    const MATCH_LIST_RESALE_OPEN: &str =
+        include_str!("../app/clubs/larochelle/fixtures/match_list_promo_badge.html");
+    const SEAT_PAGE_RESALE_OPEN: &str =
+        include_str!("../app/clubs/larochelle/fixtures/seat_page_resale_open.html");
 
     // Minimal FetchHtml double: always answers with the canned result.
     struct Stub {
@@ -142,27 +135,77 @@ mod tests {
         }
     }
 
-    // The ticketing home page splits into the 5 rugby cards and the other natures.
+    // The ticketing home page returns every card, whatever its nature: the
+    // list is only a catalog, the caller matches against the calendar.
     #[test]
-    fn get_matches_filters_by_nature() {
+    fn get_matches_returns_every_card() {
         let club = club_manager::stade_rochelais();
-        let rugby = get_matches(&club, &ok(MATCH_LIST), MatchNature::Rugby);
-        assert_eq!(rugby.len(), 5);
-        assert!(rugby.iter().all(|e| e.nature == MatchNature::Rugby));
-
-        let basket = get_matches(&club, &ok(MATCH_LIST), MatchNature::Basketball);
-        assert_eq!(basket.len(), 7);
-
-        let other = get_matches(&club, &ok(MATCH_LIST), MatchNature::Other);
-        assert_eq!(other.len(), 19);
+        let all = get_matches(&club, &ok(MATCH_LIST));
+        assert_eq!(all.len(), 31);
     }
 
     // A fetch error yields no matches at all (fail empty, not fail hard).
     #[test]
     fn get_matches_returns_empty_on_fetch_error() {
         let club = club_manager::stade_rochelais();
-        let empty = get_matches(&club, &failing(), MatchNature::Rugby);
+        let empty = get_matches(&club, &failing());
         assert!(empty.is_empty());
+    }
+
+    // Live 2026-10-21: the UBB card lost its RUGBY badge (replaced by its
+    // resale deadline) but its resale is open — it must still be exposed with
+    // its link, and its seat page must parse the live seats. The disabled
+    // resale button of ÉVREUX exposes no link.
+    #[test]
+    fn open_resale_links_are_scanned_regardless_of_nature() {
+        let club = club_manager::stade_rochelais();
+        let matches = get_matches(&club, &ok(MATCH_LIST_RESALE_OPEN));
+
+        let ubb = matches
+            .iter()
+            .find(|e| e.title == "UNION BORDEAUX BÈGLES")
+            .unwrap();
+        assert_eq!(
+            ubb.resale_link.as_deref(),
+            Some(
+                "https://billetterie.staderochelais.com/fr/product/1357/revente_j7_24_25_oct_stade_rochelais_ubb"
+            )
+        );
+
+        assert_eq!(
+            matches
+                .iter()
+                .find(|e| e.title == "ÉVREUX")
+                .unwrap()
+                .resale_link,
+            None
+        );
+
+        // The open resale page parses into 3 live seats: 1 in pack 33850 and
+        // 2 in the duo pack 33853 (one seat per ticket). The seats are keyed
+        // as (pack_id, ticket_id); the ticket map is a HashMap, so the duo
+        // tickets are compared order-insensitively.
+        let with_seats = get_encounters_with_seats(vec![ubb.clone()], &ok(SEAT_PAGE_RESALE_OPEN));
+        let ids: BTreeSet<(u64, &str)> = with_seats[0]
+            .seats
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|seat| (seat.id.pack_id, seat.id.ticket_id.as_str()))
+            .collect();
+        assert_eq!(
+            ids,
+            BTreeSet::from([(33850u64, "49432"), (33853, "49435"), (33853, "49438"),])
+        );
+        // The single ticket of pack 33850 costs 44.00 € wherever it lands.
+        assert!(
+            with_seats[0]
+                .seats
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|seat| seat.id.pack_id == 33850 && seat.price == "44.00")
+        );
     }
 
     // Encounters with an open resale link get their seats parsed from that page.

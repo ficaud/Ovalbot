@@ -9,13 +9,15 @@
 //! ingestion.
 
 use calendar::{parse_window, Event, MatchStatus, TeamType};
-use parser::core::encounter::{Encounter, MatchNature};
+use parser::core::encounter::Encounter;
 
 /// Reasons an encounter could not be tied to exactly one calendar match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolveError {
-    /// Encounter nature is not rugby (meals, parking, basketball…).
-    NotRugby,
+    /// The card is not a match (meals, parking, visits…): its title carries a
+    /// marker fragment even though it might alias a club name
+    /// ("BORDEAUX🍴REPAS D'AVANT-MATCH").
+    NotAMatch,
     /// The title does not name a known Top 14 club (e.g. European cup games).
     UnknownOpponent,
     /// The date could not be turned into a day window.
@@ -30,7 +32,7 @@ pub enum ResolveError {
 impl std::fmt::Display for ResolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let msg = match self {
-            ResolveError::NotRugby => "encounter is not a rugby match",
+            ResolveError::NotAMatch => "encounter is not a match (meal, parking, visit…)",
             ResolveError::UnknownOpponent => "opponent not recognized",
             ResolveError::UnparseableDate => "date not parseable",
             ResolveError::NoCalendarMatch => "no calendar match in the date window",
@@ -40,16 +42,41 @@ impl std::fmt::Display for ResolveError {
     }
 }
 
+/// Marker fragments that identify a billetterie card which is not a match
+/// (meals, parking, visits…). Any title containing one, case-insensitively, is
+/// dropped, even when it also names a club ("BORDEAUX🍴REPAS D'AVANT-MATCH"
+/// would otherwise alias the UBB match).
+const NOT_A_MATCH_MARKERS: &[&str] = &[
+    "repas",
+    "parking",
+    "xperience",
+    "visite",
+    "séjour",
+    "sejour",
+    "hospitalité",
+    "hospitalite",
+    "réception",
+    "reception",
+];
+
+/// Tells whether a billetterie title names something other than a match.
+#[must_use]
+fn is_not_a_match(title: &str) -> bool {
+    let s = title.to_lowercase();
+    NOT_A_MATCH_MARKERS.iter().any(|marker| s.contains(marker))
+}
+
 /// Resolves an encounter to the calendar match id (LNR id) of the home game
 /// against the club named by the title, when the kickoff falls inside the
 /// encounter date window and the assignment is unambiguous.
 ///
 /// Only the title names the club — billetterie events are Stade Rochelais
-/// home games, so the title carries the opponent. Several overlapping
-/// candidates produce an error rather than a guess.
+/// home games, so the title carries the opponent. Cards that are not matches
+/// (meals, parking…) are rejected first: their title can alias a club name.
+/// Several overlapping candidates produce an error rather than a guess.
 pub fn resolve(encounter: &Encounter, events: &[Event]) -> Result<u32, ResolveError> {
-    if encounter.nature != MatchNature::Rugby {
-        return Err(ResolveError::NotRugby);
+    if is_not_a_match(&encounter.title) {
+        return Err(ResolveError::NotAMatch);
     }
     let opponent = TeamType::from_name(&encounter.title).ok_or(ResolveError::UnknownOpponent)?;
     let window = parse_window(&encounter.date).ok_or(ResolveError::UnparseableDate)?;
@@ -81,6 +108,7 @@ mod tests {
     use super::*;
     use calendar::Team;
     use parser::core::club::ClubType;
+    use parser::core::encounter::MatchNature;
 
     // Builds a calendar `Team` whose id/name follow the TeamType conventions.
     fn team(team_type: TeamType) -> Team {
@@ -212,11 +240,13 @@ mod tests {
         );
     }
 
-    /// Non-rugby events (meals, parking…) are never resolved, even when their
-    /// title aliases the club ("BORDEAUX🍴REPAS D'AVANT-MATCH") and their date
-    /// falls inside the real match's window.
+    /// Cards that are not matches (meals, visits…) are never resolved, even
+    /// when their title aliases the club ("BORDEAUX🍴REPAS D'AVANT-MATCH") and
+    /// their date falls inside the real match's window. The nature no longer
+    /// matters: a rugby card wearing a promotional badge ("DERNIÈRE MISE EN
+    /// VENTE") resolves all the same.
     #[test]
-    fn rejects_non_rugby_natures() {
+    fn rejects_non_match_cards() {
         let events = [event(
             101,
             TeamType::StadeRochelais,
@@ -233,7 +263,31 @@ mod tests {
                 ),
                 &events
             ),
-            Err(ResolveError::NotRugby)
+            Err(ResolveError::NotAMatch)
+        );
+    }
+
+    // Live 2026-10-21: with the RUGBY badge replaced by the resale deadline,
+    // the parser hands over the UBB card as `Other` — it resolves anyway.
+    #[test]
+    fn resolves_promo_badge_card_despite_other_nature() {
+        let events = [event(
+            101,
+            TeamType::StadeRochelais,
+            TeamType::UnionBordeauxBegles,
+            "dimanche 25 octobre 21h05",
+            MatchStatus::Scheduled,
+        )];
+        assert_eq!(
+            resolve(
+                &encounter(
+                    "UNION BORDEAUX BÈGLES",
+                    "dimanche 25 octobre à 21h05",
+                    MatchNature::Other
+                ),
+                &events
+            ),
+            Ok(101)
         );
     }
 

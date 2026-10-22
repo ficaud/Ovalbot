@@ -200,6 +200,38 @@ GROUP BY u.id
 ORDER BY nb_alerts DESC, u.email;"
 ```
 
+List out users that have registered their telegram account
+
+```sql
+sqlite3 -box ovalbot.db "
+SELECT u.id,
+       u.email,
+       u.telegram_id,
+       u.notify_email,
+       u.notify_telegram
+FROM users u
+WHERE u.telegram_id IS NOT NULL
+ORDER BY u.email;"
+```
+
+List out all the tickets requests that have been sent to users
+
+```sql
+sqlite3 -box ovalbot.db "
+SELECT u.email,
+       tr.match_id,
+       tr.kind,
+       tr.quantity,
+       tr.max_price_cents,
+       tr.places,
+       tr.status,
+       tr.created_at,
+       tr.updated_at
+FROM ticket_requests tr
+JOIN users u ON u.id = tr.user_id
+ORDER BY u.email, tr.match_id;"
+```
+
 ## Calendar crate testing
 
 The LNR parser tests (`calendar/src/parse/lnr.rs`) read committed HTML fixtures
