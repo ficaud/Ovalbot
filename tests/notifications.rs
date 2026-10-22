@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use calendar::{Change, TeamType};
 use common::{insert_active_user, RecordingMailer, RecordingTelegram};
+use ovalbot::services::alerts::{SeatAlert, SeatBrief};
 use ovalbot::services::calendar::CalendarService;
-use ovalbot::services::mailer::{Mailer, SeatAlert, SeatBrief};
+use ovalbot::services::mailer::Mailer;
 use ovalbot::services::notifications::{
     list_for_user, notify_new_seats, process, subscribe, unsubscribe, update_settings,
 };
@@ -21,12 +22,16 @@ fn seats_alert() -> SeatAlert {
         date: "dimanche 8 novembre à 21h05".to_string(),
         seats: vec![
             SeatBrief {
-                category: "Pelouse".to_string(),
-                price: "45.00 €".to_string(),
+                bloc: "NORD - MACIF BRP".to_string(),
+                row: "U".to_string(),
+                seat_number: 1,
+                price: "45.00".to_string(),
             },
             SeatBrief {
-                category: "Catégorie 2".to_string(),
-                price: "99.00 €".to_string(),
+                bloc: "NORD - MACIF BRP".to_string(),
+                row: "U".to_string(),
+                seat_number: 12,
+                price: "99.00".to_string(),
             },
         ],
     }

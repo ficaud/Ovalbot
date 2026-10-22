@@ -15,7 +15,7 @@ use calendar::Change;
 use sqlx::SqlitePool;
 
 use crate::common::error::AppError;
-use crate::services::mailer::{MatchAlert, SeatAlert};
+use crate::services::alerts::{MatchAlert, SeatAlert};
 use crate::services::state::AppState;
 use crate::services::tickets;
 
@@ -217,7 +217,7 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
     }
 
     let text = format!(
-        "Seats on resale: Stade Rochelais vs {} ({}). New seats: {}.",
+        "Seats on resale: Stade Rochelais vs {} ({}). New seats:\n{}.",
         alert.opponent,
         alert.date,
         alert.seats_listing()
