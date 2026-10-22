@@ -1,4 +1,5 @@
-//! Thin async wrapper around the parser crate: one scan of the billetterie
-//! → `Vec<Encounter>` (OvalBot owns dedup, matching and notifications).
+//! Thin async wrapper around the parser crate: the billetterie passes the
+//! bot needs — home discovery (`discover`) and direct seat polling
+//! (`fetch_seats`). OvalBot owns persistence, matching and notifications.
 
 pub mod app;

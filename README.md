@@ -117,8 +117,9 @@ The backend reads these environment variables:
 | `TELEGRAM_BOT_USERNAME` | *(empty)* | Bot username (without `@`), used to build the account-linking deep link. |
 | `TELEGRAM_WEBHOOK_URL` | *(empty)* | Public HTTPS URL of this app; registered via `setWebhook` at startup. |
 | `TELEGRAM_WEBHOOK_SECRET` | *(empty)* | Secret token Telegram sends in `X-Telegram-Bot-Api-Secret-Token`, verified on every update. |
-| `BOT_ENABLED` | `false` | Set `true` to run the ticket resale scanner loop. Results are logged only for now (no notifications yet). |
-| `BOT_SCAN_INTERVAL_SECS` | `300` | Seconds between two scans of the ticketing website. |
+| `BOT_ENABLED` | `false` | Set `true` to run the ticket resale scanner loop. |
+| `BOT_SCAN_INTERVAL_SECS` | `60` | Seconds between two loop ticks: the direct poll of the stored resale links. |
+| `BOT_HOME_REFRESH_SECS` | `60` | Seconds between two billetterie home-page fetches (link discovery). Each tick also re-polls the links learned earlier, so a queued home page never stops the polling. |
 | `PROXY_ENABLED` | `false` | Set `true` to route scanner requests through the proxy pool. |
 | `PROXIES_FILE` | *(empty)* | Path to a `ip:port` proxy list; required for a real pool (otherwise nothing to rotate). |
 
@@ -230,6 +231,33 @@ SELECT u.email,
 FROM ticket_requests tr
 JOIN users u ON u.id = tr.user_id
 ORDER BY u.email, tr.match_id;"
+```
+
+Inspect the bot's resale links (`resale_links`: what home-page discovery
+learned, what the direct poll did):
+
+```sql
+sqlite3 -box ovalbot.db "
+SELECT title,
+       date,
+       match_id,
+       resale_link,
+       first_seen_at,
+       last_seen_at,
+       last_scanned_at,
+       last_scan_status
+FROM resale_links
+ORDER BY last_seen_at DESC;"
+```
+
+Quick health check of the same table (one line per poll outcome):
+
+```sql
+sqlite3 -box ovalbot.db "
+SELECT last_scan_status,
+       COUNT(*) AS links
+FROM resale_links
+GROUP BY last_scan_status;"
 ```
 
 ## Calendar crate testing

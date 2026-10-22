@@ -1,5 +1,5 @@
 use super::proxy::{ProxyMode, retry_with_proxy_mode};
-use crate::controller::html_extract::FetchHtml;
+use crate::controller::html_extract::{FetchHtml, Fetched};
 use curl::easy::Easy;
 use std::time::Duration;
 
@@ -26,7 +26,17 @@ impl WebClient {
 impl FetchHtml for WebClient {
     /// Performs the GET and maps the error into the trait's string form.
     fn get_html(&self, url: &str) -> Result<String, String> {
-        fetch_html(url, self.proxy_mode).map_err(|e| e.to_string())
+        fetch_html(url, self.proxy_mode)
+            .map(|(_, body)| body)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Performs the GET and returns the body **with the effective URL**, so the
+    /// caller can detect the billetterie waiting-queue redirect.
+    fn get_html_tracked(&self, url: &str) -> Result<Fetched, String> {
+        fetch_html(url, self.proxy_mode)
+            .map(|(final_url, body)| Fetched { final_url, body })
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -36,8 +46,12 @@ impl FetchHtml for WebClient {
 /// * `url` - The URL from which to fetch HTML content
 /// * `proxy_mode` - How to select proxies when retrying
 /// # Returns
-/// A `Result` containing the fetched HTML content as a `String`, or an error if the fetch operation fails
-fn fetch_html(url: &str, proxy_mode: ProxyMode) -> Result<String, Box<dyn std::error::Error>> {
+/// The effective URL after following redirects and the fetched HTML content,
+/// or an error if the fetch operation fails
+fn fetch_html(
+    url: &str,
+    proxy_mode: ProxyMode,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
     retry_with_proxy_mode(
         |proxy| {
             let mut easy = Easy::new();
@@ -57,7 +71,11 @@ fn fetch_html(url: &str, proxy_mode: ProxyMode) -> Result<String, Box<dyn std::e
                 })?;
                 transfer.perform()?;
             }
-            Ok(String::from_utf8(html)?)
+            let final_url = match easy.effective_url()? {
+                Some(u) => u.to_owned(),
+                None => url.to_owned(),
+            };
+            Ok((final_url, String::from_utf8(html)?))
         },
         proxy_mode,
     )
@@ -99,6 +117,16 @@ mod tests {
             client.get_html(&url).unwrap(),
             "<html>bonjour du mock</html>"
         );
+    }
+
+    // Without redirect, the tracked fetch reports the requested URL as final.
+    #[test]
+    fn get_html_tracked_reports_the_requested_url_without_redirect() {
+        let url = serve("<html>page</html>", 1);
+        let client = WebClient::new(ProxyMode::Disabled);
+        let page = client.get_html_tracked(&url).unwrap();
+        assert_eq!(page.final_url, url);
+        assert_eq!(page.body, "<html>page</html>");
     }
 
     #[test]
