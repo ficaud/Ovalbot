@@ -305,6 +305,7 @@ async fn poll_one(state: &AppState, target: &ScanTarget) {
         let alert = SeatAlert {
             opponent: target.title.clone(),
             date: target.date.clone(),
+            link: target.resale_link.clone(),
             seats: fresh_seats
                 .iter()
                 .map(|seat| SeatBrief {

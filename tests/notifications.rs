@@ -20,6 +20,7 @@ fn seats_alert() -> SeatAlert {
     SeatAlert {
         opponent: "Aviron Bayonnais".to_string(),
         date: "dimanche 8 novembre à 21h05".to_string(),
+        link: "https://billetterie.staderochelais.com/fr/product/1357/revente".to_string(),
         seats: vec![
             SeatBrief {
                 bloc: "NORD - MACIF BRP".to_string(),

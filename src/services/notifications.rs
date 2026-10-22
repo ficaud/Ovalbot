@@ -216,12 +216,16 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
         return;
     }
 
-    let text = format!(
-        "Seats on resale: Stade Rochelais vs {} ({}). New seats:\n{}.",
+    let mut text = format!(
+        "Places de rugby en revente : Stade Rochelais vs {} ({}).\nNouvelles places ({}) :\n{}",
         alert.opponent,
         alert.date,
+        alert.seats.len(),
         alert.seats_listing()
     );
+    if !alert.link.is_empty() {
+        text.push_str(&format!("\nRéserver : {}", alert.link));
+    }
     let (mut emailed, mut messaged) = (0u32, 0u32);
     for requester in requesters {
         // If notify_email is enabled, send the seats alert email
