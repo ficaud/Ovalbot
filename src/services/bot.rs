@@ -28,7 +28,7 @@ use parser::interface::curl::proxy::set_proxy_enabled;
 use parser::interface::ScanError;
 use scanner::app::scan::{discover, fetch_seats};
 
-use crate::services::mailer::{SeatAlert, SeatBrief};
+use crate::services::alerts::{SeatAlert, SeatBrief};
 use crate::services::matching;
 use crate::services::notifications;
 use crate::services::resale::{self, ScanStatus, ScanTarget};
@@ -308,7 +308,9 @@ async fn poll_one(state: &AppState, target: &ScanTarget) {
             seats: fresh_seats
                 .iter()
                 .map(|seat| SeatBrief {
-                    category: seat.seat_info.composition.category.clone(),
+                    bloc: seat.seat_info.composition.bloc.clone(),
+                    row: seat.seat_info.composition.row.clone(),
+                    seat_number: seat.seat_info.composition.seat_number,
                     price: seat.price.clone(),
                 })
                 .collect(),

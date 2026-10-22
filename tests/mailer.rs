@@ -9,9 +9,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::Router;
 use common::{insert_active_user, RecordingMailer};
+use ovalbot::services::alerts::{MatchAlert, SeatAlert, SeatBrief};
 use ovalbot::services::mailer::{
-    send_welcome_if_unsent, EmailTemplates, MailError, Mailer, MatchAlert, ResendMailer, SeatAlert,
-    SeatBrief,
+    send_welcome_if_unsent, EmailTemplates, MailError, Mailer, ResendMailer,
 };
 use sqlx::SqlitePool;
 
@@ -193,8 +193,10 @@ async fn send_seats_alert_posts_expected_request() {
         opponent: "RC Toulon".to_string(),
         date: "dimanche 20 décembre à 15h15".to_string(),
         seats: vec![SeatBrief {
-            category: "Pelouse".to_string(),
-            price: "49.00 €".to_string(),
+            bloc: "NORD - MACIF BRP".to_string(),
+            row: "Rang U".to_string(),
+            seat_number: 2,
+            price: "49.00".to_string(),
         }],
     };
     mailer(&base_url)
@@ -208,6 +210,12 @@ async fn send_seats_alert_posts_expected_request() {
         body["subject"],
         "Seats on resale: Stade Rochelais vs RC Toulon"
     );
-    assert!(body["text"].as_str().unwrap().contains("Pelouse · 49.00 €"));
-    assert!(body["html"].as_str().unwrap().contains("Pelouse · 49.00 €"));
+    assert!(body["text"]
+        .as_str()
+        .unwrap()
+        .contains("NORD - MACIF BRP - Rang U - 2 for 49.00 €"));
+    assert!(body["html"]
+        .as_str()
+        .unwrap()
+        .contains("NORD - MACIF BRP - Rang U - 2 for 49.00 €"));
 }

@@ -273,6 +273,16 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace --jobs 2` all green (18 suites, 61 parser + 7 resale).
 - Remaining: per-kind eligibility matcher between `record_offers` and `notify_new_seats`; dead-link (non-product page) detection beyond the queue; per-kind observability for basket links if they become interesting.
 
+### 2026-10-22 — Alert payloads extracted out of the mailer (`services::alerts`)
+
+- Motivation: `MatchAlert`/`SeatAlert`/`SeatBrief` + the shared `seats_listing()` formatting lived inside the **email transport** (`mailer.rs`) while being consumed by both channels — `notifications.rs` (Telegram text) and `bot.rs` (alert building) imported alert data types from a transport. Now that Telegram consumes the same listing, the coupling had to go.
+- New `src/services/alerts.rs`: channel-neutral payloads (`MatchAlert`, `SeatBrief`, `SeatAlert`) + `seats_listing()` — pure data + display, no transport, no persistence. `mailer.rs` keeps only the `Mailer` trait, Resend/Noop and the templates, and imports the types from `alerts`; no `pub use` compatibility shim (same "clean break" policy as the 2026-10-14 layering).
+- Route/behavior contracts untouched: `Mailer` trait signatures, `notify_new_seats`, `bot::poll_one` unchanged — a pure move plus fixture hygiene.
+- Fixture fixes riding along: `tests/mailer.rs` still asserted the pre-`bloc/row/seat_number` listing format ("Pelouse · 49.00 €") → updated to the current one ("NORD - MACIF BRP - Rang U - 2 for 49.00 €"); `tests/notifications.rs` fixtures carried prices already suffixed with `€` ("45.00 €") while `seats_listing` appends `€` itself (parser raw prices are unsuffixed, e.g. "44.00" per `match_manager` tests) → fixtures normalized to raw prices, format aligned to its own doc ("for {} €" with a space). The notifications assertion `contains("45.00 €")` keeps passing via the listing output.
+- Gotcha: `#[cfg(test)]` in `mailer.rs` uses `use super::*` — `SeatAlert` came through but `SeatBrief` needed its own import; `seat_number` is `u64` (Copy) → clippy caught a needless `.clone()` in `bot.rs`.
+- Updated files: `src/services/{mod,mailer,notifications,bot}.rs`, new `src/services/alerts.rs`, `tests/{mailer,notifications}.rs`, `tests/common/mod.rs` (`RecordingMailer` imports).
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace --jobs 2` all green (18 suites, 61 parser + 6 mailer + 41 routes + 7 resale).
+
 ### 2026-10-21 — Fix: resales missed when a match card wears a promotional badge
 - **Bug**: the bot logged `4 encounter(s), 0 seat(s)` while the UBB resale (`/fr/product/1357/revente_j7_24_25_oct_stade_rochelais_ubb`) was live with 3 seats. Root cause: the card's badge changed from `RUGBY` to **"DERNIÈRE MISE EN VENTE À 18H00"** (resale deadline), and `parse_match` let badges override the title unconditionally → `from_badge` mapped it to `Other` → the `nature == Rugby` scan filter dropped the card. `from_title` could not recover (requires a "stade rochelais" prefix; opponent-only titles fail). Triggers at the end of every match's selling window.
 - **Fix (Option B — nature stops being a decision criterion)**:

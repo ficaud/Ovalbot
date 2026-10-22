@@ -4,9 +4,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use ovalbot::common::models::{Role, Status};
+use ovalbot::services::alerts::{MatchAlert, SeatAlert};
 use ovalbot::services::auth::generate_session_token;
 use ovalbot::services::calendar::CalendarService;
-use ovalbot::services::mailer::{MailError, Mailer, MatchAlert, NoopMailer, SeatAlert};
+use ovalbot::services::mailer::{MailError, Mailer, NoopMailer};
 use ovalbot::services::state::AppState;
 use ovalbot::services::telegram::{NoopTelegram, Telegram, TelegramConfig, TelegramError};
 use sqlx::SqlitePool;

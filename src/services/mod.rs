@@ -2,6 +2,7 @@
 //! Telegram, match notifications, ticket requests, the bot's resale link
 //! registry and the bot scan loop.
 
+pub mod alerts;
 pub mod auth;
 pub mod bot;
 pub mod calendar;

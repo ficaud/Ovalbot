@@ -1,6 +1,7 @@
 //! Email transport behind the [`Mailer`] trait: the Resend API client, a
 //! no-op for disabled deployments, and the welcome/match-alert/seat-alert
-//! templates.
+//! templates. The alert payloads themselves (channel-neutral) live in
+//! [`crate::services::alerts`].
 //!
 //! Templates live in `TEMPLATE_DIR` (`welcome.html`, `match_alert.html`,
 //! `seats_alert.html`); missing files fall back to built-in defaults.
@@ -12,6 +13,8 @@ use async_trait::async_trait;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
+use crate::services::alerts::{MatchAlert, SeatAlert};
+
 /// Failures while sending through Resend: network/serialization issues
 /// (`Http`) and non-2xx API responses (`Api`).
 #[derive(Debug, thiserror::Error)]
@@ -20,49 +23,6 @@ pub enum MailError {
     Http(#[from] reqwest::Error),
     #[error("resend api error: {0}")]
     Api(String),
-}
-
-/// Content of one match-scheduling alert, shared by every channel.
-#[derive(Debug, Clone)]
-pub struct MatchAlert {
-    pub team: String,
-    pub opponent: String,
-    pub kickoff: String,
-}
-
-/// One resale seat as displayed to the user: category and price exactly as
-/// seen on the billetterie ("Pelouse", "49.00 €").
-#[derive(Debug, Clone)]
-pub struct SeatBrief {
-    /// Seat category name (empty string when the parser did not map it).
-    pub category: String,
-    /// Raw price string from the site.
-    pub price: String,
-}
-
-/// Content of one seats-on-resale alert, shared by every channel: a resolved
-/// encounter whose resale gained seats the user never heard of before.
-#[derive(Debug, Clone)]
-pub struct SeatAlert {
-    /// Encounter title from the billetterie (the opponent's display name).
-    pub opponent: String,
-    /// Encounter date, free-form French string from the site.
-    pub date: String,
-    /// The new seats, in scan order.
-    pub seats: Vec<SeatBrief>,
-}
-
-impl SeatAlert {
-    /// Compact one-line listing of the new seats, shared by the email body
-    /// and the Telegram message ("Cat 2 · 49.00 €, Cat 3 · 45.00 €").
-    #[must_use]
-    pub fn seats_listing(&self) -> String {
-        self.seats
-            .iter()
-            .map(|seat| format!("{} · {}", seat.category, seat.price))
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
 }
 
 /// Email transport abstraction: injected into [`crate::services::state::AppState`]
@@ -422,6 +382,7 @@ pub async fn send_welcome_if_unsent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::alerts::SeatBrief;
 
     /// `render` replaces known `{{placeholders}}` with the provided values.
     #[test]
@@ -491,7 +452,9 @@ mod tests {
             opponent: "RC Toulon".to_string(),
             date: "dimanche 20 décembre à 15h15".to_string(),
             seats: vec![SeatBrief {
-                category: "Pelouse".to_string(),
+                bloc: "1".to_string(),
+                row: "1".to_string(),
+                seat_number: 1,
                 price: "49.00 €".to_string(),
             }],
         };
