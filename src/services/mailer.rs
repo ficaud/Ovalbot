@@ -61,8 +61,9 @@ const DEFAULT_WELCOME_HTML: &str = "<p>Your OvalBot account is now active.</p>\
 const DEFAULT_MATCH_ALERT_HTML: &str =
     "<p>Good news! <strong>{{team}} vs {{opponent}}</strong> has been scheduled for {{kickoff}}.</p>";
 
-const DEFAULT_SEATS_ALERT_HTML: &str = "<p>Seats on resale for <strong>Stade Rochelais \
- vs {{opponent}}</strong> ({{date}}): {{seats}}.</p>";
+const DEFAULT_SEATS_ALERT_HTML: &str = "<p>Nouvelles places de rugby en revente pour \
+<strong>Stade Rochelais vs {{opponent}}</strong> ({{date}}) :</p>{{seats_html}}\
+<p><a href=\"{{link}}\">Réserver mes places à la billetterie</a></p>";
 
 /// The two HTML bodies, loaded from `TEMPLATE_DIR` (see [`load_templates`]).
 #[derive(Debug, Clone)]
@@ -73,7 +74,8 @@ pub struct EmailTemplates {
     /// `{{kickoff}}` placeholders.
     pub match_alert_html: String,
     /// Seats-on-resale alert body with `{{opponent}}` / `{{date}}` /
-    /// `{{seats}}` placeholders.
+    /// `{{seats_html}}` / `{{link}}` placeholders (`seats_html` carries the
+    /// styled seat rows built by [`SeatAlert::seats_html`]).
     pub seats_alert_html: String,
 }
 
@@ -259,21 +261,34 @@ impl Mailer for ResendMailer {
 
     // send the seats alert email
     /// Subject and text are built from the alert; the rendered HTML template
-    /// fills `{{opponent}}` / `{{date}}` / `{{seats}}`.
+    /// fills `{{opponent}}` / `{{date}}` / `{{seats_html}}` / `{{link}}`
+    /// (an empty `link` falls back to `#` on the CTA).
     async fn send_seats_alert(&self, email: &str, alert: &SeatAlert) -> Result<(), MailError> {
-        let subject = format!("Seats on resale: Stade Rochelais vs {}", alert.opponent);
+        let subject = format!(
+            "Nouvelles places en revente : Stade Rochelais vs {}",
+            alert.opponent
+        );
         let text = format!(
-            "Seats on resale for Stade Rochelais vs {} ({}): {}.",
+            "Nouvelles places de rugby en revente pour Stade Rochelais vs {} ({}):\n\
+             {}\nRéserve vite : {}",
             alert.opponent,
             alert.date,
-            alert.seats_listing()
+            alert.seats_listing(),
+            alert.link
         );
+        // The CTA needs somewhere to go even when the encounter carried no link.
+        let link = if alert.link.is_empty() {
+            "#"
+        } else {
+            &alert.link
+        };
         let html = render(
             &self.templates.seats_alert_html,
             &[
                 ("opponent", &alert.opponent),
                 ("date", &alert.date),
-                ("seats", &alert.seats_listing()),
+                ("seats_html", &alert.seats_html()),
+                ("link", link),
             ],
         );
         self.send(email, &subject, &html, &text).await
@@ -451,6 +466,7 @@ mod tests {
         let seats = SeatAlert {
             opponent: "RC Toulon".to_string(),
             date: "dimanche 20 décembre à 15h15".to_string(),
+            link: String::new(),
             seats: vec![SeatBrief {
                 bloc: "1".to_string(),
                 row: "1".to_string(),

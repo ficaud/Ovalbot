@@ -183,8 +183,8 @@ async fn send_returns_api_error_on_failure() {
     assert!(matches!(err, MailError::Api(_)));
 }
 
-/// Sends the seats alert with the opponent in the subject and the new seats
-/// (category · price) in the body.
+/// Sends the seats alert with the French subject, the seats rendered as styled
+/// rows in the HTML and the resale link in the plain text + CTA.
 #[tokio::test]
 async fn send_seats_alert_posts_expected_request() {
     let (base_url, captured) = mock_resend(200).await;
@@ -192,9 +192,10 @@ async fn send_seats_alert_posts_expected_request() {
     let alert = SeatAlert {
         opponent: "RC Toulon".to_string(),
         date: "dimanche 20 décembre à 15h15".to_string(),
+        link: "https://billetterie.example.com/revente".to_string(),
         seats: vec![SeatBrief {
             bloc: "NORD - MACIF BRP".to_string(),
-            row: "Rang U".to_string(),
+            row: "U".to_string(),
             seat_number: 2,
             price: "49.00".to_string(),
         }],
@@ -208,14 +209,41 @@ async fn send_seats_alert_posts_expected_request() {
     assert_eq!(body["to"], "c@example.com");
     assert_eq!(
         body["subject"],
-        "Seats on resale: Stade Rochelais vs RC Toulon"
+        "Nouvelles places en revente : Stade Rochelais vs RC Toulon"
     );
-    assert!(body["text"]
-        .as_str()
-        .unwrap()
-        .contains("NORD - MACIF BRP - Rang U - 2 for 49.00 €"));
-    assert!(body["html"]
-        .as_str()
-        .unwrap()
-        .contains("NORD - MACIF BRP - Rang U - 2 for 49.00 €"));
+    let text = body["text"].as_str().unwrap();
+    assert!(text.contains("NORD - MACIF BRP - U - 2 for 49.00 €"));
+    assert!(text.contains("https://billetterie.example.com/revente"));
+    let html = body["html"].as_str().unwrap();
+    assert!(html.contains("href=\"https://billetterie.example.com/revente\""));
+    assert!(html.contains("🎟️ NORD - MACIF BRP"));
+    assert!(html.contains("Rang U · Siège 2"));
+    assert!(html.contains("49.00 €"));
+}
+
+/// An alert with no link renders the CTA with a `#` fallback instead of an
+/// empty `href`.
+#[tokio::test]
+async fn send_seats_alert_falls_back_to_hash_without_link() {
+    let (base_url, captured) = mock_resend(200).await;
+
+    let alert = SeatAlert {
+        opponent: "RC Toulon".to_string(),
+        date: "dimanche 20 décembre à 15h15".to_string(),
+        link: String::new(),
+        seats: vec![SeatBrief {
+            bloc: "NORD - MACIF BRP".to_string(),
+            row: "U".to_string(),
+            seat_number: 2,
+            price: "49.00".to_string(),
+        }],
+    };
+    mailer(&base_url)
+        .send_seats_alert("c@example.com", &alert)
+        .await
+        .unwrap();
+
+    let body = captured_body(&captured);
+    let html = body["html"].as_str().unwrap();
+    assert!(html.contains("href=\"#\""));
 }
