@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use calendar::Event;
-use parser::core::encounter::{Encounter, MatchNature};
+use parser::core::encounter::Encounter;
 use parser::core::seat::Seat;
 use parser::interface::club_manager;
 use parser::interface::curl::proxy::set_proxy_enabled;
@@ -48,7 +48,7 @@ pub fn spawn(state: AppState) {
         let mut previous: HashSet<SeatKey> = HashSet::new();
         loop {
             interval.tick().await;
-            let encounters = run_scan(club.clone(), MatchNature::Rugby).await;
+            let encounters = run_scan(club.clone()).await;
             // Resolve every encounter against the calendar snapshot: it is
             // populated by the first sync, started before this loop.
             let events = state.calendar.snapshot();
@@ -307,6 +307,7 @@ mod tests {
     use super::*;
     use calendar::{Event, MatchStatus, Team, TeamType};
     use parser::core::club::ClubType;
+    use parser::core::encounter::MatchNature;
     use parser::core::seat::{Seat, SeatComposition, SeatId, SeatInfo};
 
     fn seat(pack_id: u64, ticket_id: &str, price: &str) -> Seat {
