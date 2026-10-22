@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use calendar::{Event, MatchStatus, Team, TeamType};
 use ovalbot::common::models::{Role, Status};
 use ovalbot::services::alerts::{MatchAlert, SeatAlert};
 use ovalbot::services::auth::generate_session_token;
@@ -130,6 +131,30 @@ pub fn test_state(pool: SqlitePool) -> AppState {
         Arc::new(NoopTelegram),
         TelegramConfig::default(),
     )
+}
+
+/// A calendar `Team` whose id/name follow the `TeamType` conventions.
+pub fn calendar_team(team_type: TeamType) -> Team {
+    Team {
+        id: team_type.id().to_string(),
+        name: team_type.to_string(),
+        team_type,
+    }
+}
+
+/// A home fixture of `home` against `away` with the given LNR id and
+/// scheduling state, for calendar seeding (`CalendarService::seed_events`).
+///
+/// # Arguments
+/// * `match_id` — the stable LNR id the API paths use.
+pub fn home_event(home: TeamType, away: TeamType, match_id: u32, status: MatchStatus) -> Event {
+    Event {
+        id: match_id,
+        team: calendar_team(home),
+        opponent: calendar_team(away),
+        kickoff: "samedi 10 octobre 14h30".to_string(),
+        status,
+    }
 }
 
 pub fn test_state_with(

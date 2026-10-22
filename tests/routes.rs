@@ -5,9 +5,10 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::Router;
+use calendar::{Event, MatchStatus, TeamType};
 use common::{
-    insert_active_user, insert_session, insert_user, insert_user_with_password, test_state,
-    test_state_with,
+    home_event, insert_active_user, insert_session, insert_user, insert_user_with_password,
+    test_state, test_state_with,
 };
 use ovalbot::common::models::{Role, Status};
 use ovalbot::services::mailer::NoopMailer;
@@ -18,6 +19,14 @@ use tower::ServiceExt;
 
 fn app(pool: SqlitePool) -> Router {
     ovalbot::app(test_state(pool))
+}
+
+/// Builds the router over a pre-loaded calendar: `sync` fetches the live LNR
+/// pages, so fixtures inject their events into the cache up front.
+fn app_with_calendar(pool: SqlitePool, events: Vec<Event>) -> Router {
+    let state = test_state(pool);
+    state.calendar.seed_events(events);
+    ovalbot::app(state)
 }
 
 fn app_with_telegram(pool: SqlitePool, config: TelegramConfig) -> Router {
@@ -651,7 +660,29 @@ async fn telegram_webhook_links_chat(pool: SqlitePool) {
 #[sqlx::test]
 async fn ticket_request_accepts_every_kind(pool: SqlitePool) {
     let cookie = session_cookie(&pool, Status::Active, Role::User).await;
-    let app = app(pool);
+    let app = app_with_calendar(
+        pool,
+        vec![
+            home_event(
+                TeamType::StadeRochelais,
+                TeamType::UnionBordeauxBegles,
+                7,
+                MatchStatus::Scheduled,
+            ),
+            home_event(
+                TeamType::StadeRochelais,
+                TeamType::AvironBayonnais,
+                8,
+                MatchStatus::Scheduled,
+            ),
+            home_event(
+                TeamType::StadeRochelais,
+                TeamType::Usap,
+                9,
+                MatchStatus::Tbd,
+            ),
+        ],
+    );
 
     let payloads = [
         (
@@ -680,7 +711,15 @@ async fn ticket_request_accepts_every_kind(pool: SqlitePool) {
 #[sqlx::test]
 async fn ticket_request_rejects_invalid_values(pool: SqlitePool) {
     let cookie = session_cookie(&pool, Status::Active, Role::User).await;
-    let app = app(pool);
+    let app = app_with_calendar(
+        pool,
+        vec![home_event(
+            TeamType::StadeRochelais,
+            TeamType::UnionBordeauxBegles,
+            7,
+            MatchStatus::Scheduled,
+        )],
+    );
 
     let payloads = [
         json!({ "kind": "single", "quantity": 0, "max_price_cents": 4500 }),
@@ -757,10 +796,20 @@ async fn ticket_request_requires_active_account(pool: SqlitePool) {
 
 // ---- ticket requests: persistence ----
 
+// Stade Rochelais home fixture the persistence tests store against.
+fn rochelais_home_42() -> Vec<Event> {
+    vec![home_event(
+        TeamType::StadeRochelais,
+        TeamType::UnionBordeauxBegles,
+        42,
+        MatchStatus::Scheduled,
+    )]
+}
+
 #[sqlx::test]
 async fn ticket_request_is_persisted_and_listed(pool: SqlitePool) {
     let cookie = session_cookie(&pool, Status::Active, Role::User).await;
-    let app = app(pool.clone());
+    let app = app_with_calendar(pool.clone(), rochelais_home_42());
 
     let body = json!({ "kind": "duo", "max_price_cents": 9000 });
     let (put, _, _) = call(
@@ -784,7 +833,7 @@ async fn ticket_request_is_persisted_and_listed(pool: SqlitePool) {
 #[sqlx::test]
 async fn ticket_request_put_twice_updates_in_place(pool: SqlitePool) {
     let cookie = session_cookie(&pool, Status::Active, Role::User).await;
-    let app = app(pool);
+    let app = app_with_calendar(pool, rochelais_home_42());
 
     let duo = json!({ "kind": "duo", "max_price_cents": 9000 });
     let (first, _, _) = call(
@@ -814,7 +863,7 @@ async fn ticket_request_put_twice_updates_in_place(pool: SqlitePool) {
 #[sqlx::test]
 async fn ticket_request_survives_a_new_app(pool: SqlitePool) {
     let cookie = session_cookie(&pool, Status::Active, Role::User).await;
-    let first_app = app(pool.clone());
+    let first_app = app_with_calendar(pool.clone(), rochelais_home_42());
 
     let body = json!({ "kind": "group", "places": 4 });
     let (put, _, _) = call(
@@ -838,7 +887,7 @@ async fn ticket_request_survives_a_new_app(pool: SqlitePool) {
 #[sqlx::test]
 async fn ticket_request_delete_removes_it_from_list(pool: SqlitePool) {
     let cookie = session_cookie(&pool, Status::Active, Role::User).await;
-    let app = app(pool);
+    let app = app_with_calendar(pool, rochelais_home_42());
 
     let body = json!({ "kind": "duo", "max_price_cents": 9000 });
     let (_, _, _) = call(
@@ -870,7 +919,23 @@ async fn ticket_request_list_is_scoped_to_user(pool: SqlitePool) {
         insert_session(&pool, second_user, &ovalbot::common::time::in_days(1)).await;
     let second_cookie = cookie_for(&second_session);
 
-    let app = app(pool);
+    let app = app_with_calendar(
+        pool,
+        vec![
+            home_event(
+                TeamType::StadeRochelais,
+                TeamType::AvironBayonnais,
+                9000,
+                MatchStatus::Scheduled,
+            ),
+            home_event(
+                TeamType::StadeRochelais,
+                TeamType::UnionBordeauxBegles,
+                42,
+                MatchStatus::Scheduled,
+            ),
+        ],
+    );
 
     let (first, _, _) = call(
         &app,
@@ -966,7 +1031,7 @@ async fn ticket_request_delete_locked_returns_conflict(pool: SqlitePool) {
     assert_eq!(json(&response)["error"], "ticket_request_locked");
 
     let (put_status, _, _) = call(
-        &app(pool),
+        &app_with_calendar(pool, rochelais_home_42()),
         request(
             "PUT",
             "/api/requests/42",
@@ -976,4 +1041,92 @@ async fn ticket_request_delete_locked_returns_conflict(pool: SqlitePool) {
     )
     .await;
     assert_eq!(put_status, StatusCode::CONFLICT);
+}
+
+// ---- ticket requests: bot coverage guard ----
+
+#[sqlx::test]
+async fn ticket_request_rejects_matches_not_covered_by_the_bot(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    // Both fixtures exist in the calendar, yet neither is a Stade Rochelais
+    // home game: another club's fixture and an away game.
+    let app = app_with_calendar(
+        pool,
+        vec![
+            home_event(
+                TeamType::RcToulon,
+                TeamType::StadeToulousain,
+                7,
+                MatchStatus::Scheduled,
+            ),
+            home_event(
+                TeamType::UnionBordeauxBegles,
+                TeamType::StadeRochelais,
+                8,
+                MatchStatus::Scheduled,
+            ),
+        ],
+    );
+    let body = json!({ "kind": "duo", "max_price_cents": 9000 });
+
+    for match_id in [7, 8] {
+        let (status, _, response) = call(
+            &app,
+            request(
+                "PUT",
+                &format!("/api/requests/{match_id}"),
+                Some(&cookie),
+                Some(body.clone()),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&response)["error"], "unsupported_ticket_request");
+    }
+}
+
+#[sqlx::test]
+async fn ticket_request_rejects_ids_unknown_to_the_calendar(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    // Fail-closed even with a non-empty cache: ids it does not carry are
+    // refused, they could point at a yet-unknown fixture.
+    let app = app_with_calendar(
+        pool,
+        vec![home_event(
+            TeamType::StadeRochelais,
+            TeamType::UnionBordeauxBegles,
+            7,
+            MatchStatus::Scheduled,
+        )],
+    );
+    let (status, _, response) = call(
+        &app,
+        request(
+            "PUT",
+            "/api/requests/42",
+            Some(&cookie),
+            Some(json!({ "kind": "duo", "max_price_cents": 9000 })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&response)["error"], "unsupported_ticket_request");
+}
+
+#[sqlx::test]
+async fn ticket_request_rejected_while_calendar_is_empty(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    let app = app(pool);
+    let (status, _, response) = call(
+        &app,
+        request(
+            "PUT",
+            "/api/requests/7",
+            Some(&cookie),
+            Some(json!({ "kind": "duo", "max_price_cents": 9000 })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&response)["error"], "unsupported_ticket_request");
 }
