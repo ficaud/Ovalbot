@@ -41,6 +41,14 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 
 ## Journal
 
+### 2026-10-24 — Seats-alert email: columnless seat rows (Apple Mail regression fix)
+- Symptom (user screenshot, Apple Mail iOS dark mode): the price column rendered **one character per line** ("3 8 - 5 0 €" stacked vertically), misaligned above its label row, with the row heights blown up. The 2026-10-24 "responsive" fix (`price cell width="1%" + nowrap`, label `width="99%"`) made it worse: Apple Mail honored the `1%` width but dropped the `nowrap` hint → the price column shrank to ~1 character and per-character wrapping won over the no-break constraint. Lesson: on mobile Apple Mail, `width` attributes are honored but wrap-discrimination is not — a two-column 99%/1% split with a nowrap-last-column contract can never hold.
+- Fix (user-validated "no columns at all"): `seat_html_row` now emits **one full-width `<tr>` per seat, one `<td>`, zero columns** — bold ticket line `🎟️ {bloc} <span #FFD500>— {price} €</span>` (single text flow) + optional gray `<p>` position line ("Rang {row} · Siège {n}"). Nothing left for a client to narrow: too-long labels wrap at word boundaries, the price can never land in its own 1%-wide column. Guard asserted in tests: `!contains("width=\"")` + `!contains("nowrap")`.
+- Doc comments rewritten (row-pair wording gone), including a hard rule in `seat_html_row`'s doc: **extension/redesign must not reintroduce multi-column tables here**. `tests/mailer.rs` transport assertions unaffected (they check the same strings in the new single-flow line). `defaults()` template untouched (it already wraps `{{seats_html}}` in a `width="100%"` presentation table).
+- Preview rendered to `/tmp/seats_alert_preview.html` (fixture seats incl. the screenshot's "38-50" price) for an Apple Mail sign-off before sending any real alert.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps`, `cargo test --workspace --jobs 2` all green (18 suites: 44 lib incl. 2 reworked alerts tests, 7 mailer, 12 notifications, 45 routes, 17 tickets, 61 parser, 34 calendar).
+- Remaining: get a real end-to-end Apple Mail confirmation on the next open-resale alert.
+
 ### 2026-10-19 — Documentation campaign (lots 1–4)
 - Goal: a newcomer can understand the codebase by reading it — every function/struct/module documented, English only, no behavior change.
 - Convention adopted (see Conventions): rustdoc `///` on every fn (incl. private, `# Arguments`/`# Returns`/`# Errors`/`# Panics` when relevant), `///` on structs/enums/fields where it clarifies, `//!` module headers, plain `//` for intent lines and one-liners on tests when the name doesn't suffice. "No superfluous comments" relaxed accordingly.
