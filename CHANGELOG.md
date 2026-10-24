@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-10-26
+
+### Added
+
+- `doc/SQL_HELPERS.md` : useful SQL queries to inspect the SQLite tables
+  that list all the resale tickets that have been scanned.
+- `cargo` : jiff to manage log timezones (Paris).
+- `frontend/routes/` : legal notice page, privacy policy page and terms
+  of service page.
+- `ci/deploy.yml` : x86_64 image deployment.
+
+### changed
+
+- `frontend/footer` : Add link to the version that redirects user to the
+  project's GitHub repository.
+- `Telegram` : add `telegram_text` to create a better looking Telegram messages.
+
+### Fixed
+
+- `frontend/page.svelte` : Page title remains "Ovalbot" when user is on the
+  main page. No more unwanted changes when user navigates elsewhere.
+
+### Removed
+
+- `frontend/parge.svelte` : Bot settings from admin panel because that doesn't
+  make sense for the moment.
+
 ## [0.3.1] - 2026-10-24
 
 ### Fixed
