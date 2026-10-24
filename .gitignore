@@ -27,5 +27,4 @@ data/
 /bot/.env
 /bot/.private/
 /bot/config_scan.json
-/bot/proxies.txt
 /bot/parser/.env

@@ -12,7 +12,6 @@ use crate::controller::html_extract::FetchHtml;
 use crate::core::club::Club;
 use crate::core::encounter::Encounter;
 use crate::core::seat::Seat;
-use crate::interface::curl::proxy::ProxyMode;
 use crate::interface::curl::web::WebClient;
 
 // ============================== ERRORS ==============================
@@ -77,7 +76,7 @@ pub fn is_waiting_queue(final_url: &str, body: &str) -> bool {
 /// [`ScanError::WaitingQueue`] when the shop served its waiting-queue page,
 /// [`ScanError::Fetch`] on any other fetch failure
 pub fn get_home_encounters(club: Club) -> Result<Vec<Encounter>, ScanError> {
-    let client = WebClient::new(ProxyMode::Rotating);
+    let client = WebClient::new();
     get_matches(&club, &client)
 }
 
@@ -128,10 +127,9 @@ pub fn get_seats_for_encounter(encounter: Encounter) -> Result<Vec<Seat>, ScanEr
         return Ok(Vec::new());
     }
 
-    // Sticky like the old batch scan: one proxy choice serves all the links
-    // polled during the same pass, keeping match list and product pages
-    // consistent.
-    let client = WebClient::new(ProxyMode::Sticky);
+    // One client serves all the links polled during the same pass (direct
+    // connections — the proxy pool was removed with the batch scan).
+    let client = WebClient::new();
     get_seats_with(&client, encounter)
 }
 

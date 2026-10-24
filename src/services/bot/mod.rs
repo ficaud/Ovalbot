@@ -27,7 +27,6 @@ use std::time::Instant;
 use parser::core::encounter::Encounter;
 use parser::core::seat::Seat;
 use parser::interface::club_manager;
-use parser::interface::curl::proxy::set_proxy_enabled;
 use parser::interface::ScanError;
 use scanner::app::scan::{discover, fetch_seats};
 
@@ -36,20 +35,19 @@ use crate::services::channels::alerts::{SeatAlert, SeatBrief};
 use crate::services::notifications;
 use crate::services::state::AppState;
 use crate::services::tickets::{self, OfferKey};
+
 // ============================== SCAN LOOP ==============================
 
 /// Starts the ticket resale scanner loop (the bot). Disabled by default; enable
 /// with `BOT_ENABLED=true`. Two cadences: `BOT_SCAN_INTERVAL_SECS` drives the
 /// whole loop (direct poll of the stored links, default 60 s), and
 /// `BOT_HOME_REFRESH_SECS` the home-page discovery (default 60 s).
-/// Proxies are off unless `PROXY_ENABLED=true` (and `PROXIES_FILE` set).
 pub fn spawn(state: AppState) {
     if !env_flag("BOT_ENABLED", true) {
         tracing::info!("bot scan disabled (set BOT_ENABLED=true to enable)");
         return;
     }
 
-    set_proxy_enabled(env_flag("PROXY_ENABLED", false));
     let club = club_manager::stade_rochelais();
     let poll_secs = env_u64("BOT_SCAN_INTERVAL_SECS", 60);
     let home_secs = env_u64("BOT_HOME_REFRESH_SECS", 60);
