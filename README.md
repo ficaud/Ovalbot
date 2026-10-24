@@ -120,8 +120,6 @@ The backend reads these environment variables:
 | `BOT_ENABLED` | `false` | Set `true` to run the ticket resale scanner loop. |
 | `BOT_SCAN_INTERVAL_SECS` | `60` | Seconds between two loop ticks: the direct poll of the stored resale links. |
 | `BOT_HOME_REFRESH_SECS` | `60` | Seconds between two billetterie home-page fetches (link discovery). Each tick also re-polls the links learned earlier, so a queued home page never stops the polling. |
-| `PROXY_ENABLED` | `false` | Set `true` to route scanner requests through the proxy pool. |
-| `PROXIES_FILE` | *(empty)* | Path to a `ip:port` proxy list; required for a real pool (otherwise nothing to rotate). |
 
 See `.env.example` for a ready-to-copy template.
 

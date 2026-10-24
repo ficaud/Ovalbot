@@ -1,4 +1,3 @@
-//! curl-backed transport: page fetching with proxy rotation/failover.
+//! curl-backed transport: page fetching.
 
-pub mod proxy;
 pub mod web;
