@@ -6,3 +6,7 @@ pub mod app;
 pub mod controller;
 pub mod core;
 pub mod interface;
+
+// Test-only helper for the gzipped fixtures (never part of the shipped lib).
+#[cfg(test)]
+pub(crate) mod fixture;

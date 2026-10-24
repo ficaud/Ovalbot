@@ -62,8 +62,8 @@ impl SeatAlert {
     /// Styled HTML rows for the seats-alert email body: one full-width row
     /// per seat — bold seat line (bloc + price, columnless text flow) and a
     /// gray position line ("Rang U · Siège 2") underneath — designed to be
-    /// injected inside the template's fixed-cell seats table. See
-    /// [`seat_html_row`] for why the layout must stay columnless.
+    /// injected inside the template's fixed-cell seats table. See the private
+    /// `seat_html_row` for why the layout must stay columnless.
     #[must_use]
     pub fn seats_html(&self) -> String {
         self.seats

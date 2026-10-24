@@ -210,12 +210,16 @@ impl ParseSeat for LarochellSeatParser {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::LazyLock;
+
     use super::*;
     use crate::core::club::ClubType;
+    use crate::fixture::gz_html;
 
     // Captured live from a resale page (open basketball resale) on 2026-10-18:
     // https://billetterie.staderochelais.com/fr/product/1368/revente_j6_23_oct_stade_rochelais_evreux
-    const FIXTURE: &str = include_str!("fixtures/seat_page.html");
+    static FIXTURE: LazyLock<String> =
+        LazyLock::new(|| gz_html(include_bytes!("fixtures/seat_page.html.gz")));
 
     // Minimal encounter fixture passed through to `parse_seat` (unused).
     fn sample_encounter() -> Encounter {
@@ -231,7 +235,7 @@ mod tests {
     // The committed fixture page yields the 3 known seats with their prices/categories.
     #[test]
     fn fixture_seats_parsed() {
-        let seats = parse_seat(FIXTURE, sample_encounter());
+        let seats = parse_seat(&FIXTURE, sample_encounter());
         assert_eq!(seats.len(), 3);
 
         // Look seats up by ticket id: the tickets map is a HashMap, so the

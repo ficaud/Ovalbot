@@ -99,19 +99,24 @@ impl ParseMatch for LarochellMatchParser {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::LazyLock;
+
     use super::*;
+    use crate::fixture::gz_html;
 
     // Captured live from https://billetterie.staderochelais.com/fr on 2026-10-18.
-    const FIXTURE: &str = include_str!("fixtures/match_list.html");
+    static FIXTURE: LazyLock<String> =
+        LazyLock::new(|| gz_html(include_bytes!("fixtures/match_list.html.gz")));
 
     // Captured live from https://billetterie.staderochelais.com/fr on
     // 2026-10-21: the UBB card shows the resale deadline ("DERNIÈRE MISE EN
     // VENTE À 18H00") as badge, and its resale is open.
-    const FIXTURE_PROMO_BADGE: &str = include_str!("fixtures/match_list_promo_badge.html");
+    static FIXTURE_PROMO_BADGE: LazyLock<String> =
+        LazyLock::new(|| gz_html(include_bytes!("fixtures/match_list_promo_badge.html.gz")));
 
     #[test]
     fn fixture_extracts_all_encounters() {
-        let encounters = parse_match(FIXTURE);
+        let encounters = parse_match(&FIXTURE);
         assert_eq!(encounters.len(), 31);
 
         // The dedup filter leaves no duplicate (title, date) pair.
@@ -125,7 +130,7 @@ mod tests {
 
     #[test]
     fn fixture_rugby_encounters() {
-        let encounters = parse_match(FIXTURE);
+        let encounters = parse_match(&FIXTURE);
         let rugby: Vec<&Encounter> = encounters
             .iter()
             .filter(|e| e.nature == MatchNature::Rugby)
@@ -147,7 +152,7 @@ mod tests {
 
     #[test]
     fn fixture_sport_nature_counts() {
-        let encounters = parse_match(FIXTURE);
+        let encounters = parse_match(&FIXTURE);
         let count = |nature: MatchNature| encounters.iter().filter(|e| e.nature == nature).count();
         // 7 "BASKET" badges, the rest: rugby (5), other events (19).
         assert_eq!(count(MatchNature::Basketball), 7);
@@ -156,7 +161,7 @@ mod tests {
 
     #[test]
     fn fixture_resale_links() {
-        let encounters = parse_match(FIXTURE);
+        let encounters = parse_match(&FIXTURE);
         let with_link: Vec<(&str, &str)> = encounters
             .iter()
             .filter_map(|e| {
@@ -229,7 +234,7 @@ mod tests {
     // alone cannot infer the nature.
     #[test]
     fn fixture_promo_badge_ubb_keeps_resale_link() {
-        let encounters = parse_match(FIXTURE_PROMO_BADGE);
+        let encounters = parse_match(&FIXTURE_PROMO_BADGE);
         let rugby: Vec<&str> = encounters
             .iter()
             .filter(|e| e.nature == MatchNature::Rugby)

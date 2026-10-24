@@ -321,6 +321,16 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace --jobs 2` all green (18 suites, lib 44 incl. 2 new matching tests + seed test, routes 44 = 41 + 3 guard tests); `npm run check` (0 warning) + `npm run build` green.
 - Remaining/later: when a second club parser lands, extend `BOT_SUPPORTED_TEAM_IDS` **and** `is_bot_covered_match` together (two places, deliberately — no config plumbing for a single client).
 
+### 2026-10-24 — Repo slimming: fixtures gzipped, duplicate logo removed
+- Motivation: the 4 live-captured HTML fixtures under `bot/parser/src/app/clubs/larochelle/fixtures/` weighed 338 KB raw — nearly the size of the whole tracked Rust source (381 KB) — polluting greps/diffs and the working tree.
+- Option chosen (user-validated): **gzip the fixtures in-repo** over Git LFS (overkill for 4 files) and over slimmed synthetic fixtures (would sacrifice the real-page regression value: promo badges, disabled buttons, `drupal-settings-json` noise the parser must survive). Decompressed bytes are byte-for-byte identical to the previous captures.
+- Mechanics: `gzip -9` in place (338 KB → 56 KB, −83 %); new `bot/parser/src/fixture.rs` — `#[cfg(test)] pub(crate) mod fixture` declared in `lib.rs`, `gz_html(include_bytes!(...))` helper (`flate2`/miniz_oxide, pure Rust; added to `bot/parser/Cargo.toml`) + 2 self-tests (round-trip, non-gzip panic); the six `include_str!` consts (`parse_match`, `parse_seat`, `match_manager`) became `static ... : LazyLock<String>` (decompression runs once per test binary), call sites now pass `&FIXTURE`. Round-trip fidelity verified: `gunzip -c` of each `.gz` hashes equal to `git show HEAD:` of the removed `.html`.
+- Rule for future re-captures: new fixtures must be committed as `.html.gz` and loaded via `gz_html` — never re-introduce raw `include_str!` HTML.
+- Logo dedup riding along (user-validated): `doc/assets/logo.png` and `frontend/static/logo.png` were byte-identical (same sha256, 575 KB each) — kept the `frontend/static` copy (served by the app via `/logo.png`, referenced by README and the auth/layout views), removed `doc/assets/logo.png`, updated the single textual pointer (`doc/specs/phase1.md:103`). Repo total 3.2 MB → 2.0 MB (−~35 %).
+- No-frontend-change note: `.svelte-kit/non-ambient.d.ts` asset list untouched (regenerated artifact).
+- Drive-by: `cargo doc --no-deps` had 1 pre-existing warning (commit 93bc8b0): `alerts.rs` `seats_html` doc linked the private `seat_html_row` via `[`seat_html_row`]` → rewrote as plain code formatting. Gate clean again.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo doc --no-deps` 0 warnings, `cargo test --workspace --jobs 2` all green (18 suites, 0 failed; parser 44 → 46 with the 2 helper self-tests).
+
 ### 2026-10-24 — Notification-only ticket request (`kind = "notify"`)
 
 - Goal: let a user subscribe a single match to the resale-seats alerts **without** the (future) buy bot serving them — entered via a 4th radio option in the "Ticket request" modal.

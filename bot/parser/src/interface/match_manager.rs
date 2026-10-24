@@ -167,17 +167,29 @@ fn get_seats(html: &str, encounter: Encounter) -> Vec<Seat> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::sync::LazyLock;
 
     use super::*;
     use crate::core::club::ClubType;
     use crate::core::encounter::MatchNature;
+    use crate::fixture::gz_html;
     use crate::interface::club_manager;
 
-    const MATCH_LIST: &str = include_str!("../app/clubs/larochelle/fixtures/match_list.html");
-    const MATCH_LIST_RESALE_OPEN: &str =
-        include_str!("../app/clubs/larochelle/fixtures/match_list_promo_badge.html");
-    const SEAT_PAGE_RESALE_OPEN: &str =
-        include_str!("../app/clubs/larochelle/fixtures/seat_page_resale_open.html");
+    static MATCH_LIST: LazyLock<String> = LazyLock::new(|| {
+        gz_html(include_bytes!(
+            "../app/clubs/larochelle/fixtures/match_list.html.gz"
+        ))
+    });
+    static MATCH_LIST_RESALE_OPEN: LazyLock<String> = LazyLock::new(|| {
+        gz_html(include_bytes!(
+            "../app/clubs/larochelle/fixtures/match_list_promo_badge.html.gz"
+        ))
+    });
+    static SEAT_PAGE_RESALE_OPEN: LazyLock<String> = LazyLock::new(|| {
+        gz_html(include_bytes!(
+            "../app/clubs/larochelle/fixtures/seat_page_resale_open.html.gz"
+        ))
+    });
 
     // Minimal FetchHtml double: always answers with the canned result.
     struct Stub {
@@ -233,7 +245,7 @@ mod tests {
     #[test]
     fn get_matches_returns_every_card() {
         let club = club_manager::stade_rochelais();
-        let all = get_matches(&club, &ok(MATCH_LIST)).unwrap();
+        let all = get_matches(&club, &ok(&MATCH_LIST)).unwrap();
         assert_eq!(all.len(), 31);
     }
 
@@ -265,7 +277,7 @@ mod tests {
     #[test]
     fn open_resale_links_are_scanned_regardless_of_nature() {
         let club = club_manager::stade_rochelais();
-        let matches = get_matches(&club, &ok(MATCH_LIST_RESALE_OPEN)).unwrap();
+        let matches = get_matches(&club, &ok(&MATCH_LIST_RESALE_OPEN)).unwrap();
 
         let ubb = matches
             .iter()
@@ -291,7 +303,7 @@ mod tests {
         // 2 in the duo pack 33853 (one seat per ticket). The seats are keyed
         // as (pack_id, ticket_id); the ticket map is a HashMap, so the duo
         // tickets are compared order-insensitively.
-        let seats = get_seats(SEAT_PAGE_RESALE_OPEN, ubb.clone());
+        let seats = get_seats(&SEAT_PAGE_RESALE_OPEN, ubb.clone());
         let ids: BTreeSet<(u64, &str)> = seats
             .iter()
             .map(|seat| (seat.id.pack_id, seat.id.ticket_id.as_str()))

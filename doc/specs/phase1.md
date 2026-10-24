@@ -100,7 +100,7 @@ Table `sessions` :
 ## UI / charte
 
 - Couleurs du **Stade Rochelais** : jaune `#FFD500` / noir.
-- Logo : `doc/assets/logo.png`.
+- Logo : `frontend/static/logo.png`.
 - **Compatible mobile obligatoire** (design responsive / mobile-first).
 - **Langue** : le site est **entièrement en anglais** dans un premier temps (même règle pour le code et les commentaires).
 - **Version affichée** : sur tout le site, affichage discret de la version d'OvalBot, en transparence sur un côté (via `GET /api/version`).
