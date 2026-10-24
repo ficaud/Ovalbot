@@ -381,10 +381,11 @@ async fn notify_switches_to_a_buying_kind_in_place(pool: SqlitePool) {
     assert_eq!(view.max_price_cents, Some(9000));
 }
 
-/// `pending_requesters` returns every pending requester of the match, all
-/// kinds mixed, ordered by user id, with contact info and channel gates.
+/// `pending_requesters` lists only the explicit alert subscriptions
+/// (`kind = 'notify'`): buying kinds (Single/Duo/Group) are never alert
+/// candidates, ordered by user id, with contact info and channel gates.
 #[sqlx::test]
-async fn pending_requesters_lists_all_pending_of_the_match(pool: SqlitePool) {
+async fn pending_requesters_lists_only_notify_subscriptions(pool: SqlitePool) {
     let first = insert_active_user(&pool, "a@example.com").await;
     let second = insert_active_user(&pool, "b@example.com").await;
     let third = insert_active_user(&pool, "c@example.com").await;
@@ -396,46 +397,40 @@ async fn pending_requesters_lists_all_pending_of_the_match(pool: SqlitePool) {
     upsert(&pool, fourth, 11877, &TicketRequestInput::Notify)
         .await
         .unwrap();
-    upsert(&pool, first, 42, &duo(5000)).await.unwrap();
+    upsert(&pool, fourth, 42, &duo(5000)).await.unwrap();
     sqlx::query("UPDATE users SET telegram_id = '123' WHERE id = ?")
-        .bind(first)
+        .bind(fourth)
         .execute(&pool)
         .await
         .unwrap();
 
     let requesters = pending_requesters(&pool, 11877).await.unwrap();
-    let user_ids: Vec<i64> = requesters
-        .iter()
-        .map(|requester| requester.user_id)
-        .collect();
-    assert_eq!(user_ids, vec![first, second, third, fourth]);
+    // Exactly one candidate: the notify subscriber. The three buying kinds on
+    // the same match are excluded.
+    assert_eq!(requesters.len(), 1);
+    assert_eq!(requesters[0].user_id, fourth);
 
-    assert_eq!(requesters[0].email, "a@example.com");
+    assert_eq!(requesters[0].email, "d@example.com");
     assert_eq!(requesters[0].telegram_id.as_deref(), Some("123"));
     assert!(requesters[0].notify_email && requesters[0].notify_telegram);
-    assert_eq!(requesters[2].email, "c@example.com");
-    assert_eq!(requesters[2].telegram_id, None);
-    assert!(requesters[2].notify_email && requesters[2].notify_telegram);
 
-    assert_eq!(requesters[0].kind, TicketKind::Single);
-    assert_eq!(requesters[0].quantity, Some(2));
-    assert_eq!(requesters[0].max_price_cents, Some(4500));
+    // A notify-only subscription is an alert candidate with no buying payload.
+    assert_eq!(requesters[0].kind, TicketKind::Notify);
+    assert_eq!(requesters[0].quantity, None);
+    assert_eq!(requesters[0].max_price_cents, None);
     assert_eq!(requesters[0].places, None);
-    assert_eq!(requesters[1].kind, TicketKind::Duo);
-    assert_eq!(requesters[2].kind, TicketKind::Group);
-    assert_eq!(requesters[2].places, Some(6));
-    // A notify-only subscriber is an alert candidate with no buying payload.
-    assert_eq!(requesters[3].kind, TicketKind::Notify);
-    assert_eq!(requesters[3].quantity, None);
-    assert_eq!(requesters[3].max_price_cents, None);
-    assert_eq!(requesters[3].places, None);
+
+    // A buying request on another match (same user, match 42) never leaks in.
+    assert!(pending_requesters(&pool, 42).await.unwrap().is_empty());
 }
 
-/// Non-pending requests are not notification candidates.
+/// Non-pending notify subscriptions are not alert candidates.
 #[sqlx::test]
 async fn pending_requesters_skips_non_pending_requests(pool: SqlitePool) {
     let user = insert_active_user(&pool, "a@example.com").await;
-    upsert(&pool, user, 11877, &duo(9000)).await.unwrap();
+    upsert(&pool, user, 11877, &TicketRequestInput::Notify)
+        .await
+        .unwrap();
     sqlx::query("UPDATE ticket_requests SET status = 'accepted'")
         .execute(&pool)
         .await
@@ -444,17 +439,21 @@ async fn pending_requesters_skips_non_pending_requests(pool: SqlitePool) {
     assert!(pending_requesters(&pool, 11877).await.unwrap().is_empty());
 }
 
-/// Match scoping: requests on other matches never leak in.
+/// Match scoping: alert subscriptions on other matches never leak in.
 #[sqlx::test]
 async fn pending_requesters_is_scoped_to_the_match(pool: SqlitePool) {
     let user = insert_active_user(&pool, "a@example.com").await;
-    upsert(&pool, user, 42, &duo(9000)).await.unwrap();
-    upsert(&pool, user, 11877, &group(3)).await.unwrap();
+    upsert(&pool, user, 42, &TicketRequestInput::Notify)
+        .await
+        .unwrap();
+    upsert(&pool, user, 11877, &TicketRequestInput::Notify)
+        .await
+        .unwrap();
 
     let requesters = pending_requesters(&pool, 11877).await.unwrap();
     assert_eq!(requesters.len(), 1);
-    assert_eq!(requesters[0].kind, TicketKind::Group);
+    assert_eq!(requesters[0].kind, TicketKind::Notify);
 
-    // Nobody requested match 999.
+    // Nobody subscribed to match 999.
     assert!(pending_requesters(&pool, 999).await.unwrap().is_empty());
 }

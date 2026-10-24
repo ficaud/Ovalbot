@@ -7,9 +7,9 @@
 //! subscriptions for the match are cleared so everybody is notified once.
 //!
 //! Seats: when the bot records genuinely new resale seats for one match, it
-//! calls [`notify_new_seats`] → every pending `ticket_requests` requester of
-//! that match gets an email and/or Telegram message gated by the same
-//! per-channel preferences.
+//! calls [`notify_new_seats`] → every `notify`-kind subscriber of that match
+//! (explicit opt-in in the frontend) gets an email and/or Telegram message
+//! gated by the same per-channel preferences. Buying kinds are never alerted.
 
 use calendar::Change;
 use sqlx::SqlitePool;
@@ -191,24 +191,27 @@ async fn process_one(
 
 // ============================== SEATS ALERTS ==============================
 
-/// Alerts every pending requester of one match about its newly-seen resale
-/// seats.
+/// Alerts the `notify`-kind subscribers of one match about its newly-seen
+/// resale seats.
 ///
 /// The recipients come from [`crate::services::tickets::pending_requesters`]
-/// (one row per pending requester, contact info + channel gates included):
-/// email when `notify_email`, Telegram when `notify_telegram` and a linked
-/// chat id exists. Best-effort per channel — a failed send is warned and
-/// never blocks the other requesters or channels. Nothing is sent when
-/// nobody holds a pending request for the match.
+/// (one row per explicit alert subscription — `pending` + `kind = 'notify'`,
+/// contact info + channel gates included): email when `notify_email`,
+/// Telegram when `notify_telegram` and a linked chat id exists. Best-effort
+/// per channel — a failed send is warned and never blocks the other
+/// subscribers or channels. Nothing is sent when nobody holds an alert
+/// subscription for the match. Buying kinds are silently excluded by the
+/// query itself.
 ///
 /// # Arguments
 /// * `match_id` — LNR id selecting the `ticket_requests` rows.
 /// * `alert` — the alert content (opponent, date, the new seats only).
 pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert) {
+    // Get the alert subscribers (notify kind) for the match.
     let requesters = match tickets::pending_requesters(&state.pool, i64::from(match_id)).await {
         Ok(requesters) => requesters,
         Err(e) => {
-            tracing::warn!("failed to load pending requesters for match {match_id}: {e}");
+            tracing::warn!("failed to load alert subscribers for match {match_id}: {e}");
             return;
         }
     };
@@ -265,6 +268,6 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
         match_id,
         emailed,
         messaged,
-        "seats alert processed for pending requesters"
+        "seats alert processed for notify subscribers"
     );
 }
