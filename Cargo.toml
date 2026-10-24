@@ -21,6 +21,7 @@ tower = "0.5"
 tower-http = { version = "0.7", features = ["trace", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "tracing-log"] }
+jiff = "0.2"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 hex = "0.4"

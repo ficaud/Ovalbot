@@ -47,6 +47,9 @@ The backend serves the built frontend from `frontend/build` (override with the
 `STATIC_DIR` environment variable). Email HTML is loaded from `templates/`
 (override with `TEMPLATE_DIR`); see `welcome.html` and `match_alert.html`.
 
+Log timestamps are rendered in **Paris time** (`Europe/Paris`, DST-aware,
+RFC 3339 with offset), independent of the container's system timezone.
+
 ### Frontend
 
 ```bash
