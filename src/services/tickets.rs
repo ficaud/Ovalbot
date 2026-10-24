@@ -12,7 +12,10 @@
 //!
 //! One stored kind is not a buying intent: `kind = "notify"` subscribes the
 //! user to the resale-seats alerts of a single match with no bot involvement
-//! (the Phase 4 matcher must not serve those rows).
+//! (the Phase 4 matcher must not serve those rows). Alert candidates are
+//! **only** these subscriptions — the buying kinds never receive alerts
+//! themselves; engaging the buy bot (Phase 4) is the only path a buying
+//! request takes.
 
 use parser::core::seat::Seat;
 use serde::{Deserialize, Serialize};
@@ -276,9 +279,10 @@ pub async fn list_for_user(
     Ok(views)
 }
 
-/// One pending ticket request fetched by [`pending_requesters`] for the bot:
-/// the requester's contact + channel gates, plus the raw per-kind parameters,
-/// with no eligibility filtering applied.
+/// One user subscribed to a match's seats alerts, fetched by
+/// [`pending_requesters`] for the bot: the subscriber's contact + channel
+/// gates, plus the raw per-kind columns a future matcher may need. Under the
+/// current notify-only filter those payload columns are always `None`.
 #[derive(Debug, Clone, PartialEq, FromRow)]
 pub struct PendingRequester {
     /// User who made the request (`users.id`).
@@ -301,17 +305,19 @@ pub struct PendingRequester {
     pub places: Option<u8>,
 }
 
-/// Lists every `pending` requester of a single match, ordered by user id.
+/// Lists the seats-alert subscribers of a single match, ordered by user id.
 ///
 /// The bot scan loop calls this (through
 /// [`crate::services::notifications::notify_new_seats`]) when a match's resale
-/// gained seats: every `pending` requester is an alert candidate, regardless
-/// of kind, quantity or budget — per-kind eligibility filtering comes later.
-/// Contact info and the per-channel gates ride along, one query total.
+/// gained seats. Only **explicit alert subscriptions** count: `pending` rows
+/// with `kind = 'notify'` — the user selected the notification option in the
+/// frontend. Buying kinds (`Single` / `Duo` / `Group`) are never alerted;
+/// serving them is Phase 4's job. Contact info and the per-channel gates ride
+/// along, one query total.
 ///
 /// # Returns
-/// One [`PendingRequester`] per requester, keyed and ordered by user id;
-/// empty when nobody requested places for the match.
+/// One [`PendingRequester`] per subscriber, keyed and ordered by user id;
+/// empty when nobody subscribed to the match's alerts.
 ///
 /// # Errors
 /// `AppError::Sqlx` on query failure.
@@ -324,7 +330,7 @@ pub async fn pending_requesters(
              tr.kind, tr.quantity, tr.max_price_cents, tr.places \
          FROM ticket_requests tr \
          JOIN users u ON u.id = tr.user_id \
-         WHERE tr.match_id = ? AND tr.status = 'pending' \
+         WHERE tr.match_id = ? AND tr.status = 'pending' AND tr.kind = 'notify' \
          ORDER BY tr.user_id",
     )
     .bind(match_id)

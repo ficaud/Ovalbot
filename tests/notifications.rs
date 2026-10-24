@@ -265,7 +265,7 @@ async fn update_settings_persists_preferences(pool: SqlitePool) {
 
 // ============================== SEATS ALERTS (BOT) ==============================
 
-/// Emails (and telegraphically for the linked ones) every pending requester
+/// Emails (and telegraphically for the linked ones) every notify subscriber
 /// of the match, with the alert content intact; unlinked Telegram users only
 /// get the email.
 #[sqlx::test]
@@ -276,10 +276,7 @@ async fn notify_new_seats_alerts_pending_requesters_per_channel(pool: SqlitePool
         &pool,
         linked,
         11877,
-        &ovalbot::services::tickets::TicketRequestInput::Single {
-            quantity: 2,
-            max_price_cents: 5000,
-        },
+        &ovalbot::services::tickets::TicketRequestInput::Notify,
     )
     .await
     .unwrap();
@@ -287,9 +284,7 @@ async fn notify_new_seats_alerts_pending_requesters_per_channel(pool: SqlitePool
         &pool,
         unlinked,
         11877,
-        &ovalbot::services::tickets::TicketRequestInput::Duo {
-            max_price_cents: 9000,
-        },
+        &ovalbot::services::tickets::TicketRequestInput::Notify,
     )
     .await
     .unwrap();
@@ -334,9 +329,7 @@ async fn notify_new_seats_respects_channel_preferences(pool: SqlitePool) {
         &pool,
         email_only,
         11877,
-        &ovalbot::services::tickets::TicketRequestInput::Duo {
-            max_price_cents: 9000,
-        },
+        &ovalbot::services::tickets::TicketRequestInput::Notify,
     )
     .await
     .unwrap();
@@ -344,7 +337,7 @@ async fn notify_new_seats_respects_channel_preferences(pool: SqlitePool) {
         &pool,
         telegram_only,
         11877,
-        &ovalbot::services::tickets::TicketRequestInput::Group { places: 4 },
+        &ovalbot::services::tickets::TicketRequestInput::Notify,
     )
     .await
     .unwrap();
@@ -374,7 +367,39 @@ async fn notify_new_seats_respects_channel_preferences(pool: SqlitePool) {
     assert_eq!(messages[0].0, "1");
 }
 
-/// A match with no pending requester triggers no send at all.
+/// Buying-kind requests (Single/Duo/Group) are not alert candidates: a match
+/// with buying requests but no `notify` subscription triggers no send at all.
+#[sqlx::test]
+async fn notify_new_seats_ignores_buying_kinds(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "buyer@example.com").await;
+    upsert(
+        &pool,
+        user,
+        11877,
+        &ovalbot::services::tickets::TicketRequestInput::Single {
+            quantity: 2,
+            max_price_cents: 5000,
+        },
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET telegram_id = '123' WHERE id = ?")
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let state = state(pool.clone(), mailer.clone(), telegram.clone());
+
+    notify_new_seats(&state, 11877, &seats_alert()).await;
+
+    assert!(mailer.seats_alerts.lock().unwrap().is_empty());
+    assert!(telegram.messages.lock().unwrap().is_empty());
+}
+
+/// A match with no subscriber at all triggers no send.
 #[sqlx::test]
 async fn notify_new_seats_sends_nothing_without_pending_requesters(pool: SqlitePool) {
     let mailer = Arc::new(RecordingMailer::new());
