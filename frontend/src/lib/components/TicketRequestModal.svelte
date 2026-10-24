@@ -36,6 +36,10 @@
   let locked = $derived(status !== undefined && status !== 'pending');
 
   let error = $derived.by(() => {
+    if (kind === 'notify') {
+      // Notification-only: nothing to configure.
+      return '';
+    }
     if (kind === 'single') {
       if (!inRange(singleQuantity, 1, MAX_SINGLE)) {
         return `Number of tickets must be between 1 and ${MAX_SINGLE}.`;
@@ -255,8 +259,19 @@
         {/if}
       </div>
     </div>
+    <div class="option" class:option--active={kind === 'notify'}>
+      <label class="option__head">
+        <input type="radio" name="ticket-kind" value="notify" bind:group={kind} />
+        <span>Match tickets notification</span>
+      </label>
+      <div class="option__fields" class:option__fields--off={kind !== 'notify'}>
+        <p class="hint">
+          To get notified each time there is a match ticket available on resale. The bot will not
+          try to buy for this match.
+        </p>
+      </div>
+    </div>
   </fieldset>
-
   <div class="actions">
     {#if hasExisting}
       <button

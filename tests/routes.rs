@@ -830,6 +830,32 @@ async fn ticket_request_is_persisted_and_listed(pool: SqlitePool) {
     assert_eq!(requests[0]["status"], "pending");
 }
 
+/// A notification-only request is stored with every payload column empty.
+#[sqlx::test]
+async fn ticket_request_notify_is_persisted_and_listed(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    let app = app_with_calendar(pool, rochelais_home_42());
+
+    let body = json!({ "kind": "notify" });
+    let (put, _, _) = call(
+        &app,
+        request("PUT", "/api/requests/42", Some(&cookie), Some(body)),
+    )
+    .await;
+    assert_eq!(put, StatusCode::NO_CONTENT);
+
+    let (status, _, bytes) = call(&app, request("GET", "/api/requests", Some(&cookie), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    let requests = json(&bytes).as_array().unwrap().to_vec();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["match_id"], 42);
+    assert_eq!(requests[0]["kind"], "notify");
+    assert_eq!(requests[0]["quantity"], serde_json::Value::Null);
+    assert_eq!(requests[0]["max_price_cents"], serde_json::Value::Null);
+    assert_eq!(requests[0]["places"], serde_json::Value::Null);
+    assert_eq!(requests[0]["status"], "pending");
+}
+
 #[sqlx::test]
 async fn ticket_request_put_twice_updates_in_place(pool: SqlitePool) {
     let cookie = session_cookie(&pool, Status::Active, Role::User).await;

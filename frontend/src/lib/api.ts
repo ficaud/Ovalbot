@@ -137,6 +137,8 @@ function toTicketRequestInput(draft: TicketRequestDraft): TicketRequestInput {
       return { kind: 'duo', max_price_cents: draft.duo.maxPriceCents! };
     case 'group':
       return { kind: 'group', places: draft.group.places };
+    case 'notify':
+      return { kind: 'notify' };
   }
 }
 

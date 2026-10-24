@@ -9,6 +9,10 @@
 //! `pending_requesters` + `record_offers` (called by the bot scan loop: who to
 //! alert, and which resale seats are genuinely new — the durable anti-spam
 //! guard over `ticket_offers`).
+//!
+//! One stored kind is not a buying intent: `kind = "notify"` subscribes the
+//! user to the resale-seats alerts of a single match with no bot involvement
+//! (the Phase 4 matcher must not serve those rows).
 
 use parser::core::seat::Seat;
 use serde::{Deserialize, Serialize};
@@ -36,13 +40,17 @@ pub enum TicketRequestInput {
     /// 2..=10-standing seats on a shared billing; the pelouse rate applies
     /// automatically, so no price is requested.
     Group { places: u8 },
+    /// Notification-only subscription: the user wants to be alerted about
+    /// resale seats for the match but must not be served by the buy bot
+    /// (Phase 4 matcher has to skip this kind). No payload columns.
+    Notify,
 }
 
 impl TicketRequestInput {
     // Bounds mirrored from the frontend modal.
     /// Validates the variant against the same bounds the frontend enforces
     /// (Single: quantity 1..=10 and price 1..=[`MAX_PRICE_CENTS`]; Duo:
-    /// price; Group: places 2..=10).
+    /// price; Group: places 2..=10; Notify: payloadless, always valid).
     ///
     /// # Returns
     /// `true` when the payload may be stored; the route answers 400 otherwise.
@@ -54,12 +62,14 @@ impl TicketRequestInput {
             } => (1..=10).contains(quantity) && is_valid_price(*max_price_cents),
             Self::Duo { max_price_cents } => is_valid_price(*max_price_cents),
             Self::Group { places } => (2..=10).contains(places),
+            Self::Notify => true,
         }
     }
 
     /// Flattens the variant into the `ticket_requests` columns
     /// `(kind, quantity, max_price_cents, places)` — exactly one of the three
-    /// payload columns is `Some`, per the SQL CHECK constraints.
+    /// payload columns is `Some`, per the SQL CHECK constraints (`Notify`
+    /// leaves all three `None`).
     ///
     /// # Returns
     /// The column tuple to bind in the upsert statement.
@@ -76,6 +86,7 @@ impl TicketRequestInput {
             ),
             Self::Duo { max_price_cents } => (TicketKind::Duo, None, Some(*max_price_cents), None),
             Self::Group { places } => (TicketKind::Group, None, None, Some(*places)),
+            Self::Notify => (TicketKind::Notify, None, None, None),
         }
     }
 }
@@ -87,7 +98,7 @@ fn is_valid_price(cents: u32) -> bool {
 
 // ============================== TICKET REQUEST TYPES ==============================
 
-/// Buying mode of a stored request — serialized as `"single"`/`"duo"`/`"group"`
+/// Buying mode of a stored request — serialized as `"single"`/`"duo"`/`"group"`/`"notify"`
 /// and stored with the same spelling (sqlx `rename_all`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
@@ -96,6 +107,9 @@ pub enum TicketKind {
     Single,
     Duo,
     Group,
+    /// Notification-only subscription: no payload columns, and the buy bot
+    /// (Phase 4 matcher) must skip it — the user only asked to be alerted.
+    Notify,
 }
 
 /// Lifecycle of a request. Fresh rows are `Pending`; the Phase 4 claim flow
@@ -418,6 +432,7 @@ mod tests {
         }
         .is_valid());
         assert!(TicketRequestInput::Group { places: 4 }.is_valid());
+        assert!(TicketRequestInput::Notify.is_valid());
     }
 
     /// Single tickets require a quantity between 1 and 10 and a positive price.
@@ -490,5 +505,10 @@ mod tests {
         assert_eq!(quantity, None);
         assert_eq!(max_price_cents, None);
         assert_eq!(places, Some(4));
+
+        assert_eq!(
+            TicketRequestInput::Notify.columns(),
+            (TicketKind::Notify, None, None, None)
+        );
     }
 }

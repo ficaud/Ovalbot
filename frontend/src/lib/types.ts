@@ -37,7 +37,7 @@ export interface MatchView {
   status: string;
 }
 
-export type TicketKind = 'single' | 'duo' | 'group';
+export type TicketKind = 'single' | 'duo' | 'group' | 'notify';
 
 export interface TicketRequestDraft {
   matchId: number;
@@ -50,7 +50,8 @@ export interface TicketRequestDraft {
 export type TicketRequestInput =
   | { kind: 'single'; quantity: number; max_price_cents: number }
   | { kind: 'duo'; max_price_cents: number }
-  | { kind: 'group'; places: number };
+  | { kind: 'group'; places: number }
+  | { kind: 'notify' };
 
 export type TicketRequestStatus =
   | 'pending'
