@@ -102,3 +102,32 @@ SELECT last_scan_status,
 FROM resale_links
 GROUP BY last_scan_status;"
 ```
+
+List all the tickets detected on resale (`ticket_offers`: one row per
+seat the bot ever recorded, ordered by detection time):
+
+```sql
+sqlite3 -box ovalbot.sqlite "
+SELECT match_id,
+       title,
+       date,
+       pack_id,
+       ticket_id,
+       first_seen_at
+FROM ticket_offers
+ORDER BY first_seen_at DESC;"
+```
+
+Same offers grouped per match (one line per match, all recorded seats):
+
+```sql
+sqlite3 -box ovalbot.sqlite "
+SELECT match_id,
+       title,
+       date,
+       COUNT(*)           AS seats,
+       MIN(first_seen_at) AS first_seen
+FROM ticket_offers
+GROUP BY match_id, title, date
+ORDER BY first_seen DESC;"
+```
