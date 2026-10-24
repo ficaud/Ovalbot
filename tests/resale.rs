@@ -1,7 +1,7 @@
 //! Integration tests for the `resale_links` service: discovery upsert,
 //! polling-target selection, scan bookkeeping and retirement.
 
-use ovalbot::services::resale::{
+use ovalbot::services::bot::resale::{
     delete_one, links_to_scan, mark_scanned, upsert_discovered, DiscoveryCounts, ScanStatus,
     ScanTarget,
 };

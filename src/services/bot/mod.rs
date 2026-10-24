@@ -3,12 +3,12 @@
 //! Two passes per tick:
 //! 1. **Discovery** (every `BOT_HOME_REFRESH_SECS`): fetch the billetterie
 //!    home page, resolve each card against the calendar snapshot
-//!    ([`crate::services::matching`]) and persist every open resale link in
-//!    `resale_links` ([`crate::services::resale::upsert_discovered`]). The
+//!    ([`crate::services::bot::matching`]) and persist every open resale link in
+//!    `resale_links` ([`crate::services::bot::resale::upsert_discovered`]). The
 //!    home page is only hit for discovery; a waiting-queue page is reported
 //!    distinctly and never stops the polling.
 //! 2. **Direct poll** (every `BOT_SCAN_INTERVAL_SECS`): fetch each stored
-//!    link directly ([`crate::services::resale::links_to_scan`]), record the
+//!    link directly ([`crate::services::bot::resale::links_to_scan`]), record the
 //!    seats durably in `ticket_offers`
 //!    ([`crate::services::tickets::record_offers`]) and alert the pending
 //!    `ticket_requests` requesters
@@ -17,6 +17,9 @@
 //!
 //! `ticket_offers` is the single "new seats" source of truth: only the seats
 //! it actually inserts are logged, so a restart never re-announces old seats.
+
+pub mod matching;
+pub mod resale;
 
 use std::time::Duration;
 use std::time::Instant;
@@ -28,10 +31,9 @@ use parser::interface::curl::proxy::set_proxy_enabled;
 use parser::interface::ScanError;
 use scanner::app::scan::{discover, fetch_seats};
 
+use crate::services::bot::resale::{ScanStatus, ScanTarget};
 use crate::services::channels::alerts::{SeatAlert, SeatBrief};
-use crate::services::matching;
 use crate::services::notifications;
-use crate::services::resale::{self, ScanStatus, ScanTarget};
 use crate::services::state::AppState;
 use crate::services::tickets::{self, OfferKey};
 // ============================== SCAN LOOP ==============================
