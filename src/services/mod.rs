@@ -1,17 +1,16 @@
-//! Business + integration services: auth/waitlist, calendar cache, mailer,
-//! Telegram, match notifications, ticket requests, the bot's resale link
-//! registry and the bot scan loop.
+//! Business + integration services: accounts (auth/waitlist/email type),
+//! calendar cache, notification channels (mailer/Telegram/alerts), match
+//! notifications, ticket requests, and the bot (scan loop, matching, resale
+//! link registry).
 
-pub mod alerts;
 pub mod auth;
 pub mod bot;
 pub mod calendar;
+pub mod channels;
 pub mod email;
-pub mod mailer;
 pub mod matching;
 pub mod notifications;
 pub mod resale;
 pub mod state;
-pub mod telegram;
 pub mod tickets;
 pub mod waitlist;

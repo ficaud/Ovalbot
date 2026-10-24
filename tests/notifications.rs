@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use calendar::{Change, TeamType};
 use common::{insert_active_user, RecordingMailer, RecordingTelegram};
-use ovalbot::services::alerts::{SeatAlert, SeatBrief};
 use ovalbot::services::calendar::CalendarService;
-use ovalbot::services::mailer::Mailer;
+use ovalbot::services::channels::alerts::{SeatAlert, SeatBrief};
+use ovalbot::services::channels::mailer::Mailer;
+use ovalbot::services::channels::telegram::{Telegram, TelegramConfig};
 use ovalbot::services::notifications::{
     list_for_user, notify_new_seats, process, subscribe, unsubscribe, update_settings,
 };
 use ovalbot::services::state::AppState;
-use ovalbot::services::telegram::{Telegram, TelegramConfig};
 use ovalbot::services::tickets::upsert;
 use sqlx::SqlitePool;
 

@@ -9,8 +9,8 @@ use time::Duration;
 use crate::common::error::AppError;
 use crate::common::models::{Status, User, UserView};
 use crate::services::auth::{generate_session_token, hash_password, verify_password, AuthUser};
+use crate::services::channels::mailer::send_welcome_if_unsent;
 use crate::services::email::Email;
-use crate::services::mailer::send_welcome_if_unsent;
 use crate::services::state::AppState;
 use crate::services::waitlist::status_for;
 

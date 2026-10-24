@@ -1,7 +1,7 @@
 mod common;
 
 use common::insert_active_user;
-use ovalbot::services::telegram::{consume_link_token, create_link_token, unlink};
+use ovalbot::services::channels::telegram::{consume_link_token, create_link_token, unlink};
 use sqlx::SqlitePool;
 
 async fn telegram_id(pool: &SqlitePool, user_id: i64) -> Option<String> {

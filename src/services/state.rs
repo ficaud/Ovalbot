@@ -6,8 +6,8 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::services::calendar::CalendarService;
-use crate::services::mailer::Mailer;
-use crate::services::telegram::{Telegram, TelegramConfig};
+use crate::services::channels::mailer::Mailer;
+use crate::services::channels::telegram::{Telegram, TelegramConfig};
 
 /// All dependencies of the app, cheap-to-clone (pools and `Arc`s only).
 ///

@@ -6,8 +6,8 @@ use serde::Serialize;
 
 use crate::common::error::AppError;
 use crate::services::auth::ActiveUser;
+use crate::services::channels::telegram::{self, Update};
 use crate::services::state::AppState;
-use crate::services::telegram::{self, Update};
 
 /// `POST /api/telegram/link` — answer payload: the `t.me` deep link.
 #[derive(Debug, Serialize)]

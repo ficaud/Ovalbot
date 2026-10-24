@@ -15,7 +15,7 @@ use calendar::Change;
 use sqlx::SqlitePool;
 
 use crate::common::error::AppError;
-use crate::services::alerts::{MatchAlert, SeatAlert};
+use crate::services::channels::alerts::{MatchAlert, SeatAlert};
 use crate::services::state::AppState;
 use crate::services::tickets;
 
