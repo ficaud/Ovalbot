@@ -8,11 +8,13 @@ use time::Duration;
 
 use crate::common::error::AppError;
 use crate::common::models::{Status, User, UserView};
-use crate::services::auth::{generate_session_token, hash_password, verify_password, AuthUser};
+use crate::services::accounts::auth::{
+    generate_session_token, hash_password, verify_password, AuthUser,
+};
+use crate::services::accounts::email::Email;
+use crate::services::accounts::waitlist::status_for;
 use crate::services::channels::mailer::send_welcome_if_unsent;
-use crate::services::email::Email;
 use crate::services::state::AppState;
-use crate::services::waitlist::status_for;
 
 const SESSION_DAYS: i64 = 30;
 

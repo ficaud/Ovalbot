@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use calendar::{Event, MatchStatus, Team, TeamType};
 use ovalbot::common::models::{Role, Status};
-use ovalbot::services::auth::generate_session_token;
+use ovalbot::services::accounts::auth::generate_session_token;
 use ovalbot::services::calendar::CalendarService;
 use ovalbot::services::channels::alerts::{MatchAlert, SeatAlert};
 use ovalbot::services::channels::mailer::{MailError, Mailer, NoopMailer};
@@ -102,7 +102,7 @@ pub async fn insert_user(pool: &SqlitePool, email: &str, status: Status, role: R
 
 pub async fn insert_user_with_password(pool: &SqlitePool, email: &str, password: &str) -> i64 {
     let id = insert_active_user(pool, email).await;
-    let hash = ovalbot::services::auth::hash_password(password).unwrap();
+    let hash = ovalbot::services::accounts::auth::hash_password(password).unwrap();
     sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
         .bind(&hash)
         .bind(id)

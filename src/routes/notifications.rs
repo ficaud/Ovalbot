@@ -5,7 +5,7 @@ use axum::Json;
 use serde::Deserialize;
 
 use crate::common::error::AppError;
-use crate::services::auth::ActiveUser;
+use crate::services::accounts::auth::ActiveUser;
 use crate::services::notifications;
 use crate::services::state::AppState;
 

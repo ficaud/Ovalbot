@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::Json;
 
 use crate::common::error::AppError;
-use crate::services::auth::ActiveUser;
+use crate::services::accounts::auth::ActiveUser;
 use crate::services::bot::matching;
 use crate::services::state::AppState;
 use crate::services::tickets::{self, RemoveOutcome, TicketRequestInput, TicketRequestView};

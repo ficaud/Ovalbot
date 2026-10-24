@@ -1,5 +1,5 @@
 use ovalbot::common::models::{Status, User};
-use ovalbot::services::waitlist::promote_next_waiting;
+use ovalbot::services::accounts::waitlist::promote_next_waiting;
 use sqlx::SqlitePool;
 
 /// Promotes the oldest waiting user to `Active` and sets `activated_at`.

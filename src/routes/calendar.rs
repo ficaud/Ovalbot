@@ -4,7 +4,7 @@ use axum::Json;
 use calendar::TeamType;
 
 use crate::common::error::AppError;
-use crate::services::auth::ActiveUser;
+use crate::services::accounts::auth::ActiveUser;
 use crate::services::calendar::{MatchView, TeamView};
 use crate::services::state::AppState;
 
