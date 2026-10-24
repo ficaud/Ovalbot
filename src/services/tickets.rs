@@ -283,7 +283,7 @@ pub async fn list_for_user(
 pub struct PendingRequester {
     /// User who made the request (`users.id`).
     pub user_id: i64,
-    /// Email address to alert ([`crate::services::mailer::Mailer::send_seats_alert`]).
+    /// Email address to alert ([`crate::services::channels::mailer::Mailer::send_seats_alert`]).
     pub email: String,
     /// Linked Telegram chat id; unlinked users get nothing on that channel.
     pub telegram_id: Option<String>,

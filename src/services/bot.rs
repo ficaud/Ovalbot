@@ -28,7 +28,7 @@ use parser::interface::curl::proxy::set_proxy_enabled;
 use parser::interface::ScanError;
 use scanner::app::scan::{discover, fetch_seats};
 
-use crate::services::alerts::{SeatAlert, SeatBrief};
+use crate::services::channels::alerts::{SeatAlert, SeatBrief};
 use crate::services::matching;
 use crate::services::notifications;
 use crate::services::resale::{self, ScanStatus, ScanTarget};

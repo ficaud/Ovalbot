@@ -11,8 +11,8 @@ use common::{
     test_state, test_state_with,
 };
 use ovalbot::common::models::{Role, Status};
-use ovalbot::services::mailer::NoopMailer;
-use ovalbot::services::telegram::{create_link_token, NoopTelegram, TelegramConfig};
+use ovalbot::services::channels::mailer::NoopMailer;
+use ovalbot::services::channels::telegram::{create_link_token, NoopTelegram, TelegramConfig};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use tower::ServiceExt;

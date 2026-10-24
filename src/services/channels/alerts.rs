@@ -1,5 +1,5 @@
 //! Channel-neutral alert payloads shared by every notification channel
-//! (email via the [`crate::services::mailer`] transport, Telegram text built
+//! (email via the [`crate::services::channels::mailer`] transport, Telegram text built
 //! in [`crate::services::notifications`]). Pure data + display formatting —
 //! no transport, no persistence.
 

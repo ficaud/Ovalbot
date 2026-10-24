@@ -9,8 +9,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::Router;
 use common::{insert_active_user, RecordingMailer};
-use ovalbot::services::alerts::{MatchAlert, SeatAlert, SeatBrief};
-use ovalbot::services::mailer::{
+use ovalbot::services::channels::alerts::{MatchAlert, SeatAlert, SeatBrief};
+use ovalbot::services::channels::mailer::{
     send_welcome_if_unsent, EmailTemplates, MailError, Mailer, ResendMailer,
 };
 use sqlx::SqlitePool;

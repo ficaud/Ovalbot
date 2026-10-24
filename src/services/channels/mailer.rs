@@ -1,7 +1,7 @@
 //! Email transport behind the [`Mailer`] trait: the Resend API client, a
 //! no-op for disabled deployments, and the welcome/match-alert/seat-alert
 //! templates. The alert payloads themselves (channel-neutral) live in
-//! [`crate::services::alerts`].
+//! [`crate::services::channels::alerts`].
 //!
 //! Templates live in `TEMPLATE_DIR` (`welcome.html`, `match_alert.html`,
 //! `seats_alert.html`); missing files fall back to built-in defaults.
@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
-use crate::services::alerts::{MatchAlert, SeatAlert};
+use crate::services::channels::alerts::{MatchAlert, SeatAlert};
 
 /// Failures while sending through Resend: network/serialization issues
 /// (`Http`) and non-2xx API responses (`Api`).
@@ -398,7 +398,7 @@ pub async fn send_welcome_if_unsent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::alerts::SeatBrief;
+    use crate::services::channels::alerts::SeatBrief;
 
     /// `render` replaces known `{{placeholders}}` with the provided values.
     #[test]

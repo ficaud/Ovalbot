@@ -5,7 +5,7 @@ use axum::Json;
 use crate::common::error::AppError;
 use crate::common::models::{Role, User, UserView};
 use crate::services::auth::AdminUser;
-use crate::services::mailer::send_welcome_if_unsent;
+use crate::services::channels::mailer::send_welcome_if_unsent;
 use crate::services::state::AppState;
 use crate::services::waitlist::promote_next_waiting;
 
