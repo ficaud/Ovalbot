@@ -5,7 +5,7 @@ use axum::Json;
 use serde::Serialize;
 
 use crate::common::error::AppError;
-use crate::services::auth::ActiveUser;
+use crate::services::accounts::auth::ActiveUser;
 use crate::services::channels::telegram::{self, Update};
 use crate::services::state::AppState;
 

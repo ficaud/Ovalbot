@@ -3,12 +3,10 @@
 //! notifications, ticket requests, and the bot (scan loop, matching, resale
 //! link registry).
 
-pub mod auth;
+pub mod accounts;
 pub mod bot;
 pub mod calendar;
 pub mod channels;
-pub mod email;
 pub mod notifications;
 pub mod state;
 pub mod tickets;
-pub mod waitlist;

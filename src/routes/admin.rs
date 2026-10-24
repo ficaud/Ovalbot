@@ -4,10 +4,10 @@ use axum::Json;
 
 use crate::common::error::AppError;
 use crate::common::models::{Role, User, UserView};
-use crate::services::auth::AdminUser;
+use crate::services::accounts::auth::AdminUser;
+use crate::services::accounts::waitlist::promote_next_waiting;
 use crate::services::channels::mailer::send_welcome_if_unsent;
 use crate::services::state::AppState;
-use crate::services::waitlist::promote_next_waiting;
 
 /// `GET /api/admin/users` — every account as [`UserView`] (admin only),
 /// ordered by id.

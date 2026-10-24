@@ -6,7 +6,7 @@
 use std::env;
 
 use ovalbot::common::db;
-use ovalbot::services::auth::hash_password;
+use ovalbot::services::accounts::auth::hash_password;
 
 #[tokio::main]
 /// CLI entry point. Parses `--email`/`--password`, validates them locally

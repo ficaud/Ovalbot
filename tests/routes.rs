@@ -163,7 +163,7 @@ async fn register_rejects_duplicate_email(pool: SqlitePool) {
 
 #[sqlx::test]
 async fn register_waitlists_after_limit(pool: SqlitePool) {
-    for i in 0..ovalbot::services::waitlist::ACTIVE_LIMIT {
+    for i in 0..ovalbot::services::accounts::waitlist::ACTIVE_LIMIT {
         common::insert_active_user(&pool, &format!("a{i}@example.com")).await;
     }
 

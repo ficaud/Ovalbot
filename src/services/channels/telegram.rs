@@ -239,7 +239,7 @@ pub fn secret_matches(expected: &str, provided: &str) -> bool {
 
 /// Creates a new link token for the given user.
 pub async fn create_link_token(pool: &SqlitePool, user_id: i64) -> Result<String, AppError> {
-    let token = crate::services::auth::generate_session_token();
+    let token = crate::services::accounts::auth::generate_session_token();
     let now = crate::common::time::now();
     let expires_at = crate::common::time::in_minutes(LINK_TTL_MINUTES);
 
