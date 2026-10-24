@@ -239,6 +239,20 @@ async fn check_constraint_rejects_incoherent_rows(pool: SqlitePool) {
     .await;
     assert!(too_expensive.is_err());
 
+    // A notify subscription cannot carry any payload column.
+    let notify_with_payload = sqlx::query(
+        "INSERT INTO ticket_requests \
+             (user_id, match_id, kind, quantity, status, created_at, updated_at) \
+         VALUES (?, ?, 'notify', 3, 'pending', ?, ?)",
+    )
+    .bind(user)
+    .bind(42)
+    .bind(&now)
+    .bind(&now)
+    .execute(&pool)
+    .await;
+    assert!(notify_with_payload.is_err());
+
     assert!(stored(&pool, user).await.unwrap().is_empty());
 }
 
@@ -335,6 +349,38 @@ async fn record_offers_without_seats_is_a_noop(pool: SqlitePool) {
     assert_eq!(stored, 0);
 }
 
+/// A notification-only subscription upserts like the other kinds, with every
+/// payload column left empty.
+#[sqlx::test]
+async fn notify_upsert_stores_null_payload_columns(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+
+    let view = upsert(&pool, user, 42, &TicketRequestInput::Notify)
+        .await
+        .unwrap();
+    assert_eq!(view.kind, TicketKind::Notify);
+    assert_eq!(view.quantity, None);
+    assert_eq!(view.max_price_cents, None);
+    assert_eq!(view.places, None);
+    assert_eq!(view.status, TicketStatus::Pending);
+    assert_eq!(stored(&pool, user).await.unwrap().len(), 1);
+}
+
+/// A notify subscription turns into a real buying request on the next upsert
+/// (one row per user+match, the kind switch replaces the payload columns).
+#[sqlx::test]
+async fn notify_switches_to_a_buying_kind_in_place(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+
+    upsert(&pool, user, 42, &TicketRequestInput::Notify)
+        .await
+        .unwrap();
+    let view = upsert(&pool, user, 42, &duo(9000)).await.unwrap();
+
+    assert_eq!(view.kind, TicketKind::Duo);
+    assert_eq!(view.max_price_cents, Some(9000));
+}
+
 /// `pending_requesters` returns every pending requester of the match, all
 /// kinds mixed, ordered by user id, with contact info and channel gates.
 #[sqlx::test]
@@ -342,10 +388,14 @@ async fn pending_requesters_lists_all_pending_of_the_match(pool: SqlitePool) {
     let first = insert_active_user(&pool, "a@example.com").await;
     let second = insert_active_user(&pool, "b@example.com").await;
     let third = insert_active_user(&pool, "c@example.com").await;
+    let fourth = insert_active_user(&pool, "d@example.com").await;
 
     upsert(&pool, second, 11877, &duo(9000)).await.unwrap();
     upsert(&pool, first, 11877, &single(2, 4500)).await.unwrap();
     upsert(&pool, third, 11877, &group(6)).await.unwrap();
+    upsert(&pool, fourth, 11877, &TicketRequestInput::Notify)
+        .await
+        .unwrap();
     upsert(&pool, first, 42, &duo(5000)).await.unwrap();
     sqlx::query("UPDATE users SET telegram_id = '123' WHERE id = ?")
         .bind(first)
@@ -358,7 +408,7 @@ async fn pending_requesters_lists_all_pending_of_the_match(pool: SqlitePool) {
         .iter()
         .map(|requester| requester.user_id)
         .collect();
-    assert_eq!(user_ids, vec![first, second, third]);
+    assert_eq!(user_ids, vec![first, second, third, fourth]);
 
     assert_eq!(requesters[0].email, "a@example.com");
     assert_eq!(requesters[0].telegram_id.as_deref(), Some("123"));
@@ -374,6 +424,11 @@ async fn pending_requesters_lists_all_pending_of_the_match(pool: SqlitePool) {
     assert_eq!(requesters[1].kind, TicketKind::Duo);
     assert_eq!(requesters[2].kind, TicketKind::Group);
     assert_eq!(requesters[2].places, Some(6));
+    // A notify-only subscriber is an alert candidate with no buying payload.
+    assert_eq!(requesters[3].kind, TicketKind::Notify);
+    assert_eq!(requesters[3].quantity, None);
+    assert_eq!(requesters[3].max_price_cents, None);
+    assert_eq!(requesters[3].places, None);
 }
 
 /// Non-pending requests are not notification candidates.
