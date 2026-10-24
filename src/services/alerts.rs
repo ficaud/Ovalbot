@@ -59,10 +59,11 @@ impl SeatAlert {
             .join(",\n\n")
     }
 
-    /// Styled HTML table rows for the seats-alert email body: one row pair
-    /// per seat — bold seat label (bloc) with the price on the right in
-    /// `#FFD500`, gray position line ("Rang U · Siège 2") underneath —
-    /// designed to be injected inside the template's fixed-cell seats table.
+    /// Styled HTML rows for the seats-alert email body: one full-width row
+    /// per seat — bold seat line (bloc + price, columnless text flow) and a
+    /// gray position line ("Rang U · Siège 2") underneath — designed to be
+    /// injected inside the template's fixed-cell seats table. See
+    /// [`seat_html_row`] for why the layout must stay columnless.
     #[must_use]
     pub fn seats_html(&self) -> String {
         self.seats
@@ -73,16 +74,26 @@ impl SeatAlert {
     }
 }
 
-/// Builds the HTML rows for one seat: a bold `🎟️ {bloc}` cell with the price
-/// on the right, plus the position line ("Rang {row} · Siège {n}") below.
-/// Empty parts are dropped (a pelouse seat has no bloc, some pack data has no
-/// position); a seat with nothing left to show keeps just label and price.
+/// Builds the HTML row for one seat: one full-width cell holding a bold
+/// ticket line (`🎟️ {bloc}` in white, `— {price} €` in `#FFD500`, same text
+/// flow) and the gray position line ("Rang {row} · Siège {n}") underneath.
+///
+/// Columnless by design: the earlier 99%/1% two-column split (price cell
+/// `width="1%"` + `nowrap`) was honored by Apple Mail as a 1%-wide column
+/// with the wrap hints dropped, rendering the price one character per line
+/// and misaligning both rows. A single text flow inside one cell has no
+/// column to shrink, so it can only wrap at word boundaries — the safe
+/// layout for every client. Extension or redesign must not reintroduce
+/// multi-column tables here.
+///
+/// Empty parts are dropped (a pelouse seat has no bloc, some pack data has
+/// no position); a seat with nothing left keeps "Place" and the price.
 ///
 /// # Arguments
 /// * `seat` — the seat to render.
 ///
 /// # Returns
-/// Two `<tr>` elements (or one when the position line is empty).
+/// One `<tr>` element.
 #[must_use]
 fn seat_html_row(seat: &SeatBrief) -> String {
     let mut position_parts = Vec::new();
@@ -104,13 +115,12 @@ fn seat_html_row(seat: &SeatBrief) -> String {
         String::new()
     } else {
         format!(
-            "<tr><td colspan=\"2\" style=\"padding-bottom:8px;font-size:13px;color:#94a3b8;\">{position}</td></tr>"
+            "<p style=\"margin:2px 0 0;font-size:13px;color:#94a3b8;line-height:1.4;\">{position}</p>"
         )
     };
 
     format!(
-        "<tr><td style=\"font-size:15px;color:#ffffff;font-weight:bold;\">🎟️ {label}</td>\
-<td align=\"right\" style=\"font-size:16px;color:#FFD500;font-weight:bold;white-space:nowrap;\">{} €</td></tr>{detail}",
+        "<tr><td style=\"padding:12px 0;font-size:15px;color:#ffffff;font-weight:bold;line-height:1.4;\"><p style=\"margin:0;\">🎟️ {label} <span style=\"color:#FFD500;\">— {} €</span></p>{detail}</td></tr>",
         seat.price
     )
 }
@@ -129,9 +139,10 @@ mod tests {
         }
     }
 
-    // One row pair per seat: bold label + price on the right + position line.
+    /// `seats_html` renders one full-width row per seat: bold ticket line
+    /// (bloc + price in the same text flow) and position line underneath.
     #[test]
-    fn seats_html_renders_one_row_pair_per_seat() {
+    fn seats_html_renders_one_flow_row_per_seat() {
         let alert = SeatAlert {
             opponent: "Aviron Bayonnais".to_string(),
             date: "dimanche 8 novembre à 21h05".to_string(),
@@ -149,7 +160,13 @@ mod tests {
         assert!(html.contains("🎟️ Pelouse ouest"));
         assert!(html.contains("Rang 5 · Siège 12"));
         assert!(html.contains("15.00 €"));
-        assert_eq!(html.matches("<tr>").count(), 4);
+        assert_eq!(html.matches("<tr>").count(), 2);
+
+        // Columnless layout, asserted dead: any `width="…%"` split or
+        // `nowrap` hint can be mis-rendered by mobile clients (Apple Mail
+        // stacked the price one character per line on the old design).
+        assert!(!html.contains("width=\""));
+        assert!(!html.contains("nowrap"));
     }
 
     // An open-area seat (no bloc) falls back to a generic label; a pack with

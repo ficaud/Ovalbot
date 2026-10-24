@@ -62,8 +62,9 @@ const DEFAULT_MATCH_ALERT_HTML: &str =
     "<p>Good news! <strong>{{team}} vs {{opponent}}</strong> has been scheduled for {{kickoff}}.</p>";
 
 const DEFAULT_SEATS_ALERT_HTML: &str = "<p>Nouvelles places de rugby en revente pour \
-<strong>Stade Rochelais vs {{opponent}}</strong> ({{date}}) :</p>{{seats_html}}\
-<p><a href=\"{{link}}\">Réserver mes places à la billetterie</a></p>";
+<strong>Stade Rochelais vs {{opponent}}</strong> ({{date}}) :</p>\
+<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">{{seats_html}}\
+</table><p><a href=\"{{link}}\">Réserver mes places à la billetterie</a></p>";
 
 /// The two HTML bodies, loaded from `TEMPLATE_DIR` (see [`load_templates`]).
 #[derive(Debug, Clone)]
