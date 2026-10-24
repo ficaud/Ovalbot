@@ -458,15 +458,37 @@ p {
   margin-left: 6px;
 }
 
-/* Version badge ---------------------------------------------------- */
+/* Site footer ------------------------------------------------------ */
 
-.version {
-  position: fixed;
-  right: 10px;
-  bottom: 8px;
-  font-size: 0.7rem;
+.site-footer {
+  border-top: 1px solid var(--border);
+  padding: 14px 16px 18px;
+  margin-top: auto;
+}
+
+.footer-links {
+  max-width: var(--page-max);
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+  font-size: 0.8rem;
+}
+
+.footer-links a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.footer-links a:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
+.footer-version {
   color: rgba(0, 0, 0, 0.35);
-  pointer-events: none;
+  margin-left: auto;
 }
 
 /* Helpers ---------------------------------------------------------- */

@@ -41,7 +41,14 @@
     {@render children()}
   </main>
 
-  {#if data.version}
-    <span class="version">v{data.version.version}</span>
-  {/if}
+  <footer class="site-footer">
+    <nav class="footer-links" aria-label="Legal pages">
+      <a href="/legal-notice">Legal notice</a>
+      <a href="/privacy">Privacy policy</a>
+      <a href="/terms">Terms of use</a>
+      {#if data.version}
+        <span class="footer-version">v{data.version.version}</span>
+      {/if}
+    </nav>
+  </footer>
 </div>
