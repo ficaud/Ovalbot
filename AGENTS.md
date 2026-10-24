@@ -11,8 +11,8 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 
 - `src/` : Rust backend — Axum server (`main.rs`) + CLI (`bin/create_admin.rs`).
   - `src/common/` : foundations (`error`, `models`, `time`, `db`).
-  - `src/services/` : business + integrations (`auth`, `calendar`, `email`, `mailer`, `notifications`, `state`, `telegram`, `waitlist`).
-  - `src/routes/` : HTTP layer (Axum handlers), one file per resource (`admin`, `auth`, `calendar`, `notifications`, `telegram`).
+  - `src/services/` : business + integrations, en sous-groupes — `accounts/` (`auth`, `waitlist`, `email`), `channels/` (`mailer`, `telegram`, `alerts`), `bot/` (`mod` = scan loop, `matching`, `resale`) + racine (`notifications`, `tickets`, `calendar`, `state`).
+  - `src/routes/` : HTTP layer (Axum handlers), one file per resource (`admin`, `auth`, `calendar`, `notifications`, `telegram`, `tickets`).
 - `migrations/` : SQL migrations (sqlx).
 - `frontend/` : SvelteKit (Svelte 5, `adapter-static`).
 - `doc/specs/` : specifications (`cdc.md`) + per-phase specs (`phase1.md`).
@@ -331,6 +331,21 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - Tests: lib `is_valid`/`columns` cover Notify; `tests/tickets.rs`: notify upsert stores null payload columns, notify → buying kind switch works in place, `pending_requesters` includes a 4th notify subscriber (all payload `None`), CHECK rejects `notify` with a payload column; `tests/routes.rs`: `PUT {"kind":"notify"}` → `204` + `GET` lists it with null columns.
 - Verified: `cargo fmt`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace --jobs 2` (18 suites: 44 lib, 17 tickets, 45 routes), `npm run check` (0 warning) + `npm run build` green.
 - Remaining: exclusion of `notify` rows in the Phase 4 per-kind eligibility matcher (noted, future work).
+
+### 2026-10-24 — `services/` layering: `channels/`, `bot/`, `accounts/`
+- Goal: pure path rewrite to group modules into 3 subfolders (user-validated), reducing the 13-file `services/` root to 4 files + 3 folders. Same rationale as the 2026-10-14 "clean break" layering — no compatibility `pub use` re-exports. Zero behavior change, zero API change (pure file moves via `git mv`, history preserved).
+- New layout:
+  - `services/channels/`: the notification **transports** — `mailer.rs` (email/Resend + templates), `telegram.rs` (transport + account linking), `alerts.rs` (channel-neutral payloads consumed by both mailer and notifications). The fan-out logic (`notifications`) stays at the root as their consumer.
+  - `services/bot/`: the scanner pipeline — `bot.rs` → `bot/mod.rs` (so `services::bot::spawn` and its test module keep their exact paths), plus `matching.rs` (encounter → match_id) and `resale.rs` (resale_links registry).
+  - `services/accounts/`: the account domain — `auth.rs`, `waitlist.rs`, `email.rs`. Note: the `Email` type was NOT grouped with the mailer as one might expect — it is a registration-flow domain type used by `routes/auth.rs`, not a channel concern.
+  - Root keeps: `notifications.rs` (fan-out consumer), `tickets.rs` (domain shared by routes + bot), `calendar.rs` (cache, zero internal deps), `state.rs` (wiring).
+- Dependency audit first: real `use` lines separated from `[crate::services::…]` intra-doc links (doc links look identical in grep, sed must rewrite both); no cycles — everything stays one-way (bot → tickets/alerts/notifications, notifications → alerts, state → leaf modules).
+- Rename mechanics: `git mv bot.rs → bot/mod.rs` (needs `mkdir bot` first), `git mv mailer.rs/telegram.rs/alerts.rs channels/`, `git mv auth.rs/waitlist.rs/email.rs accounts/`; new `mod.rs` (rustdoc `//!` header + `pub mod`s) in each folder; `services/mod.rs` header rewritten.
+- Rewrite scope: ~60 sites across `src/main.rs`, `routes/{auth,admin,telegram,tickets,notifications,calendar}.rs`, `bin/create_admin.rs`, `services/{state,notifications,tickets,bot/mod,channels/telegram}.rs`, `tests/{common/mod,mailer,notifications,telegram,routes,resale,waitlist}.rs`; both `crate::` and `ovalbot::` prefixes (bin + tests import via the crate name).
+- Gotchas hit: (1) `telegram.rs` calls `crate::services::auth::generate_session_token()` **inline** (no `use`) — found by full grep after the move; (2) intra-doc links in headers/tick-docs (`alerts.rs`, `mailer.rs`, `bot/mod.rs`, `tickets.rs`, `state.rs`…) must be rewritten too — `cargo doc --no-deps` is the only gate that catches them; (3) after `bot.rs → bot/mod.rs`, the old `use crate::services::matching;` lines become reimports of the now-sibling `pub mod`s (E0255) — dropped the redundant `use`s, kept the named items (`{ScanStatus, ScanTarget}`); (4) sed escape mistake duplicated `crateservices::` — caught by the trailing grep and repaired within the same commit; (5) `routes/auth.rs` import order shifted → one `cargo fmt` pass.
+- Deliberately NOT done: moving `record_offers`/`pending_requesters`/`OfferKey` (`tickets.rs`) into `bot/` (they are bot-facing but the services split agreed they stay — separate decision if ever justified); eagerly importing sibling modules via `super::` — kept `crate::services::folder::module` style for consistency with the codebase.
+- Verified after EVERY commit: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps` 0 warnings, `cargo test --workspace --jobs 2` 233 passed / 0 failed (18 suites: 44 lib, 91 parser, 17 tickets, 45 routes, 7 resale, 7 mailer, 11 notifications, 6 mailer-transport, …). Frontend untouched.
+- Commit ids: `e2d6647` (channels), `6b74abd` (bot), `681dc43` (accounts), plus this docs closure.
 
 ### 2026-10-21 — Fix: resales missed when a match card wears a promotional badge
 - **Bug**: the bot logged `4 encounter(s), 0 seat(s)` while the UBB resale (`/fr/product/1357/revente_j7_24_25_oct_stade_rochelais_ubb`) was live with 3 seats. Root cause: the card's badge changed from `RUGBY` to **"DERNIÈRE MISE EN VENTE À 18H00"** (resale deadline), and `parse_match` let badges override the title unconditionally → `from_badge` mapped it to `Other` → the `nature == Rugby` scan filter dropped the card. `from_title` could not recover (requires a "stade rochelais" prefix; opponent-only titles fail). Triggers at the end of every match's selling window.
