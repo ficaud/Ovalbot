@@ -252,8 +252,6 @@
         <h3>Administration</h3>
         <p class="muted">Manage accounts and the waitlist.</p>
         <a href="/admin" class="btn btn-secondary">Manage accounts</a>
-        <p class="muted">Manage bot</p>
-        <a href="/" class="btn btn-secondary">Bot settings</a>
       </div>
     {/if}
 
