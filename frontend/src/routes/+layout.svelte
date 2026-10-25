@@ -47,7 +47,7 @@
       <a href="/privacy">Privacy policy</a>
       <a href="/terms">Terms of use</a>
       {#if data.version}
-        <span class="footer-version">v{data.version.version}</span>
+        <span class="footer-version"><a href="https://github.com/ficaud/Ovalbot/releases/">v{data.version.version}</a></span>
       {/if}
     </nav>
   </footer>
