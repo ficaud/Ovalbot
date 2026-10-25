@@ -114,6 +114,9 @@
   });
 </script>
 
+<svelte:head>
+  <title>OvalBot</title>
+</svelte:head>
 <section class="page">
   {#if data.user.status === 'waiting'}
     <div class="card">
