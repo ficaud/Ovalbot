@@ -198,6 +198,7 @@ async fn send_seats_alert_posts_expected_request() {
             row: "U".to_string(),
             seat_number: 2,
             price: "49.00".to_string(),
+            full_name: "Bloc NORD - MACIF BRP • Rang U • Siège 2".to_string(),
         }],
     };
     mailer(&base_url)
@@ -236,6 +237,7 @@ async fn send_seats_alert_falls_back_to_hash_without_link() {
             row: "U".to_string(),
             seat_number: 2,
             price: "49.00".to_string(),
+            full_name: "Bloc NORD - MACIF BRP • Rang U • Siège 2".to_string(),
         }],
     };
     mailer(&base_url)

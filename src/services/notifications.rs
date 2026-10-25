@@ -219,16 +219,9 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
         return;
     }
 
-    let mut text = format!(
-        "Places de rugby en revente : Stade Rochelais vs {} ({}).\nNouvelles places ({}) :\n{}",
-        alert.opponent,
-        alert.date,
-        alert.seats.len(),
-        alert.seats_listing()
-    );
-    if !alert.link.is_empty() {
-        text.push_str(&format!("\nRéserver : {}", alert.link));
-    }
+    // Client-rendered Telegram message (HTML parse mode): header, divider,
+    // clickable CTA and one bullet per seat, in the house design.
+    let text = alert.telegram_text();
     let (mut emailed, mut messaged) = (0u32, 0u32);
     for requester in requesters {
         // If notify_email is enabled, send the seats alert email
@@ -248,7 +241,7 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
         if requester.notify_telegram {
             // An unlinked Telegram account has no chat id to message
             if let Some(chat_id) = &requester.telegram_id {
-                match state.telegram.send_message(chat_id, &text).await {
+                match state.telegram.send_message_html(chat_id, &text).await {
                     Ok(()) => {
                         messaged += 1;
                         tracing::info!(
