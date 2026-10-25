@@ -15,7 +15,7 @@
 </br>
 </div>
 
-OvalBot emails you when a TOP14 match gets a confirmed date, and shows the Stade Rochelais (and many others) calendar. Registration is open, gated by a 10-person waitlist during this early phase.
+OvalBot notify you when there is a TOP14 match that gets a date or for tickets put on resale in the official team's website. Registration is open, gated by a 10-person waitlist during this early phase.
 
 - Stack: **Rust / Axum** (backend) + **SvelteKit** (frontend) + **SQLite**.
 - Hosted on a Raspberry Pi (arm64) via Docker Compose.
@@ -68,12 +68,7 @@ live in a separate `ovalbot-devenv` overlay image.
 
 #### Base devcontainer (no overlay)
 
-Open the folder in VS Code with the "Dev Containers" extension and choose
-**"Reopen in Container"** (or open a Codespace). This uses
-`.devcontainer/devcontainer.json` directly and drops you into a `bash` shell as
-the `devuser` user, with ports `3000` (backend) and `5173` (frontend) forwarded.
-
-From the command line (without VS Code):
+From the command line:
 
 ```bash
 devcontainer up --workspace-folder .            # build (first time) + start
@@ -81,8 +76,6 @@ devcontainer exec --workspace-folder . bash     # open a shell
 ```
 
 #### With the personal overlay (recommended)
-
-Works better with a personal overlay that contains your personal settings (e.g. neovim).
 
 Open a shell with `devcontainer exec --workspace-folder . zsh` or
 `./my-env/up.sh`, then:
@@ -128,13 +121,7 @@ See `.env.example` for a ready-to-copy template.
 
 ## Testing
 
-### Option A — simulated production (backend serves the built frontend)
-
-```bash
-DATABASE_URL="sqlite:///tmp/test.db" cargo run --bin ovalbot
-```
-
-### Option B — local dev with hot reload (two terminals)
+### Local dev with hot reload (two terminals)
 
 Terminal 1 — backend on `:3000`:
 
@@ -161,22 +148,7 @@ DATABASE_URL="sqlite:///tmp/test.db" cargo run --bin create_admin -- --email adm
 Some SQL commands that you can run on the local database for testing purposes or to get information :
 - [SQL_HELPERS.md](SQL_HELPERS.md)
 
-## Calendar crate testing
-
-The LNR parser tests (`calendar/src/parse/lnr.rs`) read committed HTML fixtures
-from `calendar/src/parse/fixtures/`. To regenerate those fixtures from the live
-site, run:
-
-```bash
-cargo test capture_lnr_fixture -- --ignored
-```
-
-## Deployment (Raspberry Pi, arm64)
-
-`deploy.yml` builds a `linux/arm64` image and publishes it to GHCR on every `v*`
-tag (`ghcr.io/ficaud/ovalbot:<version>`, plus `<major>.<minor>` and `latest`).
-The image contains the compiled backend, the built frontend, and the
-`create_admin` CLI. The Pi only needs to pull and run it.
+## Deployment (Raspberry Pi, arm64, or others)
 
 ### 1. Prerequisites
 
