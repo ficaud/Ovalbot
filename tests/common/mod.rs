@@ -76,6 +76,14 @@ impl Telegram for RecordingTelegram {
             .push((chat_id.to_string(), text.to_string()));
         Ok(())
     }
+
+    async fn send_message_html(&self, chat_id: &str, html: &str) -> Result<(), TelegramError> {
+        self.messages
+            .lock()
+            .unwrap()
+            .push((chat_id.to_string(), html.to_string()));
+        Ok(())
+    }
 }
 
 pub async fn insert_active_user(pool: &SqlitePool, email: &str) -> i64 {

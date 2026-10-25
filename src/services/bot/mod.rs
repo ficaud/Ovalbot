@@ -313,6 +313,7 @@ async fn poll_one(state: &AppState, target: &ScanTarget) {
                     row: seat.seat_info.composition.row.clone(),
                     seat_number: seat.seat_info.composition.seat_number,
                     price: seat.price.clone(),
+                    full_name: seat.seat_info.full_name.clone(),
                 })
                 .collect(),
         };

@@ -27,12 +27,14 @@ fn seats_alert() -> SeatAlert {
                 row: "U".to_string(),
                 seat_number: 1,
                 price: "45.00".to_string(),
+                full_name: "Bloc NORD - MACIF BRP • Rang U • Siège 1".to_string(),
             },
             SeatBrief {
                 bloc: "NORD - MACIF BRP".to_string(),
                 row: "U".to_string(),
                 seat_number: 12,
                 price: "99.00".to_string(),
+                full_name: "Bloc NORD - MACIF BRP • Rang U • Siège 12".to_string(),
             },
         ],
     }
@@ -315,8 +317,17 @@ async fn notify_new_seats_alerts_pending_requesters_per_channel(pool: SqlitePool
     let messages = telegram.messages.lock().unwrap().clone();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].0, "123");
-    assert!(messages[0].1.contains("Aviron Bayonnais"));
-    assert!(messages[0].1.contains("45.00 €"));
+    // The Telegram message follows the house design: header block, clickable
+    // CTA, and one bullet per seat keeping the site's own seat text.
+    assert!(messages[0].1.contains("🟢 Nouvelles places :"));
+    assert!(messages[0].1.contains(
+        "🔗 <a href=\"https://billetterie.staderochelais.com/fr/product/1357/revente\">Accéder à la revente</a>"
+    ));
+    assert!(messages[0]
+        .1
+        .contains("  • Bloc NORD - MACIF BRP • Rang U • Siège 1 — 45.00€"));
+    assert!(messages[0].1.contains("99.00€"));
+    assert!(messages[0].1.starts_with("🏉 Stade Rochelais"));
 }
 
 /// The same per-channel preferences gate the seats alerts: an email-muted

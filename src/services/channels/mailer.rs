@@ -473,6 +473,7 @@ mod tests {
                 row: "1".to_string(),
                 seat_number: 1,
                 price: "49.00 €".to_string(),
+                full_name: "Rang 1 • Siège 1".to_string(),
             }],
         };
         assert!(mailer

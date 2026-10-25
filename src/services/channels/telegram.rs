@@ -32,6 +32,9 @@ pub enum TelegramError {
 /// Outbound transport to the Telegram Bot API, injected into
 /// [`crate::services::state::AppState`] (real client in production,
 /// [`NoopTelegram`] when `TELEGRAM_ENABLED` is not `true`).
+/// Fail-soft channel chosen by the caller: [`Telegram::send_message`] posts a
+/// plain-text body, [`Telegram::send_message_html`] posts an HTML fragment
+/// rendered with `parse_mode: "HTML"` (the caller must pre-escape the text).
 #[async_trait]
 pub trait Telegram: Send + Sync {
     /// Sends a plain-text message to one chat.
@@ -39,6 +42,16 @@ pub trait Telegram: Send + Sync {
     /// # Errors
     /// [`TelegramError`] on network or Bot API failure.
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<(), TelegramError>;
+
+    /// Sends an HTML-formatted message (`parse_mode: "HTML"`) to one chat.
+    ///
+    /// # Arguments
+    /// * `html` — an HTML fragment; Telegram rejects invalid markup, so free
+    ///   text must be escaped (see `alerts::telegram_text`).
+    ///
+    /// # Errors
+    /// [`TelegramError`] on network or Bot API failure.
+    async fn send_message_html(&self, chat_id: &str, html: &str) -> Result<(), TelegramError>;
 }
 
 /// Static Telegram settings handed to handlers: the bot username (to build
@@ -51,20 +64,26 @@ pub struct TelegramConfig {
     pub webhook_secret: Option<String>,
 }
 
-/// Telegram client implementation of the Telegram trait,
-/// containing a reqwest client and a bot token.
 /// Real [`Telegram`] backed by the Bot API over HTTPS (reqwest JSON POSTs).
 #[derive(Clone)]
 pub struct TelegramClient {
     client: reqwest::Client,
     token: String,
+    /// Bot API origin; only the transport tests inject a mock server.
+    base_url: String,
 }
 
-/// Bot API `sendMessage` request body.
+/// Public origin of the Bot API (unlike Resend, the token rides in the path).
+const BOT_API_BASE_URL: &str = "https://api.telegram.org";
+
+/// Bot API `sendMessage` request body. `parse_mode` is omitted for plain
+/// text (`Some("HTML")` switches the Bot API's inline parser on).
 #[derive(Serialize)]
 struct OutgoingMessage<'a> {
     chat_id: &'a str,
     text: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parse_mode: Option<&'static str>,
 }
 
 impl TelegramClient {
@@ -73,26 +92,62 @@ impl TelegramClient {
         Self {
             client: reqwest::Client::new(),
             token,
+            base_url: BOT_API_BASE_URL.to_string(),
         }
     }
 
-    /// Full `https://api.telegram.org/bot{token}/{method}` endpoint URL for a
-    /// Bot API method name (e.g. `sendMessage`, `setWebhook`).
+    /// Builds the client against a custom Bot API origin (transport tests).
+    pub fn with_base_url(token: String, base_url: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            token,
+            base_url,
+        }
+    }
+
+    /// Full `{base_url}/bot{token}/{method}` endpoint URL for a Bot API
+    /// method name (e.g. `sendMessage`, `setWebhook`).
     fn api_url(&self, method: &str) -> String {
-        format!("https://api.telegram.org/bot{}/{method}", self.token)
+        format!("{}/bot{}/{method}", self.base_url, self.token)
     }
 }
 
 /// Telegram client implementation of the Telegram trait.
 #[async_trait]
 impl Telegram for TelegramClient {
-    /// Sends a message to the specified chat.
+    /// Sends a plain-text message to the specified chat.
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<(), TelegramError> {
-        // Create a new outgoing message struct with the chat ID and text.
+        self.post(OutgoingMessage {
+            chat_id,
+            text,
+            parse_mode: None,
+        })
+        .await
+    }
+
+    /// Sends an HTML-formatted message (`parse_mode: "HTML"`) to the
+    /// specified chat.
+    async fn send_message_html(&self, chat_id: &str, html: &str) -> Result<(), TelegramError> {
+        self.post(OutgoingMessage {
+            chat_id,
+            text: html,
+            parse_mode: Some("HTML"),
+        })
+        .await
+    }
+}
+
+impl TelegramClient {
+    /// Posts one `sendMessage` body and maps a non-2xx response to
+    /// [`TelegramError::Api`].
+    ///
+    /// # Errors
+    /// [`TelegramError`] on network failure or non-2xx Bot API response.
+    async fn post(&self, body: OutgoingMessage<'_>) -> Result<(), TelegramError> {
         let response = self
             .client
             .post(self.api_url("sendMessage"))
-            .json(&OutgoingMessage { chat_id, text })
+            .json(&body)
             .send()
             .await?;
         if !response.status().is_success() {
@@ -109,8 +164,13 @@ pub struct NoopTelegram;
 
 #[async_trait]
 impl Telegram for NoopTelegram {
-    /// No operation implementation of the send message method that only returns Ok(()).
+    /// No-op implementations: every send only reports success.
     async fn send_message(&self, _chat_id: &str, _text: &str) -> Result<(), TelegramError> {
+        Ok(())
+    }
+
+    /// No-op implementations: every send only reports success.
+    async fn send_message_html(&self, _chat_id: &str, _html: &str) -> Result<(), TelegramError> {
         Ok(())
     }
 }
