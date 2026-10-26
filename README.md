@@ -150,9 +150,13 @@ Some SQL commands that you can run on the local database for testing purposes or
 
 ## Deployment (Raspberry Pi, arm64, or others)
 
+Images are published for both `linux/arm64` and `linux/amd64` — Docker pulls the
+matching architecture automatically, so the same tag runs on a Raspberry Pi as
+well as on x86_64 servers.
+
 ### 1. Prerequisites
 
-- 64-bit OS (Raspberry Pi OS 64-bit / any arm64 distro).
+- 64-bit OS (Raspberry Pi OS 64-bit / any arm64 distro) or an x86_64 Linux host.
 - Docker Engine + the Compose plugin.
 
 ```bash
