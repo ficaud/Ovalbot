@@ -182,7 +182,7 @@ The SQLite database is stored in `./data` next to `docker-compose.yml`. Create i
 writable by the container user (uid `10001`) before the first run:
 
 ```bash
-mkdir -p data && chown -R 10001:10001 data
+mkdir -p data && sudo chown -R 10001:10001 data
 ```
 
 ### 3. Run
