@@ -341,6 +341,22 @@ mod tests {
         assert_eq!(composition.seat_number, 8);
     }
 
+    // The live pelouse resale shape (Bayonne, 2026-10-29 log): four bullet
+    // segments (Tribune/Bloc/Accès, **no Rang**) and an upper-case category
+    // name. The composition must not lose the bloc/seat and the matcher's
+    // `is_pelouse` must still fire on the upper-case name.
+    #[test]
+    fn get_seat_composition_parses_the_live_pelouse_shape() {
+        let composition = get_seat_composition(
+            "Tribune PELOUSE • Bloc PELOUSE • Accès PELOUSE • Siège 147",
+            "PELOUSE",
+        );
+        assert_eq!(composition.category, "PELOUSE");
+        assert_eq!(composition.bloc, "PELOUSE");
+        assert_eq!(composition.row, "");
+        assert_eq!(composition.seat_number, 147);
+    }
+
     // Pack identity extraction: the committed basketball fixture exposes 3
     // packs (ticket 49206 in 33696, 49214 in 33701, 49216 in its own pack).
     #[test]
