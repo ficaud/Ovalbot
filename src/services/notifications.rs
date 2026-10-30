@@ -15,7 +15,7 @@ use calendar::Change;
 use sqlx::SqlitePool;
 
 use crate::common::error::AppError;
-use crate::services::channels::alerts::{MatchAlert, SeatAlert};
+use crate::services::channels::alerts::{CartAlert, MatchAlert, SeatAlert};
 use crate::services::state::AppState;
 use crate::services::tickets;
 
@@ -262,5 +262,69 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
         emailed,
         messaged,
         "seats alert processed for notify subscribers"
+    );
+}
+
+// ============================== CART ALERTS ==============================
+
+/// Tells one user that seats were added to their shop cart or that
+/// the wave ended on a failure with what is already in the cart.
+///
+/// One recipient only (the checkout acts for a single request): email when
+/// `notify_email`, Telegram when `notify_telegram` and a linked chat id
+/// exists. Best-effort per channel — a failed send is warned, never
+/// propagated (the cart itself is already filled; the logs keep the trace).
+///
+/// # Arguments
+/// * `user_id` — owner of the request and of the cart.
+/// * `alert` — wave content (added/total progress, cart link, failure flag).
+pub async fn notify_cart_ready(state: &AppState, user_id: i64, alert: &CartAlert) {
+    let contact: Option<(String, Option<String>, bool, bool)> = match sqlx::query_as(
+        "SELECT email, telegram_id, notify_email, notify_telegram FROM users WHERE id = ?",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(row) => row,
+        Err(e) => {
+            tracing::warn!("failed to load cart-alert recipient {user_id}: {e}");
+            return;
+        }
+    };
+    let Some((email, telegram_id, notify_email, notify_telegram)) = contact else {
+        tracing::warn!("cart-alert recipient {user_id} no longer exists");
+        return;
+    };
+
+    let (mut emailed, mut messaged) = (false, false);
+    if notify_email {
+        match state.mailer.send_cart_alert(&email, alert).await {
+            Ok(()) => emailed = true,
+            Err(e) => tracing::warn!("failed to send cart alert email for user {user_id}: {e}"),
+        }
+    }
+    if notify_telegram {
+        if let Some(chat_id) = &telegram_id {
+            match state
+                .telegram
+                .send_message_html(chat_id, &alert.telegram_text())
+                .await
+            {
+                Ok(()) => messaged = true,
+                Err(e) => {
+                    tracing::warn!("failed to send cart alert on telegram for user {user_id}: {e}")
+                }
+            }
+        }
+    }
+    tracing::info!(
+        user_id,
+        added = alert.added,
+        total = alert.total,
+        failed = alert.failed,
+        emailed,
+        messaged,
+        "cart alert processed"
     );
 }

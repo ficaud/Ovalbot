@@ -6,15 +6,17 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::common::crypto::SecretKey;
+use crate::services::bot::checkout::CartShop;
 use crate::services::calendar::CalendarService;
 use crate::services::channels::mailer::Mailer;
 use crate::services::channels::telegram::{Telegram, TelegramConfig};
 
 /// All dependencies of the app, cheap-to-clone (pools and `Arc`s only).
 ///
-/// Concrete transports are injected behind traits ([`Mailer`], [`Telegram`])
-/// so tests swap in fakes; the config value lives alongside the client because
-/// handlers need the bot username/deep link without an HTTP client.
+/// Concrete transports are injected behind traits ([`Mailer`], [`Telegram`],
+/// [`CartShop`]) so tests swap in fakes; the config values live alongside the
+/// clients because handlers need the bot username/deep link without an HTTP
+/// client.
 #[derive(Clone)]
 pub struct AppState {
     /// Shared SQLite connection pool (also used by background services).
@@ -31,4 +33,12 @@ pub struct AppState {
     /// startup; `None` refuses the credentials routes (fail-closed) and later
     /// the whole checkout feature.
     pub shop_key: Option<SecretKey>,
+    /// `CART_ENABLED` — runs the checkout orchestrator at all.
+    pub cart_enabled: bool,
+    /// `CART_DRY_RUN` — log the planned checkouts without touching the shop
+    /// (no login, no add-to-cart, no claim, no notification).
+    pub cart_dry_run: bool,
+    /// Shop session factory the orchestrator drives (`RealCartShop` in
+    /// production, fakes in tests).
+    pub cart_shop: Arc<dyn CartShop>,
 }

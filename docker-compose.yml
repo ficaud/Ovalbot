@@ -19,6 +19,8 @@ services:
       BOT_ENABLED: ${BOT_ENABLED:-false}
       BOT_SCAN_INTERVAL_SECS: ${BOT_SCAN_INTERVAL_SECS:-60}
       BOT_HOME_REFRESH_SECS: ${BOT_HOME_REFRESH_SECS:-60}
+      CART_ENABLED: ${CART_ENABLED:-false}
+      CART_DRY_RUN: ${CART_DRY_RUN:-true}
     volumes:
       - ./data:/data
       # To override the email templates without rebuilding the image, create a

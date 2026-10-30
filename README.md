@@ -117,6 +117,8 @@ The backend reads these environment variables:
 | `BOT_ENABLED` | `false` | Set `true` to run the ticket resale scanner loop. |
 | `BOT_SCAN_INTERVAL_SECS` | `60` | Seconds between two loop ticks: the direct poll of the stored resale links. |
 | `BOT_HOME_REFRESH_SECS` | `60` | Seconds between two billetterie home-page fetches (link discovery). Each tick also re-polls the links learned earlier, so a queued home page never stops the polling. |
+| `CART_ENABLED` | `false` | Set `true` to let the bot add matching resale seats to users' shop carts (Phase 4B checkout). Requires `SECRET_KEY` and per-user shop credentials. |
+| `CART_DRY_RUN` | `true` | When `true`, the checkout only logs what it *would* add (no login, no add-to-cart, no claim, no notification). Set `false` to buy for real. |
 
 See `.env.example` for a ready-to-copy template.
 

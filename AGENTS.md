@@ -4,6 +4,22 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-10-30 — Phase 4B étapes 4+5 : orchestrateur de checkout + notifications de vague
+
+- Goal: turn the matcher's plans into **real add-to-cart calls in each user's own shop cart**, behind two flags, and tell the user at **every wave** (« X/N places au panier → va payer ») since a cart only lives ~20 minutes. User-validated: SeatGone/WaitingQueue are tolerated churn (skip the seat, request stays `pending`), hard errors mark `failed` (no retry), unreadable credentials skip the plan, and the wave notification ships with the orchestrator (étapes 4 and 5 merged).
+- New `src/services/bot/checkout.rs`:
+  - `CartShop`/`CartSession` traits (injected in `AppState`) so the orchestrator is testable without the network; `RealCartShop` wraps the blocking parser `ShopSession` in `tokio::spawn_blocking` (login + per-seat `add_seat`, one shop session per plan, plans executed strictly one after the other).
+  - `execute_plans(state, target, plans)` → per plan: dry-run gate → credentials (`shop::load_credentials`; `None`/decrypt error = skip, request stays `pending`) → login (refused = terminal `failed` + notification) → seat adds; each success calls `purchases::claim_seat`; `SeatGone`/`WaitingQueue` skip the seat and continue; network/form/context errors stop the wave (terminal `failed`); a wave with zero adds sends nothing; otherwise notification → completion check (`claimed_count >= total` → `accepted`).
+  - `CART_URL = https://billetterie.staderochelais.com/fr/basket` is the CTA of every cart notification; `CheckoutTarget {match_id,title,date,resale_link}` carries the encounter.
+- `AppState` gains `cart_enabled` (`CART_ENABLED`, default **false**), `cart_dry_run` (`CART_DRY_RUN`, default **true**) and `cart_shop: Arc<dyn CartShop>`; `main.rs` parses the flags via the now-public `bot::env_flag` and logs `cart checkout enabled {cart_dry_run}`. `poll_one` executes the plans only when `cart_enabled` (otherwise an info line says the plans are logged only). Dry-run logs `would add seats` and touches nothing (no login, no POST, no claim, no notification).
+- `tickets.rs`: `accept`/`fail` atomic single-shot transitions (`UPDATE … WHERE status='pending' RETURNING`); `purchases.rs`: `PlanCheckout.total` (quota, for progress + completion), `claimed_count(match_id, user_id)`.
+- Notifications: `alerts::CartAlert {opponent,date,cart_link,added,total,failed}` with `progress()`, `plain_text()`, house-design `telegram_text()` (🛒/⚠️ line, CTA `Accéder au panier`, 20-minute reminder, HTML-escaped); `Mailer::send_cart_alert` + `templates/cart_ready.html` (Match Day design, `{{opponent}}/{{date}}/{{added}}/{{progress}}/{{link}}`, `#` fallback) + built-in default; `notifications::notify_cart_ready(state, user_id, alert)` → email when `notify_email`, Telegram when `notify_telegram` + linked chat, best-effort per channel, one `cart alert processed` info line.
+- Tests: 11 integration (`tests/checkout.rs`, scripted `RecordingShop` fake with per-seat outcomes: dry-run touches nothing, no/rotated credentials skip, completed wave claims+accepts+notifies both channels, partial wave stays `pending` with 2/4, two waves complete a 4-place Group, SeatGone tolerated (1 claim, still pending), hard add failure → `failed` + failed alert showing what's in the cart, login refusal → `failed` + notification, all-seats-gone sends nothing, muted channels get nothing) + 3 `CartAlert` units + 2 mailer transport tests (wave subject/text/HTML + failure subject + `#` fallback) + 2 tickets transition tests (accept once, fail doesn't override a closed request). `tests/common` gained `RecordingShop`/`SeatOutcome` + `RecordingMailer.cart_alerts`; `build_state` keeps cart disabled/dry-run by default.
+- Smoke (live): server with `CART_ENABLED=true` starts with `cart checkout enabled cart_dry_run=true`; no open resale seats today so no wave could be exercised live — every path is test-covered. Disposable DB/logs cleaned up.
+- Gotchas: `CheckoutError` lives in `parser::interface::curl::checkout` (no re-export from `interface`); the parser's `add_seat` takes `&SeatId` and is blocking, so the real session holds an `Arc<ShopSession>` and clones the [`SeatId`] into the blocking task; `async_trait` on both shop traits.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps` (0 warnings), `cargo test --workspace --jobs 2` (21 suites green), `npm run check`/`build` untouched. README/compose/`.env.example` gained `CART_ENABLED`/`CART_DRY_RUN`.
+- Next (étape 6): frontend « J'ai payé » button/modal → `accepted → purchased` (plus a `purchased` transition in `tickets`), then étape 7: `doc/specs/phase4b.md`, docs, progressive real-world smoke (`CART_DRY_RUN=true` → 1 Single → 1 Group).
+
 ### 2026-10-30 — Phase 4B étape 3 : purchase matcher (Single/Group) + logs debug
 
 - Goal: match the seats currently offered on a match's resale against the pending **buying** requests and emit the checkout plans for the (next-step) orchestrator, with a full diagnostic trail in the logs. Étape 2's frontend bug ride-along fixed: the generic "Failed to save shop credentials" was hiding the server's reason.
@@ -48,7 +64,7 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 
 - `src/` : Rust backend — Axum server (`main.rs`) + CLI (`bin/create_admin.rs`).
   - `src/common/` : foundations (`error`, `models`, `time`, `db`, `crypto`).
-  - `src/services/` : business + integrations, en sous-groupes — `accounts/` (`auth`, `waitlist`, `email`), `channels/` (`mailer`, `telegram`, `alerts`), `bot/` (`mod` = scan loop, `matching`, `purchases`, `resale`) + racine (`notifications`, `tickets`, `calendar`, `state`).
+  - `src/services/` : business + integrations, en sous-groupes — `accounts/` (`auth`, `waitlist`, `email`), `channels/` (`mailer`, `telegram`, `alerts`), `bot/` (`mod` = scan loop, `matching`, `purchases`, `checkout`, `resale`) + racine (`notifications`, `tickets`, `calendar`, `state`).
   - `src/routes/` : HTTP layer (Axum handlers), one file per resource (`admin`, `auth`, `calendar`, `notifications`, `shop`, `telegram`, `tickets`).
 - `migrations/` : SQL migrations (sqlx).
 - `frontend/` : SvelteKit (Svelte 5, `adapter-static`).

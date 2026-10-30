@@ -3,8 +3,8 @@ mod common;
 use common::insert_active_user;
 use ovalbot::common::error::AppError;
 use ovalbot::services::tickets::{
-    list_for_user, pending_requesters, record_offers, remove, upsert, OfferKey, RemoveOutcome,
-    TicketKind, TicketRequestInput, TicketRequestView, TicketStatus,
+    accept, fail, list_for_user, pending_requesters, record_offers, remove, upsert, OfferKey,
+    RemoveOutcome, TicketKind, TicketRequestInput, TicketRequestView, TicketStatus,
 };
 use parser::core::seat::{Seat, SeatComposition, SeatId, SeatInfo};
 use sqlx::SqlitePool;
@@ -456,4 +456,41 @@ async fn pending_requesters_is_scoped_to_the_match(pool: SqlitePool) {
 
     // Nobody subscribed to match 999.
     assert!(pending_requesters(&pool, 999).await.unwrap().is_empty());
+}
+
+// ============================== PHASE 4B STATUS MOVES ==============================
+
+/// `accept` moves a pending request to accepted exactly once; a second call
+/// (or a request already moved) is a no-op.
+#[sqlx::test]
+async fn accept_moves_a_pending_request_once(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, 11877, &single(2, 5000)).await.unwrap();
+
+    assert!(accept(&pool, user, 11877).await.unwrap());
+    assert_eq!(
+        stored(&pool, user).await.unwrap()[0].status,
+        TicketStatus::Accepted
+    );
+    // Second close loses (the row already left pending).
+    assert!(!accept(&pool, user, 11877).await.unwrap());
+    assert!(!fail(&pool, user, 11877).await.unwrap());
+    assert_eq!(
+        stored(&pool, user).await.unwrap()[0].status,
+        TicketStatus::Accepted
+    );
+}
+
+/// `fail` is equally single-shot and refuses the other direction.
+#[sqlx::test]
+async fn fail_does_not_override_a_closed_request(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, 11877, &group(2)).await.unwrap();
+
+    assert!(fail(&pool, user, 11877).await.unwrap());
+    assert_eq!(
+        stored(&pool, user).await.unwrap()[0].status,
+        TicketStatus::Failed
+    );
+    assert!(!accept(&pool, user, 11877).await.unwrap());
 }

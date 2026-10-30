@@ -6,6 +6,7 @@ use jiff::Timestamp;
 use ovalbot::app;
 use ovalbot::common::crypto::SecretKey;
 use ovalbot::common::db;
+use ovalbot::services::bot::checkout::RealCartShop;
 use ovalbot::services::calendar::CalendarService;
 use ovalbot::services::channels::mailer;
 use ovalbot::services::channels::telegram;
@@ -94,6 +95,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "SECRET_KEY not set: the shop-credentials vault is refused (set SECRET_KEY to enable)"
         );
     }
+    // Phase 4B checkout flags: disabled by default, and dry-run by default even
+    // when enabled (no add-to-cart until CART_DRY_RUN=false is set explicitly).
+    let cart_enabled = ovalbot::services::bot::env_flag("CART_ENABLED", false);
+    let cart_dry_run = ovalbot::services::bot::env_flag("CART_DRY_RUN", true);
+    if cart_enabled {
+        tracing::info!(cart_dry_run, "cart checkout enabled");
+    }
     let state = AppState {
         pool,
         mailer: mailer::from_env(),
@@ -101,6 +109,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         telegram_config: telegram::config_from_env(),
         calendar,
         shop_key,
+        cart_enabled,
+        cart_dry_run,
+        cart_shop: Arc::new(RealCartShop),
     };
 
     // Register the Telegram webhook (best-effort, no-op when disabled)

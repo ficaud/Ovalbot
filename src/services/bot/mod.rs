@@ -20,6 +20,7 @@
 //! `ticket_offers` is the single "new seats" source of truth: only the seats
 //! it actually inserts are logged, so a restart never re-announces old seats.
 
+pub mod checkout;
 pub mod matching;
 pub mod purchases;
 pub mod resale;
@@ -74,7 +75,10 @@ pub fn spawn(state: AppState) {
 // ============================== ENV HELPERS ==============================
 
 /// Reads a boolean flag from the environment (`1`/`true`/`0`/`false`, case-insensitive).
-fn env_flag(name: &str, default: bool) -> bool {
+///
+/// Public because the binary also parses the checkout flags (`CART_ENABLED`,
+/// `CART_DRY_RUN`) when it builds the app state.
+pub fn env_flag(name: &str, default: bool) -> bool {
     std::env::var(name)
         .ok()
         .map(|v| match v.trim().to_ascii_lowercase().as_str() {
@@ -323,12 +327,30 @@ async fn poll_one(state: &AppState, target: &ScanTarget) {
         notifications::notify_new_seats(state, event_id, &alert).await;
 
         // Purchase matching (Phase 4B): decide which pending buying requests
-        // the current listing serves. The plans are decisions only — the
-        // orchestrator (next step) executes them behind CART_ENABLED. Every
-        // skip/plan reason is logged inside; a matching failure never stops
-        // the poll.
-        if let Err(e) = purchases::plan_checkouts(&state.pool, i64::from(event_id), &seats).await {
-            tracing::warn!("purchase matching failed for match {event_id}: {e}");
+        // the current listing serves, then let the checkout orchestrator turn
+        // the plans into real add-to-cart calls (behind `CART_ENABLED`). Every
+        // skip/plan reason is logged inside; a matching/checkout failure never
+        // stops the poll.
+        match purchases::plan_checkouts(&state.pool, i64::from(event_id), &seats).await {
+            Ok(plans) if !plans.is_empty() => {
+                let checkout_target = checkout::CheckoutTarget {
+                    match_id: i64::from(event_id),
+                    title: target.title.clone(),
+                    date: target.date.clone(),
+                    resale_link: target.resale_link.clone(),
+                };
+                if state.cart_enabled {
+                    checkout::execute_plans(state, &checkout_target, plans).await;
+                } else {
+                    tracing::info!(
+                        event_id,
+                        plans = plans.len(),
+                        "checkout disabled (CART_ENABLED), purchase plans logged only"
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("purchase matching failed for match {event_id}: {e}"),
         }
     }
 

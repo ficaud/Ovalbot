@@ -74,6 +74,10 @@ pub struct PlanCheckout {
     pub match_id: i64,
     /// The served buying mode (drives the add-to-cart sequence shape).
     pub kind: TicketKind,
+    /// The ordered total (`quantity` for Single, `places` for Group) — the
+    /// checkout reports progress as `claims/total` and closes the request when
+    /// the total is reached.
+    pub total: u32,
     /// The seats to add, in listing order.
     pub seats: Vec<Seat>,
 }
@@ -145,10 +149,15 @@ pub async fn plan_checkouts(
                 claimed = candidate.claimed,
                 "purchase matching: checkout plan"
             );
+            let total = match kind {
+                TicketKind::Single => u32::from(candidate.quantity.unwrap_or(0)),
+                _ => u32::from(candidate.places.unwrap_or(0)),
+            };
             plans.push(PlanCheckout {
                 user_id: candidate.user_id,
                 match_id,
                 kind,
+                total,
                 seats: seats_taken,
             });
         } else {
@@ -341,6 +350,26 @@ fn compute_remaining(quota: u32, claimed: i64, match_id: i64, user_id: i64) -> u
 }
 
 // ============================== CLAIMS ==============================
+
+/// Counts how many of the match's seats a user already got into their cart —
+/// the checkout's completion check (`claims >= total` closes the request).
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
+pub async fn claimed_count(
+    pool: &SqlitePool,
+    match_id: i64,
+    user_id: i64,
+) -> Result<i64, AppError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ticket_offers WHERE match_id = ? AND claimed_by = ?",
+    )
+    .bind(match_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
+}
 
 /// Marks a seat as claimed into a user's cart — the orchestrator calls this
 /// right after a successful add-to-cart.
