@@ -160,6 +160,33 @@ pub fn parse_seat(html: &str, _encounter: Encounter) -> Vec<Seat> {
     seats
 }
 
+/// Extracts the pack identities of a resale page: one entry per pack that
+/// deserialized correctly, carrying its ticket ids. The checkout uses it to
+/// verify that a seat is still offered on the fresh page before building the
+/// add-to-cart request.
+///
+/// # Arguments
+/// * `html` - The resale page HTML
+/// # Returns
+/// One `(pack_id, ticket_ids)` pair per readable pack
+pub fn parse_pack_ticket_ids(html: &str) -> Vec<(u64, Vec<String>)> {
+    let document = Html::parse_document(html);
+    let pack_selector = Selector::parse("div.js-listing-plain[data-json]").unwrap();
+
+    let mut packs = Vec::new();
+    for pack_el in document.select(&pack_selector) {
+        let Some(data_json) = pack_el.value().attr("data-json") else {
+            continue;
+        };
+        let pack: json::Pack = match serde_json::from_str(data_json) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        packs.push((pack.pack_id, pack.tickets.keys().cloned().collect()));
+    }
+    packs
+}
+
 /// Internal function to parse seat composition from seat information and category.
 ///
 /// The seat composition is the detailed breakdown of a seat's location and category
@@ -312,6 +339,33 @@ mod tests {
         assert_eq!(composition.bloc, "Nord");
         assert_eq!(composition.row, "2");
         assert_eq!(composition.seat_number, 8);
+    }
+
+    // Pack identity extraction: the committed basketball fixture exposes 3
+    // packs (ticket 49206 in 33696, 49214 in 33701, 49216 in its own pack).
+    #[test]
+    fn parse_pack_ticket_ids_reads_the_fixture_packs() {
+        let packs = parse_pack_ticket_ids(&FIXTURE);
+        let by_pack: HashMap<u64, Vec<String>> =
+            packs.iter().map(|(id, t)| (*id, t.clone())).collect();
+        assert_eq!(by_pack.len(), 3);
+        assert_eq!(by_pack[&33696], vec!["49206".to_string()]);
+        assert_eq!(by_pack[&33701], vec!["49214".to_string()]);
+        assert!(
+            by_pack.values().flatten().any(|t| t == "49216"),
+            "the third seat's pack must still be exposed"
+        );
+    }
+
+    // A malformed pack blob is dropped and does not break the others.
+    #[test]
+    fn parse_pack_ticket_ids_skips_malformed_packs() {
+        let html = r#"
+            <div class="js-listing-plain" data-json="not-json">x</div>
+            <div class="js-listing-plain" data-json="{&quot;pack_id&quot;:5,&quot;tickets&quot;:{&quot;t1&quot;:{&quot;seat_info&quot;:&quot;<span>x</span>&quot;}},&quot;amount_by_ticket&quot;:&quot;9.00&quot;}"></div>
+        "#;
+        let packs = parse_pack_ticket_ids(html);
+        assert_eq!(packs, vec![(5, vec!["t1".to_string()])]);
     }
 
     // Missing/absent details leave zero values instead of failing.
