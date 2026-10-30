@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
-use crate::services::channels::alerts::{MatchAlert, SeatAlert};
+use crate::services::channels::alerts::{CartAlert, MatchAlert, SeatAlert};
 
 /// Failures while sending through Resend: network/serialization issues
 /// (`Http`) and non-2xx API responses (`Api`).
@@ -48,6 +48,13 @@ pub trait Mailer: Send + Sync {
     /// # Errors
     /// [`MailError`] on network or Resend API failure.
     async fn send_seats_alert(&self, email: &str, alert: &SeatAlert) -> Result<(), MailError>;
+
+    /// Sends a "seats are in your cart" notification (the Phase 4B bot added
+    /// seats to the user's billetterie cart; pay within ~20 minutes).
+    ///
+    /// # Errors
+    /// [`MailError`] on network or Resend API failure.
+    async fn send_cart_alert(&self, email: &str, alert: &CartAlert) -> Result<(), MailError>;
 }
 
 const WELCOME_SUBJECT: &str = "Welcome to OvalBot";
@@ -66,6 +73,10 @@ const DEFAULT_SEATS_ALERT_HTML: &str = "<p>Nouvelles places de rugby en revente 
 <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">{{seats_html}}\
 </table><p><a href=\"{{link}}\">Réserver mes places à la billetterie</a></p>";
 
+const DEFAULT_CART_ALERT_HTML: &str = "<p><strong>{{added}}</strong> place(s) ajoutée(s) à ton \
+panier pour Stade Rochelais vs <strong>{{opponent}}</strong> ({{date}}) — {{progress}} au total.</p>\
+<p>Tu as environ 20 minutes pour payer.</p><p><a href=\"{{link}}\">Accéder à mon panier</a></p>";
+
 /// The two HTML bodies, loaded from `TEMPLATE_DIR` (see [`load_templates`]).
 #[derive(Debug, Clone)]
 pub struct EmailTemplates {
@@ -78,6 +89,10 @@ pub struct EmailTemplates {
     /// `{{seats_html}}` / `{{link}}` placeholders (`seats_html` carries the
     /// styled seat rows built by [`SeatAlert::seats_html`]).
     pub seats_alert_html: String,
+    /// Cart-ready alert body with `{{opponent}}` / `{{date}}` / `{{added}}` /
+    /// `{{progress}}` / `{{link}}` placeholders (the link points at the shop
+    /// basket).
+    pub cart_alert_html: String,
 }
 
 impl EmailTemplates {
@@ -87,6 +102,7 @@ impl EmailTemplates {
             welcome_html: DEFAULT_WELCOME_HTML.to_string(),
             match_alert_html: DEFAULT_MATCH_ALERT_HTML.to_string(),
             seats_alert_html: DEFAULT_SEATS_ALERT_HTML.to_string(),
+            cart_alert_html: DEFAULT_CART_ALERT_HTML.to_string(),
         }
     }
 }
@@ -122,6 +138,14 @@ pub fn load_templates(dir: &Path) -> EmailTemplates {
     } else {
         tracing::warn!(
             "seats_alert.html template not found in {}, using default",
+            dir.display()
+        );
+    }
+    if let Ok(cart_alert) = std::fs::read_to_string(dir.join("cart_ready.html")) {
+        templates.cart_alert_html = cart_alert;
+    } else {
+        tracing::warn!(
+            "cart_ready.html template not found in {}, using default",
             dir.display()
         );
     }
@@ -294,6 +318,39 @@ impl Mailer for ResendMailer {
         );
         self.send(email, &subject, &html, &text).await
     }
+
+    /// Notification that seats are in the user's shop cart: subject/text
+    /// from the alert, the HTML template fills `{{opponent}}` / `{{date}}` /
+    /// `{{added}}` / `{{progress}}` / `{{link}}` (empty link → `#`).
+    async fn send_cart_alert(&self, email: &str, alert: &CartAlert) -> Result<(), MailError> {
+        let subject = if alert.failed {
+            format!(
+                "Ajout au panier interrompu : {}/{} places — Stade Rochelais vs {}",
+                alert.added, alert.total, alert.opponent
+            )
+        } else {
+            format!(
+                "{} place(s) au panier — Stade Rochelais vs {}",
+                alert.added, alert.opponent
+            )
+        };
+        let link = if alert.cart_link.is_empty() {
+            "#"
+        } else {
+            &alert.cart_link
+        };
+        let html = render(
+            &self.templates.cart_alert_html,
+            &[
+                ("opponent", &alert.opponent),
+                ("date", &alert.date),
+                ("added", &alert.added.to_string()),
+                ("progress", &alert.progress()),
+                ("link", link),
+            ],
+        );
+        self.send(email, &subject, &html, &alert.plain_text()).await
+    }
 }
 
 /// The always-succeeding [`Mailer`] used when `RESEND_ENABLED` is not `true`:
@@ -314,6 +371,11 @@ impl Mailer for NoopMailer {
 
     /// Does nothing, always `Ok(())`.
     async fn send_seats_alert(&self, _email: &str, _alert: &SeatAlert) -> Result<(), MailError> {
+        Ok(())
+    }
+
+    /// Does nothing, always `Ok(())`.
+    async fn send_cart_alert(&self, _email: &str, _alert: &CartAlert) -> Result<(), MailError> {
         Ok(())
     }
 }

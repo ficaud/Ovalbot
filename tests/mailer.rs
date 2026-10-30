@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::Router;
 use common::{insert_active_user, RecordingMailer};
-use ovalbot::services::channels::alerts::{MatchAlert, SeatAlert, SeatBrief};
+use ovalbot::services::channels::alerts::{CartAlert, MatchAlert, SeatAlert, SeatBrief};
 use ovalbot::services::channels::mailer::{
     send_welcome_if_unsent, EmailTemplates, MailError, Mailer, ResendMailer,
 };
@@ -28,6 +28,10 @@ impl Mailer for FailingMailer {
     }
 
     async fn send_seats_alert(&self, _email: &str, _alert: &SeatAlert) -> Result<(), MailError> {
+        Err(MailError::Api("boom".to_string()))
+    }
+
+    async fn send_cart_alert(&self, _email: &str, _alert: &CartAlert) -> Result<(), MailError> {
         Err(MailError::Api("boom".to_string()))
     }
 }
@@ -248,4 +252,63 @@ async fn send_seats_alert_falls_back_to_hash_without_link() {
     let body = captured_body(&captured);
     let html = body["html"].as_str().unwrap();
     assert!(html.contains("href=\"#\""));
+}
+
+/// The cart alert posts the wave progress and the shop basket CTA, with the
+/// per-wave subject.
+#[tokio::test]
+async fn send_cart_alert_posts_expected_request() {
+    let (base_url, captured) = mock_resend(200).await;
+
+    let alert = CartAlert {
+        opponent: "AVIRON BAYONNAIS".to_string(),
+        date: "dimanche 8 novembre à 21h05".to_string(),
+        cart_link: "https://billetterie.staderochelais.com/fr/basket".to_string(),
+        added: 2,
+        total: 4,
+        failed: false,
+    };
+    mailer(&base_url)
+        .send_cart_alert("c@example.com", &alert)
+        .await
+        .unwrap();
+
+    let body = captured_body(&captured);
+    assert_eq!(body["to"], "c@example.com");
+    assert_eq!(
+        body["subject"],
+        "2 place(s) au panier — Stade Rochelais vs AVIRON BAYONNAIS"
+    );
+    let text = body["text"].as_str().unwrap();
+    assert!(text.contains("2/4"));
+    assert!(text.contains("https://billetterie.staderochelais.com/fr/basket"));
+    let html = body["html"].as_str().unwrap();
+    assert!(html.contains("href=\"https://billetterie.staderochelais.com/fr/basket\""));
+    assert!(html.contains("2/4"));
+}
+
+/// A failed wave uses the failure subject and spells out what is in the cart.
+#[tokio::test]
+async fn send_cart_alert_failure_subject() {
+    let (base_url, captured) = mock_resend(200).await;
+
+    let alert = CartAlert {
+        opponent: "AVIRON BAYONNAIS".to_string(),
+        date: "dimanche 8 novembre à 21h05".to_string(),
+        cart_link: String::new(),
+        added: 1,
+        total: 2,
+        failed: true,
+    };
+    mailer(&base_url)
+        .send_cart_alert("c@example.com", &alert)
+        .await
+        .unwrap();
+
+    let body = captured_body(&captured);
+    assert_eq!(
+        body["subject"],
+        "Ajout au panier interrompu : 1/2 places — Stade Rochelais vs AVIRON BAYONNAIS"
+    );
+    assert!(body["html"].as_str().unwrap().contains("href=\"#\""));
 }
