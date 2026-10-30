@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Places ajoutées à ton panier</title>
+  </head>
+  <body style="margin:0;padding:0;background-color:#0f172a;font-family:Arial,Helvetica,sans-serif;-webkit-font-smoothing:antialiased;">
+    <!-- Wrapper principal -->
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0f172a;table-layout:fixed;">
+      <tr>
+        <td align="center" style="padding:24px 12px;">
+
+          <!-- Conteneur de l'e-mail (bgcolor = fallback Outlook desktop, qui ignore background-color CSS) -->
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#1e293b" style="max-width:560px;background-color:#1e293b;border-radius:16px;overflow:hidden;box-shadow:0 10px 25px -5px rgba(0,0,0,0.3), 0 8px 10px -6px rgba(0,0,0,0.3);">
+
+            <!-- En-tête avec bannière style "Match Day" -->
+            <tr>
+              <td bgcolor="#FFD500" style="background:linear-gradient(135deg, #FFD500 0%, #E6BF00 100%);padding:24px 20px;text-align:center;">
+                <span style="display:inline-block;background-color:#0f172a;color:#FFD500;font-size:11px;font-weight:bold;text-transform:uppercase;letter-spacing:1.5px;padding:6px 12px;border-radius:20px;margin-bottom:10px;">Panier prêt</span>
+                <h1 style="margin:0;color:#0f172a;font-size:22px;font-weight:800;letter-spacing:-0.5px;">Tes places sont au panier !</h1>
+              </td>
+            </tr>
+
+            <!-- Corps du contenu -->
+            <tr>
+              <td style="padding:28px 20px;color:#f8fafc;">
+
+                <!-- Match en vedette -->
+                <div style="background-color:#0f172a;border-left:4px solid #FFD500;padding:16px 20px;border-radius:0 8px 8px 0;margin-bottom:24px;">
+                  <p style="margin:0 0 4px;font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;font-weight:bold;">Affiche</p>
+                  <p style="margin:0;font-size:18px;font-weight:bold;color:#ffffff;line-height:1.4;">Stade Rochelais <span style="color:#FFD500;font-size:14px;font-weight:normal;padding:0 4px;">vs</span> {{opponent}}</p>
+                </div>
+
+                <!-- Date et heure -->
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+                  <tr>
+                    <td bgcolor="#334155" style="padding:12px 16px;background-color:#334155;border-radius:8px;color:#e2e8f0;font-size:14px;">
+                      📅 <strong>Date :</strong> {{date}}
+                    </td>
+                  </tr>
+                </table>
+
+                <!-- Progression du remplissage du panier -->
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#0f172a" style="background-color:#0f172a;border-radius:8px;margin-bottom:24px;border:1px solid #334155;">
+                  <tr>
+                    <td bgcolor="#0f172a" style="padding:16px;color:#f8fafc;font-size:15px;">
+                      🛒 <strong style="color:#FFD500;">{{added}}</strong> place(s) ajoutée(s) au panier — <strong>{{progress}}</strong> au total.
+                    </td>
+                  </tr>
+                </table>
+
+                <!-- Bouton d'action (CTA) -->
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td align="center">
+                      <a href="{{link}}" target="_blank" style="background-color:#FFD500;color:#0f172a;padding:14px 28px;border-radius:8px;font-size:16px;font-weight:bold;text-decoration:none;display:inline-block;box-shadow:0 4px 6px -1px rgba(0,0,0,0.2);">
+                        Payer maintenant →
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+
+                <p style="margin:20px 0 0;font-size:13px;color:#94a3b8;text-align:center;line-height:1.5;">
+                  ⏳ Tu as environ <strong>20 minutes</strong> pour payer avant que le panier n'expire.
+                </p>
+
+              </td>
+            </tr>
+
+            <!-- Pied de page -->
+            <tr>
+              <td bgcolor="#0f172a" style="background-color:#0f172a;padding:20px 24px;text-align:center;border-top:1px solid #334155;">
+                <p style="margin:0;font-size:12px;color:#64748b;line-height:1.4;">
+                  Ceci est une notification automatique du bot billetterie. Ne répondez pas à cet e-mail.<br>
+                  Envoyé par OvalBot — billetterie du Stade Rochelais.
+                </p>
+              </td>
+            </tr>
+
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

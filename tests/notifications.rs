@@ -49,6 +49,9 @@ fn state(pool: SqlitePool, mailer: Arc<dyn Mailer>, telegram: Arc<dyn Telegram>)
         telegram_config: TelegramConfig::default(),
         calendar: Arc::new(CalendarService::new()),
         shop_key: Some(SecretKey::from_passphrase("test-secret")),
+        cart_enabled: false,
+        cart_dry_run: true,
+        cart_shop: Arc::new(ovalbot::services::bot::checkout::RealCartShop),
     }
 }
 

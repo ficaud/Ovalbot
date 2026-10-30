@@ -167,6 +167,91 @@ fn seat_html_row(seat: &SeatBrief) -> String {
     )
 }
 
+/// Content of one "seats are in your cart" notification, shared by every
+/// channel.
+#[derive(Debug, Clone)]
+pub struct CartAlert {
+    /// Encounter title from the billetterie (the opponent's display name).
+    pub opponent: String,
+    /// Encounter date, free-form French string from the site.
+    pub date: String,
+    /// The shop cart page where the added seats wait to be paid.
+    pub cart_link: String,
+    /// Seats this wave actually put into the cart.
+    pub added: usize,
+    /// Total seats ordered for this match (`quantity` / `places`).
+    pub total: u32,
+    /// `true` when the wave ended on a hard checkout failure: the cart holds
+    /// what it holds, no more will be added automatically.
+    pub failed: bool,
+}
+
+impl CartAlert {
+    /// The `added/total` progress line, shared by the channels.
+    #[must_use]
+    pub fn progress(&self) -> String {
+        format!("{}/{}", self.added, self.total)
+    }
+
+    /// Plain-text body shared by the email text part (the HTML body is the
+    /// `cart_ready.html` template).
+    #[must_use]
+    pub fn plain_text(&self) -> String {
+        if self.failed {
+            format!(
+                "L'ajout automatique au panier a échoué après {} place(s) ({} commandée(s)) \
+                 pour Stade Rochelais vs {} ({}).\n\
+                 Va payer ce qui est déjà dans ton panier, ou recommence la demande : {}",
+                self.added, self.total, self.opponent, self.date, self.cart_link
+            )
+        } else {
+            format!(
+                "{} place(s) ajoutée(s) à ton panier pour Stade Rochelais vs {} ({}) — \
+                 {} au total.\nTu as environ 20 minutes pour payer : {}",
+                self.added,
+                self.opponent,
+                self.date,
+                self.progress(),
+                self.cart_link
+            )
+        }
+    }
+
+    /// Telegram cart notification, an HTML fragment to send with
+    /// `parse_mode: "HTML"`, in the house design (header, divider, match
+    /// block, progress line, clickable cart CTA, payment-time reminder).
+    /// Degrades cleanly: a missing cart link drops the CTA line. Free-form
+    /// site fields are HTML-escaped before interpolation.
+    #[must_use]
+    pub fn telegram_text(&self) -> String {
+        let mut text = format!(
+            "🏉 Stade Rochelais\n\n{DIVIDER}\n\n🆚 {}\n📅 {}\n\n",
+            escape_html(&self.opponent),
+            escape_html(&self.date),
+        );
+        if self.failed {
+            text.push_str(&format!(
+                "⚠️ Ajout au panier interrompu : {} place(s) dedans ({} commandée(s)).\n",
+                self.added, self.total
+            ));
+        } else {
+            text.push_str(&format!(
+                "🛒 {} place(s) ajoutée(s) au panier — {} au total.\n",
+                self.added,
+                self.progress()
+            ));
+        }
+        if !self.cart_link.is_empty() {
+            text.push_str(&format!(
+                "🔗 <a href=\"{}\">Accéder au panier</a>\n",
+                escape_html(&self.cart_link)
+            ));
+        }
+        text.push_str("\n⏳ Tu as environ 20 minutes pour payer.");
+        text
+    }
+}
+
 /// Horizontal rule of the Telegram seats-alert message (16 heavy dashes),
 /// exactly as the user-validated design.
 const DIVIDER: &str = "━━━━━━━━━━━━━━━━";
@@ -324,5 +409,68 @@ mod tests {
         assert!(text.contains("&lt;span&gt;Rang &amp; Siège&lt;/span&gt;"));
         assert!(!text.contains("<span>"));
         assert!(!text.contains("A&B <Club>"));
+    }
+
+    // The cart alert renders the wave progress and the clickable cart CTA in
+    // the house design, with the 20-minute reminder.
+    #[test]
+    fn cart_telegram_text_renders_progress_and_cta() {
+        let alert = CartAlert {
+            opponent: "AVIRON BAYONNAIS".to_string(),
+            date: "dimanche 8 novembre à 21h05".to_string(),
+            cart_link: "https://billetterie.staderochelais.com/fr/basket".to_string(),
+            added: 2,
+            total: 4,
+            failed: false,
+        };
+
+        assert_eq!(
+            alert.telegram_text(),
+            "🏉 Stade Rochelais\n\n\
+             ━━━━━━━━━━━━━━━━\n\n\
+             🆚 AVIRON BAYONNAIS\n\
+             📅 dimanche 8 novembre à 21h05\n\n\
+             🛒 2 place(s) ajoutée(s) au panier — 2/4 au total.\n\
+             🔗 <a href=\"https://billetterie.staderochelais.com/fr/basket\">Accéder au panier</a>\n\n\
+             ⏳ Tu as environ 20 minutes pour payer."
+        );
+
+        // A failed wave says what is in the cart; an empty link drops the CTA.
+        let failed = CartAlert {
+            cart_link: String::new(),
+            failed: true,
+            ..alert.clone()
+        };
+        let text = failed.telegram_text();
+        assert!(
+            text.contains("⚠️ Ajout au panier interrompu : 2 place(s) dedans (4 commandée(s)).")
+        );
+        assert!(!text.contains("🔗"));
+        assert!(text.contains("⏳ Tu as environ 20 minutes pour payer."));
+    }
+
+    // The plain-text body (email text part) spells out the progress too.
+    #[test]
+    fn cart_plain_text_matches_the_progress() {
+        let alert = CartAlert {
+            opponent: "AVIRON BAYONNAIS".to_string(),
+            date: "dimanche 8 novembre à 21h05".to_string(),
+            cart_link: "https://billetterie.staderochelais.com/fr/basket".to_string(),
+            added: 1,
+            total: 2,
+            failed: false,
+        };
+        let text = alert.plain_text();
+        assert!(text.contains("1 place(s) ajoutée(s)"));
+        assert!(text.contains("1/2"));
+        assert!(text.contains("https://billetterie.staderochelais.com/fr/basket"));
+
+        let failed = CartAlert {
+            failed: true,
+            ..alert
+        };
+        let text = failed.plain_text();
+        assert!(text.contains("a échoué"));
+        assert!(text.contains("1"));
     }
 }

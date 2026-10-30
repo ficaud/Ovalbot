@@ -292,6 +292,59 @@ pub async fn list_for_user(
     Ok(views)
 }
 
+// ============================== STATUS MOVES ==============================
+
+/// Moves a still-`pending` request to a terminal status, atomically.
+///
+/// The conditional `UPDATE` is the single writer: a request that already left
+/// `pending` (accepted, failed, removed…) is never rewritten, so concurrent
+/// checkout waves cannot double-close a request.
+///
+/// # Returns
+/// `true` when this call performed the move, `false` when the row was absent
+/// or no longer `pending`.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
+async fn transition(
+    pool: &SqlitePool,
+    user_id: i64,
+    match_id: i64,
+    to: TicketStatus,
+) -> Result<bool, AppError> {
+    let now = crate::common::time::now();
+    let moved = sqlx::query_scalar::<_, i64>(
+        "UPDATE ticket_requests SET status = ?, updated_at = ? \
+         WHERE user_id = ? AND match_id = ? AND status = 'pending' \
+         RETURNING match_id",
+    )
+    .bind(to)
+    .bind(&now)
+    .bind(user_id)
+    .bind(match_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(moved.is_some())
+}
+
+/// Marks a request `accepted`: the bot completed the order (every ordered
+/// seat is in the user's cart).
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
+pub async fn accept(pool: &SqlitePool, user_id: i64, match_id: i64) -> Result<bool, AppError> {
+    transition(pool, user_id, match_id, TicketStatus::Accepted).await
+}
+
+/// Marks a request `failed`: the bot hit a terminal checkout error (no retry
+/// — the seats already in the cart are the user's to pay or not).
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
+pub async fn fail(pool: &SqlitePool, user_id: i64, match_id: i64) -> Result<bool, AppError> {
+    transition(pool, user_id, match_id, TicketStatus::Failed).await
+}
+
 /// One user subscribed to a match's seats alerts, fetched by
 /// [`pending_requesters`] for the bot: the subscriber's contact + channel
 /// gates, plus the raw per-kind columns a future matcher may need. Under the
