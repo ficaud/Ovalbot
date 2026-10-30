@@ -94,6 +94,20 @@ export async function getNotifications(): Promise<number[]> {
   return parse<number[]>(await fetch('/api/notifications'));
 }
 
+/**
+ * Builds the error to throw for a non-2xx response, carrying the server's
+ * `{ error, message }` body when it sent one (e.g. "shop credentials storage
+ * is not available (set SECRET_KEY)") — the fallback otherwise.
+ */
+async function apiError(res: Response, fallback: string): Promise<ApiError> {
+  try {
+    const body = (await res.json()) as { message?: string; error?: string };
+    return new ApiError(res.status, body.message ?? fallback, body.error);
+  } catch {
+    return new ApiError(res.status, fallback);
+  }
+}
+
 export async function subscribe(matchId: number): Promise<void> {
   const res = await fetch(`/api/notifications/${matchId}`, { method: 'POST' });
   if (!res.ok) throw new ApiError(res.status, 'Subscription failed');
@@ -181,11 +195,11 @@ export async function setShopCredentials(email: string, password: string): Promi
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email, password })
   });
-  if (!res.ok) throw new ApiError(res.status, 'Failed to save shop credentials');
+  if (!res.ok) throw await apiError(res, 'Failed to save shop credentials');
 }
 
 /** Clears the user's stored billetterie credentials (idempotent). */
 export async function deleteShopCredentials(): Promise<void> {
   const res = await fetch('/api/shop/credentials', { method: 'DELETE' });
-  if (!res.ok) throw new ApiError(res.status, 'Failed to clear shop credentials');
+  if (!res.ok) throw await apiError(res, 'Failed to clear shop credentials');
 }

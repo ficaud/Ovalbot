@@ -115,6 +115,19 @@ pub enum TicketKind {
     Notify,
 }
 
+impl TicketKind {
+    /// The lowercase SQLite representation of the kind, as written by the
+    /// migrations and reused in log fields.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TicketKind::Single => "single",
+            TicketKind::Duo => "duo",
+            TicketKind::Group => "group",
+            TicketKind::Notify => "notify",
+        }
+    }
+}
+
 /// Lifecycle of a request. Fresh rows are `Pending`; the Phase 4 claim flow
 /// moves them out of it (upsert/remove refuse everything but `Pending`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]

@@ -206,32 +206,36 @@
       </div>
     </div>
 
-    <div class="option" class:option--active={kind === 'duo'}>
-      <label class="option__head">
-        <input type="radio" name="ticket-kind" value="duo" bind:group={kind} />
-        <span>Duo (2 seats)</span>
-      </label>
-      <div class="option__fields" class:option__fields--off={kind !== 'duo'}>
-        <label class="option__field">
-          <span>Max price for the pair</span>
-          <span class="price">
-            <input
-              class="input"
-              type="number"
-              min="0"
-              step="0.01"
-              inputmode="decimal"
-              bind:value={duoPrice}
-              disabled={kind !== 'duo'}
-            />
-            <span class="price__unit">€</span>
-          </span>
+    <!-- Duo is out of the Phase 4B (bot) scope: the option is hidden unless a
+         legacy duo request is already loaded (it stays manageable). -->
+    {#if kind === 'duo'}
+      <div class="option" class:option--active={kind === 'duo'}>
+        <label class="option__head">
+          <input type="radio" name="ticket-kind" value="duo" bind:group={kind} />
+          <span>Duo (2 seats)</span>
         </label>
-        {#if kind === 'duo' && error}
-          <p class="hint hint--warn">{error}</p>
-        {/if}
+        <div class="option__fields" class:option__fields--off={kind !== 'duo'}>
+          <label class="option__field">
+            <span>Max price for the pair</span>
+            <span class="price">
+              <input
+                class="input"
+                type="number"
+                min="0"
+                step="0.01"
+                inputmode="decimal"
+                bind:value={duoPrice}
+                disabled={kind !== 'duo'}
+              />
+              <span class="price__unit">€</span>
+            </span>
+          </label>
+          {#if kind === 'duo' && error}
+            <p class="hint hint--warn">{error}</p>
+          {/if}
+        </div>
       </div>
-    </div>
+    {/if}
 
     <div class="option" class:option--active={kind === 'group'}>
       <label class="option__head">
