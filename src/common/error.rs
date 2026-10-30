@@ -38,6 +38,12 @@ pub enum AppError {
     UnsupportedTicketRequest,
     #[error("ticket request can no longer be modified")]
     TicketRequestLocked,
+    #[error("invalid shop credentials")]
+    InvalidShopCredentials,
+    #[error("shop credentials storage unavailable")]
+    ShopCredentialsUnavailable,
+    #[error("crypto error")]
+    Crypto(#[from] crate::common::crypto::CryptoError),
     #[error("telegram unavailable")]
     TelegramUnavailable,
 }
@@ -90,7 +96,20 @@ impl IntoResponse for AppError {
                 "ticket_request_locked",
                 "ticket request can no longer be modified",
             ),
-            AppError::Sqlx(_) | AppError::Migrate(_) | AppError::Argon2(_) => (
+            AppError::InvalidShopCredentials => (
+                StatusCode::BAD_REQUEST,
+                "invalid_shop_credentials",
+                "invalid shop credentials",
+            ),
+            AppError::ShopCredentialsUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "shop_credentials_unavailable",
+                "shop credentials storage is not available (set SECRET_KEY)",
+            ),
+            AppError::Sqlx(_)
+            | AppError::Migrate(_)
+            | AppError::Argon2(_)
+            | AppError::Crypto(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
                 "internal error",

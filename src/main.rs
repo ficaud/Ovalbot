@@ -4,6 +4,7 @@ use std::time::Duration;
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use ovalbot::app;
+use ovalbot::common::crypto::SecretKey;
 use ovalbot::common::db;
 use ovalbot::services::calendar::CalendarService;
 use ovalbot::services::channels::mailer;
@@ -87,12 +88,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Initialize the state
+    let shop_key = SecretKey::from_env();
+    if shop_key.is_none() {
+        tracing::warn!(
+            "SECRET_KEY not set: the shop-credentials vault is refused (set SECRET_KEY to enable)"
+        );
+    }
     let state = AppState {
         pool,
         mailer: mailer::from_env(),
         telegram: telegram::from_env(),
         telegram_config: telegram::config_from_env(),
         calendar,
+        shop_key,
     };
 
     // Register the Telegram webhook (best-effort, no-op when disabled)

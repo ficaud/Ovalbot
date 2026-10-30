@@ -158,7 +158,7 @@ async fn load_session(pool: &SqlitePool, session_id: &str) -> Result<Session, Ap
 /// `AppError::Sqlx` on query failure.
 async fn load_user(pool: &SqlitePool, user_id: i64) -> Result<User, AppError> {
     sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at, telegram_id, notify_email, notify_telegram FROM users WHERE id = ?",
+        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at, telegram_id, notify_email, notify_telegram, shop_email, shop_password_cipher FROM users WHERE id = ?",
     )
     .bind(user_id)
     .fetch_optional(pool)

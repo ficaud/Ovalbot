@@ -19,7 +19,7 @@ pub async fn list_users(
     _admin: AdminUser,
 ) -> Result<Json<Vec<UserView>>, AppError> {
     let users = sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at, telegram_id, notify_email, notify_telegram FROM users ORDER BY id",
+        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at, telegram_id, notify_email, notify_telegram, shop_email, shop_password_cipher FROM users ORDER BY id",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -66,7 +66,7 @@ pub async fn delete_user(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, AppError> {
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at, telegram_id, notify_email, notify_telegram FROM users WHERE id = ?",
+        "SELECT id, email, password_hash, status, role, created_at, activated_at, welcome_email_sent_at, telegram_id, notify_email, notify_telegram, shop_email, shop_password_cipher FROM users WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(&state.pool)

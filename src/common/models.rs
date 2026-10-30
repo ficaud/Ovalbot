@@ -77,6 +77,14 @@ pub struct User {
     pub notify_email: bool,
     /// Per-channel preference: receive match alerts by Telegram.
     pub notify_telegram: bool,
+    /// The billetterie account email the user saved for the (Phase 4B)
+    /// automatic add-to-cart; `None` until set. Readable back by its owner
+    /// (see [`UserView::shop_email`]), the password never is.
+    pub shop_email: Option<String>,
+    /// The AES-GCM encrypted billetterie password (`shop_password_cipher`
+    /// column, hex `nonce || cipher+tag`) — decrypted only inside the checkout
+    /// flow, never serialized anywhere.
+    pub shop_password_cipher: Option<String>,
 }
 
 /// A `sessions` row: a login cookie's server-side counterpart.
@@ -117,6 +125,10 @@ pub struct UserView {
     /// Mirror of the per-channel preference rows.
     pub notify_email: bool,
     pub notify_telegram: bool,
+    /// The saved billetterie account email, when the user configured the
+    /// shop-credentials vault (`None` = not configured; the password never
+    /// leaves the server in any form).
+    pub shop_email: Option<String>,
 }
 
 impl From<User> for UserView {
@@ -132,6 +144,7 @@ impl From<User> for UserView {
             telegram_linked: u.telegram_id.is_some(),
             notify_email: u.notify_email,
             notify_telegram: u.notify_telegram,
+            shop_email: u.shop_email,
         }
     }
 }
