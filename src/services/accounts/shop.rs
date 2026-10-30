@@ -4,7 +4,7 @@
 //! The clear password only ever exists in memory: written once (after
 //! AES-256-GCM encryption) by [`set_credentials`], read back decrypted by
 //! [`load_credentials`] for the Phase 4B checkout flow, never serialized.
-//! Without a [`SecretKey`] configured ([`AppState::shop_key`]), writes are
+//! Without a [`SecretKey`] configured (`AppState::shop_key`), writes are
 //! refused (fail-closed) and reads of an existing cipher fail too.
 
 use sqlx::SqlitePool;
