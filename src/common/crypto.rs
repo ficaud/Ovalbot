@@ -30,8 +30,8 @@ pub enum CryptoError {
 // ============================== KEY ==============================
 
 /// The AES-256 secret key derived once at startup from the `SECRET_KEY`
-/// passphrase. `None` in [`AppState`] means the shop-credentials feature is
-/// refused (fail-closed).
+/// passphrase. Holding no key means the shop-credentials feature is refused
+/// (fail-closed).
 #[derive(Debug, Clone, Copy)]
 pub struct SecretKey {
     /// The 32-byte SHA-256 of the passphrase.

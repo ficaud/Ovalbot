@@ -10,15 +10,18 @@
 //! 2. **Direct poll** (every `BOT_SCAN_INTERVAL_SECS`): fetch each stored
 //!    link directly ([`crate::services::bot::resale::links_to_scan`]), record the
 //!    seats durably in `ticket_offers`
-//!    ([`crate::services::tickets::record_offers`]) and alert the pending
-//!    `ticket_requests` requesters
+//!    ([`crate::services::tickets::record_offers`]), alert the pending
+//!    `ticket_requests` alerters
 //!    ([`crate::services::notifications::notify_new_seats`]) through email
-//!    and/or Telegram.
+//!    and/or Telegram, and match the listing against the pending **buying**
+//!    requests ([`crate::services::bot::purchases::plan_checkouts`]) to feed
+//!    the Phase 4B checkout orchestrator.
 //!
 //! `ticket_offers` is the single "new seats" source of truth: only the seats
 //! it actually inserts are logged, so a restart never re-announces old seats.
 
 pub mod matching;
+pub mod purchases;
 pub mod resale;
 
 use std::time::Duration;
@@ -318,6 +321,15 @@ async fn poll_one(state: &AppState, target: &ScanTarget) {
                 .collect(),
         };
         notifications::notify_new_seats(state, event_id, &alert).await;
+
+        // Purchase matching (Phase 4B): decide which pending buying requests
+        // the current listing serves. The plans are decisions only — the
+        // orchestrator (next step) executes them behind CART_ENABLED. Every
+        // skip/plan reason is logged inside; a matching failure never stops
+        // the poll.
+        if let Err(e) = purchases::plan_checkouts(&state.pool, i64::from(event_id), &seats).await {
+            tracing::warn!("purchase matching failed for match {event_id}: {e}");
+        }
     }
 
     mark_and_continue(state, target, status).await;
