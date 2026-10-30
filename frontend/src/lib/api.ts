@@ -169,3 +169,23 @@ export async function deleteRequest(matchId: number): Promise<void> {
   const res = await fetch(`/api/requests/${matchId}`, { method: 'DELETE' });
   if (!res.ok) throw new ApiError(res.status, 'Failed to remove ticket request');
 }
+
+/**
+ * Saves (or replaces) the user's billetterie credentials behind the bot's
+ * automatic add-to-cart. The server encrypts the password at rest and never
+ * returns it.
+ */
+export async function setShopCredentials(email: string, password: string): Promise<void> {
+  const res = await fetch('/api/shop/credentials', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password })
+  });
+  if (!res.ok) throw new ApiError(res.status, 'Failed to save shop credentials');
+}
+
+/** Clears the user's stored billetterie credentials (idempotent). */
+export async function deleteShopCredentials(): Promise<void> {
+  const res = await fetch('/api/shop/credentials', { method: 'DELETE' });
+  if (!res.ok) throw new ApiError(res.status, 'Failed to clear shop credentials');
+}

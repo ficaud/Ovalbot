@@ -19,7 +19,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::routes::{
     admin, auth as auth_routes, calendar as calendar_routes, notifications as notifications_routes,
-    telegram as telegram_routes, tickets as tickets_routes,
+    shop as shop_routes, telegram as telegram_routes, tickets as tickets_routes,
 };
 use crate::services::state::AppState;
 
@@ -69,6 +69,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/telegram/link",
             post(telegram_routes::link).delete(telegram_routes::unlink),
+        )
+        .route(
+            "/api/shop/credentials",
+            put(shop_routes::set_credentials).delete(shop_routes::clear_credentials),
         )
         .route("/api/telegram/webhook", post(telegram_routes::webhook))
         .route("/api/admin/users", get(admin::list_users))

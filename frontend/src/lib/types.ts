@@ -11,6 +11,8 @@ export interface UserView {
   telegram_linked: boolean;
   notify_email: boolean;
   notify_telegram: boolean;
+  /** The saved billetterie email for the bot's automatic add-to-cart (null = not configured). */
+  shop_email: string | null;
 }
 
 export interface VersionInfo {

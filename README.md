@@ -105,6 +105,7 @@ The backend reads these environment variables:
 | `DATABASE_URL` | `sqlite://ovalbot.db` | SQLite connection string. |
 | `STATIC_DIR` | `frontend/build` | Directory holding the built SvelteKit frontend. |
 | `TEMPLATE_DIR` | `templates` | Directory holding the HTML email templates. |
+| `SECRET_KEY` | *(empty)* | Server passphrase for the per-user shop-credentials vault (AES-256-GCM key derived via SHA-256). Required to save billetterie credentials (fail-closed when absent). |
 | `RESEND_ENABLED` | `false` | Set `true` to send emails via Resend (welcome + match alerts). |
 | `RESEND_API_KEY` | *(empty)* | Resend API key, required when `RESEND_ENABLED=true` (See more on [resend](https://resend.com/)) |
 | `RESEND_FROM` | `OvalBot <onboarding@resend.dev>` | Sender address for outgoing emails. |

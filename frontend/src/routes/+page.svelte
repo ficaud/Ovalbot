@@ -19,6 +19,7 @@
     unsubscribe
   } from '#lib/api';
   import NotificationSettingsModal from '#lib/components/NotificationSettingsModal.svelte';
+  import ShopCredentialsModal from '#lib/components/ShopCredentialsModal.svelte';
   import TicketRequestModal from '#lib/components/TicketRequestModal.svelte';
 
   let { data }: { data: PageData } = $props();
@@ -33,6 +34,7 @@
   let statuses = $state<Record<number, TicketRequestStatus>>({});
 
   let settingsModal: ReturnType<typeof NotificationSettingsModal> | undefined;
+  let shopModal: ReturnType<typeof ShopCredentialsModal> | undefined;
   let requestModal: ReturnType<typeof TicketRequestModal> | undefined;
 
   // The tickets bot currently only scrapes the Stade Rochelais billetterie
@@ -262,6 +264,24 @@
         Notification settings
       </button>
     </div>
+
+    <div class="card">
+      <h3>Bot billetterie account</h3>
+      {#if data.user.shop_email}
+        <p class="muted">
+          Connected as <strong>{data.user.shop_email}</strong> — the bot adds matching resale seats
+          to your cart and alerts you to pay.
+        </p>
+      {:else}
+        <p class="muted">
+          Store your club's ticketing credentials so the bot can buy for you (automatic
+          add-to-cart, you pay in your cart when alerted).
+        </p>
+      {/if}
+      <button class="btn btn-secondary" type="button" onclick={() => shopModal?.open()}>
+        {data.user.shop_email ? 'Manage billetterie account' : 'Connect billetterie account'}
+      </button>
+    </div>
   {/if}
 </section>
 
@@ -270,6 +290,11 @@
   telegramLinked={data.user.telegram_linked}
   notifyEmail={data.user.notify_email}
   notifyTelegram={data.user.notify_telegram}
+/>
+
+<ShopCredentialsModal
+  bind:this={shopModal}
+  shopEmail={data.user.shop_email}
 />
 
 <TicketRequestModal

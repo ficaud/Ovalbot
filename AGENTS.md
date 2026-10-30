@@ -2,6 +2,22 @@
 
 Development notes kept up to date by the agent as work progresses.
 
+## Journal
+
+### 2026-10-30 — Phase 4B étape 2 : per-user encrypted shop credentials
+
+- Goal: users can store their billetterie (shop) credentials so the Phase 4B checkout ([`ShopSession::login`](bot/parser/src/interface/curl/checkout.rs), étape 1) can act in their own basket. Encrypted at rest, per user, set/cleared from the frontend. No checkout wiring yet (étape 3–4).
+- New `src/common/crypto.rs`: `SecretKey` (`from_passphrase` — SHA-256 of the `SECRET_KEY` passphrase → AES-256 key; `from_env` treats an absent **or blank** passphrase as no key, since compose sets `SECRET_KEY: ${SECRET_KEY:-}` — an empty source would silently be a publicly derivable key), free fns `encrypt`/`decrypt` — AES-256-GCM, fresh 12-byte random nonce per call, storage format `hex(nonce) || hex(cipher+tag)` (nonce split at 24 hex chars). `aes-gcm 0.10` + `sha2 0.10` added; NOTE: `Nonce::from_slice` is deprecated in this generic-array generation → build `<[u8; 12]>::try_from(vec)` and pass `&Nonce::from(arr)`. 7 unit tests (roundtrip, per-call nonce freshness, hex shape, wrong key / tampered tag, malformed storage, derivation distinctness).
+- Migration `0013_add_shop_credentials.sql`: `users.shop_email` + `users.shop_password_cipher` (both `TEXT` NULL). `User` model gains both fields (cipher never serialized), `UserView` gains `shop_email: Option<String>` (mirrors the Telegram pattern: the memorable identifier is readable back by its owner, the secret never is) → all 6 `query_as::<User>` SELECTs updated (routes/auth, routes/admin ×2, services/auth, services/waitlist, plus the one in the waitlist **test** that hand-writes the SELECT — `ColumnNotFound` there was the last failure).
+- New `src/services/accounts/shop.rs`: `ShopCredentials {email, password}` (decrypted), `set_credentials(pool, user_id, email, password, key: Option<&SecretKey>)` (encrypts then UPDATEs; `None` key → `AppError::ShopCredentialsUnavailable`, fail-closed: nothing half-stored), `load_credentials(...)` → `None` when unset, decrypt-mismatch → `AppError::Crypto` (500 internal — a rotated `SECRET_KEY` simply cannot read old ciphers), `clear_credentials` (both NULL). Routes-level validation: non-blank email containing `@`, non-empty password ≤ 1024 → else `AppError::InvalidShopCredentials` (400).
+- `AppError` gain `InvalidShopCredentials` (400), `ShopCredentialsUnavailable` (503 `shop_credentials_unavailable`), `Crypto(#[from] CryptoError)` (internal 500). `AppState` gains `shop_key: Option<SecretKey>`, built in `main.rs` from `SECRET_KEY` with a WARN when absent. Routes `src/routes/shop.rs`: `PUT /api/shop/credentials` (ActiveUser, validates + encrypts, 204) / `DELETE` (clears, idempotent 204); wired in `lib.rs` on one path.
+- Frontend: `UserView.shop_email` in `types.ts`, `setShopCredentials`/`deleteShopCredentials` in `api.ts`, new `ShopCredentialsModal.svelte` (email prefilled from `/api/me`, password always starts empty with a "retype to change" placeholder, email/password inline validation gating Save, "Remove credentials" only when configured, `invalidateAll()` refresh) + a "Bot billetterie account" card on the home page showing the connected email or the pitch. Success/error notices are a separate `.field` block like the Telegram modal.
+- Gotchas: `tests/common` gained `build_state` (single constructor) + the `shop_key: Some(...)
+ test default`, `test_state_without_shop_key` for the 503 test; `tests/notifications.rs` builds `AppState` directly and needed the new field too. Local smoke helpers must wrap the session token as `format!("session={...}")` (raw token in the `Cookie` header → silent 401).
+- Smoke (live): `SECRET_KEY=...` → PUT 204 (me exposes `shop_email`, no `password`/`cipher` field anywhere in the JSON), DB row = hex cipher (`86` chars for a 15-byte password), second PUT replaces in place, invalid email → 400 `invalid_shop_credentials`, DELETE 204 ×2 → `shop_email: null`; without `SECRET_KEY` → WARN at startup + `503 shop_credentials_unavailable`; with a *rotated* key → PUT works again (the new key takes over; old ciphers become undecryptable — the vault is re-savable by the user, no fail-2xx). Disposable DB and logs cleaned up.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace --jobs 2` (19 suites green, +12 shop tests: 7 service — roundtrip/replace/clear/rotated-key/no-key write/read — and 5 route), `npm run check` (0/0) + `npm run build`. README/compose/`.env.example` gained the `SECRET_KEY` row (generate with `openssl rand -base64 48`).
+- Next (étape 3): matcher `src/services/bot/purchases.rs` (Single ≤ max_price_cents; Group ≥ N pelouse via `SeatComposition.category`; excludes `kind IN ('notify','duo')` at SQL level; oldest `created_at` wins on a contested seat; no credentials → skip + debug log) + hide the Duo radio in the request modal.
+
 ## Project
 
 Ticket resale bot for Stade Rochelais home games + a simple website (2 pages).
@@ -10,9 +26,9 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 ## Structure
 
 - `src/` : Rust backend — Axum server (`main.rs`) + CLI (`bin/create_admin.rs`).
-  - `src/common/` : foundations (`error`, `models`, `time`, `db`).
+  - `src/common/` : foundations (`error`, `models`, `time`, `db`, `crypto`).
   - `src/services/` : business + integrations, en sous-groupes — `accounts/` (`auth`, `waitlist`, `email`), `channels/` (`mailer`, `telegram`, `alerts`), `bot/` (`mod` = scan loop, `matching`, `resale`) + racine (`notifications`, `tickets`, `calendar`, `state`).
-  - `src/routes/` : HTTP layer (Axum handlers), one file per resource (`admin`, `auth`, `calendar`, `notifications`, `telegram`, `tickets`).
+  - `src/routes/` : HTTP layer (Axum handlers), one file per resource (`admin`, `auth`, `calendar`, `notifications`, `shop`, `telegram`, `tickets`).
 - `migrations/` : SQL migrations (sqlx).
 - `frontend/` : SvelteKit (Svelte 5, `adapter-static`).
 - `doc/specs/` : specifications (`cdc.md`) + per-phase specs (`phase1.md`).

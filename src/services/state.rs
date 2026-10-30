@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use sqlx::SqlitePool;
 
+use crate::common::crypto::SecretKey;
 use crate::services::calendar::CalendarService;
 use crate::services::channels::mailer::Mailer;
 use crate::services::channels::telegram::{Telegram, TelegramConfig};
@@ -26,4 +27,8 @@ pub struct AppState {
     pub telegram_config: TelegramConfig,
     /// Shared in-memory calendar cache used by reads and the bot scanner.
     pub calendar: Arc<CalendarService>,
+    /// AES key for the shop-credentials vault, derived from `SECRET_KEY` at
+    /// startup; `None` refuses the credentials routes (fail-closed) and later
+    /// the whole checkout feature.
+    pub shop_key: Option<SecretKey>,
 }

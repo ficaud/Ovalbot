@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use calendar::{Change, TeamType};
 use common::{insert_active_user, RecordingMailer, RecordingTelegram};
+use ovalbot::common::crypto::SecretKey;
 use ovalbot::services::calendar::CalendarService;
 use ovalbot::services::channels::alerts::{SeatAlert, SeatBrief};
 use ovalbot::services::channels::mailer::Mailer;
@@ -47,6 +48,7 @@ fn state(pool: SqlitePool, mailer: Arc<dyn Mailer>, telegram: Arc<dyn Telegram>)
         telegram,
         telegram_config: TelegramConfig::default(),
         calendar: Arc::new(CalendarService::new()),
+        shop_key: Some(SecretKey::from_passphrase("test-secret")),
     }
 }
 
