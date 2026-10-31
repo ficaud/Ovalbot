@@ -479,7 +479,34 @@ pub struct ShopSession {
     /// The ticketing base URL the session belongs to.
     base: String,
     /// The session cookie jar file (temp file, removed on drop).
-    jar: PathBuf,
+    jar: SessionJar,
+}
+
+/// One session's cookie jar temp file, removed on drop.
+///
+/// Created before the first request of a login so that **every** path —
+/// including a refused, queued or failed login — deletes the file; nothing is
+/// left behind in the temp directory.
+#[derive(Debug)]
+struct SessionJar(PathBuf);
+
+impl SessionJar {
+    /// Creates a fresh (not yet written) jar path for this process.
+    fn fresh() -> Self {
+        Self(fresh_jar_path())
+    }
+
+    /// The jar path handed to curl.
+    fn path(&self) -> &PathBuf {
+        &self.0
+    }
+}
+
+impl Drop for SessionJar {
+    /// Deletes the jar file (whatever curl wrote into it).
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 impl ShopSession {
@@ -500,7 +527,7 @@ impl ShopSession {
     /// [`CheckoutError::Network`] on transport failure
     pub fn login(base: &str, email: &str, password: &str) -> Result<Self, CheckoutError> {
         log::info!("[CHECKOUT] shop login started");
-        let jar = fresh_jar_path();
+        let jar = SessionJar::fresh();
         let headers = |referer: String| -> Vec<String> {
             vec![
                 "Content-Type: application/x-www-form-urlencoded".to_string(),
@@ -509,7 +536,7 @@ impl ShopSession {
         };
 
         // Step 1: fetch the login page and extract the initial form id.
-        let (final_url, page) = fetch_with_jar(&format!("{base}{LOGIN_PATH}"), Some(&jar))?;
+        let (final_url, page) = fetch_with_jar(&format!("{base}{LOGIN_PATH}"), Some(jar.path()))?;
         if is_waiting_queue(&final_url, &page) {
             return Err(CheckoutError::WaitingQueue);
         }
@@ -527,7 +554,7 @@ impl ShopSession {
         let step2 = post_form(
             &format!("{base}{LOGIN_PATH}"),
             &email_body,
-            Some(&jar),
+            Some(jar.path()),
             &headers(format!("Referer: {base}{LOGIN_PATH}")),
         )?;
         if step2.contains("/register") {
@@ -550,12 +577,13 @@ impl ShopSession {
         let _ = post_form(
             &format!("{base}{LOGIN_PATH}"),
             &password_body,
-            Some(&jar),
+            Some(jar.path()),
             &headers(format!("Referer: {base}{LOGIN_PATH}")),
         )?;
 
         // Step 4: verify the session on the basket page.
-        let (final_url, basket) = fetch_with_jar(&format!("{base}{BASKET_PATH}"), Some(&jar))?;
+        let (final_url, basket) =
+            fetch_with_jar(&format!("{base}{BASKET_PATH}"), Some(jar.path()))?;
         if is_waiting_queue(&final_url, &basket) {
             return Err(CheckoutError::WaitingQueue);
         }
@@ -591,7 +619,7 @@ impl ShopSession {
     /// [`CheckoutError::Network`] on transport failure
     pub fn add_seat(&self, resale_url: &str, seat: &SeatId) -> Result<(), CheckoutError> {
         // Step 1: refresh the page within the session (tokens are per render).
-        let (final_url, html) = fetch_with_jar(resale_url, Some(&self.jar))?;
+        let (final_url, html) = fetch_with_jar(resale_url, Some(self.jar.path()))?;
         if is_waiting_queue(&final_url, &html) {
             return Err(CheckoutError::WaitingQueue);
         }
@@ -616,7 +644,12 @@ impl ShopSession {
             self.base,
             context.ajax_url.split('?').next().unwrap_or("")
         );
-        let response = post_form(&url, &body, Some(&self.jar), &add_to_cart_headers(&referer))?;
+        let response = post_form(
+            &url,
+            &body,
+            Some(self.jar.path()),
+            &add_to_cart_headers(&referer),
+        )?;
         log::info!("[CHECKOUT] add-to-cart response: {} bytes", response.len());
 
         // Step 4: detect the stale/invalid-session rejection.
@@ -627,16 +660,6 @@ impl ShopSession {
             return Err(CheckoutError::ExpiredForm);
         }
         Ok(())
-    }
-}
-
-impl Drop for ShopSession {
-    /// Deletes the session cookie jar (nothing is left behind, even after a
-    /// failed login thanks to early drops).
-    fn drop(&mut self) {
-        if self.jar.try_exists().is_ok_and(|exists| exists) {
-            let _ = std::fs::remove_file(&self.jar);
-        }
     }
 }
 
@@ -912,7 +935,10 @@ mod tests {
             "password step: {log}"
         );
         assert!(log.contains("GET /fr/basket"), "basket check: {log}");
-        assert!(session.jar.exists(), "cookie jar kept alive while in use");
+        assert!(
+            session.jar.path().exists(),
+            "cookie jar kept alive while in use"
+        );
     }
 
     // A basket page without the authenticated markers fails the login.
@@ -1104,11 +1130,23 @@ mod tests {
                 page(BASKET_AUTHENTICATED, 200),
             ]);
             let session = ShopSession::login(&base, "user@example.com", "secret").expect("login");
-            let jar = session.jar.clone();
+            let jar = session.jar.path().clone();
             assert!(jar.exists());
             drop(session);
             jar
         };
         assert!(!jar.exists(), "cookie jar deleted on drop");
+    }
+
+    // The guard removes the temp file on drop: every failed login relies on it
+    // (no session is built, so nothing else would clean up).
+    #[test]
+    fn jar_guard_deletes_the_file_on_drop() {
+        let jar = SessionJar::fresh();
+        std::fs::write(jar.path(), b"cookies").expect("write jar");
+        assert!(jar.path().exists());
+        let path = jar.path().clone();
+        drop(jar);
+        assert!(!path.exists(), "cookie jar deleted on drop");
     }
 }

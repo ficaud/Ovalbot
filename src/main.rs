@@ -101,6 +101,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cart_dry_run = ovalbot::services::bot::env_flag("CART_DRY_RUN", true);
     if cart_enabled {
         tracing::info!(cart_dry_run, "cart checkout enabled");
+        // A cart alert is the only signal that seats are waiting: warn when
+        // the checkout is enabled while both real transports are off (the
+        // no-op ones report success, so nothing would ever reach the user).
+        let resend = std::env::var("RESEND_ENABLED").is_ok_and(|v| v == "true");
+        let telegram = std::env::var("TELEGRAM_ENABLED").is_ok_and(|v| v == "true");
+        if !resend && !telegram {
+            tracing::warn!(
+                "CART_ENABLED is on but neither RESEND_ENABLED nor TELEGRAM_ENABLED is true: \
+                 cart alerts would be silently dropped"
+            );
+        }
     }
     let state = AppState {
         pool,
