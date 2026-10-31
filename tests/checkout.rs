@@ -6,10 +6,13 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{insert_active_user, RecordingMailer, RecordingShop, RecordingTelegram, SeatOutcome};
+use common::{
+    insert_active_user, LoginOutcome, RecordingMailer, RecordingShop, RecordingTelegram,
+    SeatOutcome,
+};
 use ovalbot::common::crypto::SecretKey;
 use ovalbot::services::accounts::shop::set_credentials;
-use ovalbot::services::bot::checkout::{execute_plans, CartShop, CheckoutTarget};
+use ovalbot::services::bot::checkout::{execute_plans, CartShop, CheckoutTarget, CART_URL};
 use ovalbot::services::bot::purchases::PlanCheckout;
 use ovalbot::services::calendar::CalendarService;
 use ovalbot::services::channels::telegram::TelegramConfig;
@@ -281,6 +284,57 @@ async fn unreadable_credentials_skip_the_plan(pool: SqlitePool) {
     assert_eq!(status(&pool, user).await, TicketStatus::Pending);
 }
 
+// A dry run tolerates an unreadable vault (missing/rotated SECRET_KEY): it
+// only reports the credential state, never touches the shop.
+#[sqlx::test]
+async fn dry_run_without_vault_stays_quiet(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(
+        &pool,
+        user,
+        MATCH,
+        &TicketRequestInput::Single {
+            quantity: 1,
+            max_price_cents: 5000,
+        },
+    )
+    .await
+    .unwrap();
+    let key = SecretKey::from_passphrase("the-key-used-to-store");
+    set_credentials(&pool, user, "shop@example.com", "shop-pw", Some(&key))
+        .await
+        .unwrap();
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let shop = Arc::new(RecordingShop::new());
+    let mut state = state(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        shop.clone(),
+        true,
+    );
+    state.shop_key = None;
+
+    execute_plans(
+        &state,
+        &target(),
+        vec![plan(
+            user,
+            TicketKind::Single,
+            1,
+            vec![seat("s1", "45.00", "CATÉGORIE 3")],
+        )],
+    )
+    .await;
+
+    assert!(shop.logins.lock().unwrap().is_empty());
+    assert!(mailer.cart_alerts.lock().unwrap().is_empty());
+    assert!(telegram.messages.lock().unwrap().is_empty());
+    assert_eq!(status(&pool, user).await, TicketStatus::Pending);
+}
+
 // ============================== HAPPY PATHS ==============================
 
 // A wave that completes a Single order: claim recorded, request accepted,
@@ -339,6 +393,7 @@ async fn completed_wave_claims_accepts_and_notifies(pool: SqlitePool) {
     assert_eq!(mails[0].1.added, 1);
     assert_eq!(mails[0].1.total, 1);
     assert!(!mails[0].1.failed);
+    assert_eq!(mails[0].1.cart_link, CART_URL);
     let messages = telegram.messages.lock().unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].0, "chat-42");
@@ -508,8 +563,8 @@ async fn seat_gone_is_tolerated(pool: SqlitePool) {
     assert!(!mails[0].1.failed);
 }
 
-// A hard add error closes the request as failed, notifying what is already in
-// the cart.
+// A terminal add error closes the request as failed, notifying what is already
+// in the cart.
 #[sqlx::test]
 async fn hard_add_failure_marks_failed(pool: SqlitePool) {
     let user = insert_active_user(&pool, "a@example.com").await;
@@ -532,7 +587,7 @@ async fn hard_add_failure_marks_failed(pool: SqlitePool) {
     let mailer = Arc::new(RecordingMailer::new());
     let telegram = Arc::new(RecordingTelegram::new());
     let shop = Arc::new(
-        RecordingShop::new().with_outcomes(vec![SeatOutcome::Added, SeatOutcome::HardFail]),
+        RecordingShop::new().with_outcomes(vec![SeatOutcome::Added, SeatOutcome::MissingContext]),
     );
     let state = state(
         pool.clone(),
@@ -560,6 +615,113 @@ async fn hard_add_failure_marks_failed(pool: SqlitePool) {
     assert_eq!(mails.len(), 1);
     assert!(mails[0].1.failed);
     assert_eq!(mails[0].1.added, 1);
+}
+
+// An expired form mid-wave postpones the rest: what was added is reported and
+// the request keeps waiting (no terminal failure).
+#[sqlx::test]
+async fn expired_form_keeps_request_pending(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(
+        &pool,
+        user,
+        MATCH,
+        &TicketRequestInput::Single {
+            quantity: 2,
+            max_price_cents: 5000,
+        },
+    )
+    .await
+    .unwrap();
+    profile(&pool, user, true, None).await;
+    let s1 = seat("s1", "45.00", "CATÉGORIE 3");
+    let s2 = seat("s2", "45.00", "CATÉGORIE 3");
+    offered(&pool, &[&s1, &s2]).await;
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let shop = Arc::new(
+        RecordingShop::new().with_outcomes(vec![SeatOutcome::Added, SeatOutcome::ExpiredForm]),
+    );
+    let state = state(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        shop.clone(),
+        false,
+    );
+
+    execute_plans(
+        &state,
+        &target(),
+        vec![plan(
+            user,
+            TicketKind::Single,
+            2,
+            vec![s1.clone(), s2.clone()],
+        )],
+    )
+    .await;
+
+    assert_eq!(claimed(&pool, user).await, 1);
+    assert_eq!(status(&pool, user).await, TicketStatus::Pending);
+    let mails = mailer.cart_alerts.lock().unwrap();
+    assert_eq!(mails.len(), 1);
+    assert_eq!(mails[0].1.added, 1);
+    assert!(!mails[0].1.failed);
+}
+
+// A transport error mid-wave is retried later too: same silent postponement.
+#[sqlx::test]
+async fn network_error_keeps_request_pending(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(
+        &pool,
+        user,
+        MATCH,
+        &TicketRequestInput::Single {
+            quantity: 2,
+            max_price_cents: 5000,
+        },
+    )
+    .await
+    .unwrap();
+    profile(&pool, user, true, None).await;
+    let s1 = seat("s1", "45.00", "CATÉGORIE 3");
+    let s2 = seat("s2", "45.00", "CATÉGORIE 3");
+    offered(&pool, &[&s1, &s2]).await;
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let shop = Arc::new(
+        RecordingShop::new().with_outcomes(vec![SeatOutcome::Added, SeatOutcome::Network]),
+    );
+    let state = state(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        shop.clone(),
+        false,
+    );
+
+    execute_plans(
+        &state,
+        &target(),
+        vec![plan(
+            user,
+            TicketKind::Single,
+            2,
+            vec![s1.clone(), s2.clone()],
+        )],
+    )
+    .await;
+
+    assert_eq!(claimed(&pool, user).await, 1);
+    assert_eq!(status(&pool, user).await, TicketStatus::Pending);
+    let mails = mailer.cart_alerts.lock().unwrap();
+    assert_eq!(mails.len(), 1);
+    assert_eq!(mails[0].1.added, 1);
+    assert!(!mails[0].1.failed);
 }
 
 // A refused login is terminal: the request fails and the user is told.
@@ -609,6 +771,95 @@ async fn login_failure_marks_failed(pool: SqlitePool) {
     assert!(mails[0].1.failed);
     assert_eq!(mails[0].1.added, 0);
     assert_eq!(telegram.messages.lock().unwrap().len(), 1);
+}
+
+// A waiting queue at login is site churn: the wave gives up quietly, nothing is
+// claimed, nobody is notified, and the request stays pending.
+#[sqlx::test]
+async fn login_waiting_queue_keeps_request_pending(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(
+        &pool,
+        user,
+        MATCH,
+        &TicketRequestInput::Single {
+            quantity: 1,
+            max_price_cents: 5000,
+        },
+    )
+    .await
+    .unwrap();
+    profile(&pool, user, true, Some("chat-7")).await;
+    let s1 = seat("s1", "45.00", "CATÉGORIE 3");
+    offered(&pool, &[&s1]).await;
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let shop = Arc::new(RecordingShop::new().unavailable(LoginOutcome::Queue));
+    let state = state(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        shop.clone(),
+        false,
+    );
+
+    execute_plans(
+        &state,
+        &target(),
+        vec![plan(user, TicketKind::Single, 1, vec![s1.clone()])],
+    )
+    .await;
+
+    assert_eq!(shop.logins.lock().unwrap().len(), 1);
+    assert_eq!(claimed(&pool, user).await, 0);
+    assert_eq!(status(&pool, user).await, TicketStatus::Pending);
+    assert!(mailer.cart_alerts.lock().unwrap().is_empty());
+    assert!(telegram.messages.lock().unwrap().is_empty());
+}
+
+// A network error at login is retried later too: same pending, same silence.
+#[sqlx::test]
+async fn login_network_error_keeps_request_pending(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(
+        &pool,
+        user,
+        MATCH,
+        &TicketRequestInput::Single {
+            quantity: 1,
+            max_price_cents: 5000,
+        },
+    )
+    .await
+    .unwrap();
+    profile(&pool, user, true, Some("chat-7")).await;
+    let s1 = seat("s1", "45.00", "CATÉGORIE 3");
+    offered(&pool, &[&s1]).await;
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let shop = Arc::new(RecordingShop::new().unavailable(LoginOutcome::Network));
+    let state = state(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        shop.clone(),
+        false,
+    );
+
+    execute_plans(
+        &state,
+        &target(),
+        vec![plan(user, TicketKind::Single, 1, vec![s1.clone()])],
+    )
+    .await;
+
+    assert_eq!(shop.logins.lock().unwrap().len(), 1);
+    assert_eq!(claimed(&pool, user).await, 0);
+    assert_eq!(status(&pool, user).await, TicketStatus::Pending);
+    assert!(mailer.cart_alerts.lock().unwrap().is_empty());
+    assert!(telegram.messages.lock().unwrap().is_empty());
 }
 
 // A wave where every seat vanished sends nothing (nothing to pay).

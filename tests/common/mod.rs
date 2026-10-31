@@ -107,19 +107,37 @@ pub enum SeatOutcome {
     Added,
     /// The seat disappeared from the resale page (retry-later churn).
     SeatGone,
-    /// The billetterie served its waiting queue.
+    /// The billetterie served its waiting queue (retry-later churn).
     WaitingQueue,
-    /// A terminal error (expired form / invalid session).
-    HardFail,
+    /// The POST was rejected as a stale form (retry-later churn).
+    ExpiredForm,
+    /// The page lost its add-to-cart machinery (resale closed, terminal).
+    MissingContext,
+    /// The transport failed (retry-later churn).
+    Network,
+}
+
+/// What the fake shop's `login` does.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum LoginOutcome {
+    /// The login succeeds and yields a scripted session.
+    #[default]
+    Accept,
+    /// The credentials are refused (terminal for the request).
+    Refused,
+    /// The shop served its waiting queue (retry-later churn).
+    Queue,
+    /// The transport failed (retry-later churn).
+    Network,
 }
 
 /// Fake [`CartShop`]: records logins and added seats, replays a scripted
-/// per-seat outcome queue, and can refuse logins outright.
+/// per-seat outcome queue, and can script the login outcome.
 pub struct RecordingShop {
     /// Emails of every `login` attempt (order = call order).
     pub logins: Mutex<Vec<String>>,
-    /// When `true`, every login answers `CheckoutError::Login`.
-    pub login_fails: Mutex<bool>,
+    /// What every login answers.
+    pub login_outcome: Mutex<LoginOutcome>,
     /// Per-seat outcomes consumed in order (defaults to [`SeatOutcome::Added`]
     /// once the queue is empty).
     pub outcomes: Mutex<VecDeque<SeatOutcome>>,
@@ -132,7 +150,7 @@ impl RecordingShop {
     pub fn new() -> Self {
         Self {
             logins: Mutex::new(Vec::new()),
-            login_fails: Mutex::new(false),
+            login_outcome: Mutex::new(LoginOutcome::Accept),
             outcomes: Mutex::new(VecDeque::new()),
             added: Arc::new(Mutex::new(Vec::new())),
         }
@@ -144,9 +162,23 @@ impl RecordingShop {
         self
     }
 
-    /// Makes every login fail.
+    /// Makes every login answer `CheckoutError::Login` (a refusal).
     pub fn refusing(self) -> Self {
-        *self.login_fails.lock().unwrap() = true;
+        self.with_login(LoginOutcome::Refused)
+    }
+
+    /// Makes every login answer a retry-later outcome (queue / network).
+    pub fn unavailable(self, outcome: LoginOutcome) -> Self {
+        assert!(
+            matches!(outcome, LoginOutcome::Queue | LoginOutcome::Network),
+            "only retry-later outcomes are scriptable here"
+        );
+        self.with_login(outcome)
+    }
+
+    /// Sets the scripted login outcome.
+    fn with_login(self, outcome: LoginOutcome) -> Self {
+        *self.login_outcome.lock().unwrap() = outcome;
         self
     }
 }
@@ -164,8 +196,15 @@ impl CartShop for RecordingShop {
         _password: &str,
     ) -> Result<Box<dyn CartSession>, CheckoutError> {
         self.logins.lock().unwrap().push(email.to_string());
-        if *self.login_fails.lock().unwrap() {
-            return Err(CheckoutError::Login("fake refusal".to_string()));
+        match *self.login_outcome.lock().unwrap() {
+            LoginOutcome::Accept => {}
+            LoginOutcome::Refused => {
+                return Err(CheckoutError::Login("fake refusal".to_string()));
+            }
+            LoginOutcome::Queue => return Err(CheckoutError::WaitingQueue),
+            LoginOutcome::Network => {
+                return Err(CheckoutError::Network("fake outage".to_string()));
+            }
         }
         let outcomes = std::mem::take(&mut *self.outcomes.lock().unwrap());
         Ok(Box::new(RecordingSession {
@@ -185,7 +224,9 @@ impl CartSession for RecordingSession {
             }
             SeatOutcome::SeatGone => Err(CheckoutError::SeatGone),
             SeatOutcome::WaitingQueue => Err(CheckoutError::WaitingQueue),
-            SeatOutcome::HardFail => Err(CheckoutError::ExpiredForm),
+            SeatOutcome::ExpiredForm => Err(CheckoutError::ExpiredForm),
+            SeatOutcome::MissingContext => Err(CheckoutError::MissingContext),
+            SeatOutcome::Network => Err(CheckoutError::Network("fake outage".to_string())),
         }
     }
 }

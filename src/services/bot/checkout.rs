@@ -5,8 +5,9 @@
 //! Flow per plan (plans are executed strictly one after the other — the site
 //! cannot be driven concurrently and a single shop session at a time keeps the
 //! cart state coherent):
-//! 1. respect `CART_ENABLED` / `CART_DRY_RUN` (dry-run = decisions logged, no
-//!    login, no POST, no claim, no notification);
+//! 1. respect `CART_ENABLED` / `CART_DRY_RUN` (dry-run = decisions logged and
+//!    credential presence checked, no login, no POST, no claim, no
+//!    notification);
 //! 2. load the user's decrypted shop credentials ([`crate::services::accounts::shop`]);
 //!    a missing key (rotated `SECRET_KEY`) or missing credentials leaves the
 //!    request `pending` — nothing can be acted on;
@@ -18,12 +19,15 @@
 //!    (email + Telegram) — the 20-minute cart window makes every wave
 //!    actionable;
 //! 6. the request is closed `accepted` once the total is claimed, or `failed`
-//!    on a terminal add error (nothing is retried).
+//!    on a terminal error (refused login / lost add-to-cart context); shop
+//!    churn is retried on the next wave.
 //!
-//! SeatGone / WaitingQueue are normal resale churn: the seat is skipped, the
-//! wave continues with the others, and the request stays `pending` for the
-//! next new-seats wave. Only hard errors (login refused, expired form,
-//! network, missing add-to-cart context) end the request as `failed`.
+//! `SeatGone` / `WaitingQueue` are normal resale churn: the seat is skipped,
+//! the wave continues with the others, and the request stays `pending` for the
+//! next new-seats wave. `Network` and `ExpiredForm` are retried later too: the
+//! wave stops where it stands, whatever was already added is reported, and the
+//! request stays `pending`. Only a refused login or a lost add-to-cart context
+//! (resale closed) ends the request as `failed`.
 
 use async_trait::async_trait;
 use parser::core::seat::Seat;
@@ -60,8 +64,9 @@ pub trait CartShop: Send + Sync {
     /// Authenticates on the billetterie.
     ///
     /// # Errors
-    /// [`CheckoutError::Login`] when the credentials are refused, network /
-    /// waiting-queue errors otherwise.
+    /// [`CheckoutError::Login`] when the credentials are refused (terminal for
+    /// the request), [`CheckoutError::WaitingQueue`] / network errors when the
+    /// shop is momentarily unavailable (retried on a later wave).
     async fn login(
         &self,
         email: &str,
@@ -128,6 +133,23 @@ pub struct CheckoutTarget {
 
 // ============================== EXECUTION ==============================
 
+/// Whether a checkout error is environmental churn worth retrying on a later
+/// wave, rather than a reason to close the user's request.
+///
+/// `SeatGone` (seat taken by somebody else), `WaitingQueue` (shop under load),
+/// `Network` (transport hiccup) and `ExpiredForm` (stale Drupal form or
+/// session) all leave the request `pending`: the next new-seats wave logs in
+/// again and re-adds whatever is still listed.
+fn is_retryable(error: &CheckoutError) -> bool {
+    matches!(
+        error,
+        CheckoutError::SeatGone
+            | CheckoutError::WaitingQueue
+            | CheckoutError::Network(_)
+            | CheckoutError::ExpiredForm
+    )
+}
+
 /// Executes a wave of plans, strictly one after the other.
 ///
 /// # Arguments
@@ -151,12 +173,21 @@ async fn execute_plan(state: &AppState, target: &CheckoutTarget, plan: &PlanChec
     }
 
     if state.cart_dry_run {
+        // Presence only: the vault is read so a dry run tells whether a real
+        // run could even log in, but nothing is sent to the shop.
+        let credentials =
+            match shop::load_credentials(&state.pool, user_id, state.shop_key.as_ref()).await {
+                Ok(Some(_)) => "present",
+                Ok(None) => "missing",
+                Err(_) => "unreadable",
+            };
         tracing::info!(
             user_id,
             match_id,
             kind = plan.kind.as_str(),
             seats = plan.seats.len(),
             total = plan.total,
+            credentials,
             "checkout dry-run: would add seats to the user's cart (CART_DRY_RUN)"
         );
         return;
@@ -191,6 +222,12 @@ async fn execute_plan(state: &AppState, target: &CheckoutTarget, plan: &PlanChec
         .await
     {
         Ok(session) => session,
+        Err(e) if is_retryable(&e) => {
+            // Shop unavailable (queue, transport): the seats are not the
+            // problem, the next wave tries again. Nothing is sent.
+            tracing::debug!(user_id, match_id, "checkout login postponed: {e}");
+            return;
+        }
         Err(e) => {
             tracing::warn!(user_id, match_id, "checkout login failed: {e}");
             // Login refused: nothing can be added, this is terminal.
@@ -241,6 +278,13 @@ async fn execute_plan(state: &AppState, target: &CheckoutTarget, plan: &PlanChec
                     ticket_id = %seat.id.ticket_id,
                     "checkout: seat skipped (resale churn)"
                 );
+            }
+            Err(e) if is_retryable(&e) => {
+                // Network / expired form: the shop is momentarily unusable.
+                // Stop here; what was already added stays reported, and the
+                // request keeps waiting for the next wave.
+                tracing::debug!(user_id, match_id, "checkout wave postponed: {e}");
+                break;
             }
             Err(e) => {
                 tracing::warn!(user_id, match_id, "checkout add failed: {e}");
