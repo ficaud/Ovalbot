@@ -4,6 +4,20 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-10-31 — Durcissement du checkout avant le premier run réel
+
+- Goal: user asked whether the first dry run was green enough to go live. The logs only proved scan → matching (`checkout disabled (CART_ENABLED): purchase plans logged only`), and a dry run returns before `load_credentials`, so credentials/login/add-to-cart had never been exercised against the real site. Decision: harden the error semantics and the staging signals first.
+- `src/services/bot/checkout.rs`:
+  - `fn is_retryable(&CheckoutError)` → `SeatGone | WaitingQueue | Network | ExpiredForm`. Only a **refused login** (`CheckoutError::Login`) or a **lost add-to-cart context** (`MissingContext`) now closes a request `failed`; everything else leaves it `pending` for the next new-seats wave, with no alert (a wave that added nothing sends nothing).
+  - Login: retryable errors log `checkout login postponed` (debug) and return; add: `SeatGone`/`WaitingQueue` still skip the seat and continue, `Network`/`ExpiredForm` stop the wave quietly (`checkout wave postponed`) — whatever entered the cart is still reported with `failed = false`, and the completion check runs as usual.
+  - Dry run now also reads the vault (presence only) and logs `credentials=present|missing|unreadable`, so the staging run validates `SECRET_KEY` + stored shop credentials before any live attempt; `CART_URL` left untouched (user-validated `https://billetterie.staderochelais.com`, no `/fr/basket`).
+- `src/main.rs`: when `CART_ENABLED=true` and neither `RESEND_ENABLED` nor `TELEGRAM_ENABLED` is `true`, log a WARN ("cart alerts would be silently dropped") — the no-op transports return `Ok`, so `emailed/messaged` alone is not proof of delivery.
+- `bot/parser/src/interface/curl/checkout.rs`: new `SessionJar` RAII guard created at the start of `ShopSession::login` (replaces `Drop for ShopSession`), so a refused/queued/failed login no longer leaks an empty cookie jar in the temp dir (84 stale files observed). Accessor `SessionJar::path()` keeps the curl signatures unchanged.
+- Tests: `tests/common` — `RecordingShop.login_outcome: Mutex<LoginOutcome>` (`Accept|Refused|Queue|Network`) replaces `login_fails: bool`, `SeatOutcome::HardFail` split into `ExpiredForm` (retry) / `MissingContext` (terminal) + `Network`; helpers `refusing()` / `unavailable(outcome)`. `tests/checkout.rs` 11 → 16: `expired_form_keeps_request_pending`, `network_error_keeps_request_pending`, `login_waiting_queue_keeps_request_pending`, `login_network_error_keeps_request_pending`, `dry_run_without_vault_stays_quiet` (missing key tolerated), `hard_add_failure_marks_failed` switched to `MissingContext`, completed-wave alert asserts `cart_link == CART_URL`. Parser: `jar_guard_deletes_the_file_on_drop` + the session-drop test adapted to the guard (69 tests).
+- Docs: README (`CART_DRY_RUN` row + one sentence on the retry/failed split), CHANGELOG `[0.4.0]`, this journal. No migration, no frontend change.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps` (0 warnings), `cargo test --workspace --jobs 2` all green.
+- Next: staged live run — `CART_ENABLED=true CART_DRY_RUN=true` (expect `cart checkout enabled cart_dry_run=true` + `checkout dry-run: would add seats … credentials=present`), verify a real channel for the requester, then `CART_DRY_RUN=false` and pay within the 20-minute cart window.
+
 ### 2026-10-30 — Phase 4B étapes 4+5 : orchestrateur de checkout + notifications de vague
 
 - Goal: turn the matcher's plans into **real add-to-cart calls in each user's own shop cart**, behind two flags, and tell the user at **every wave** (« X/N places au panier → va payer ») since a cart only lives ~20 minutes. User-validated: SeatGone/WaitingQueue are tolerated churn (skip the seat, request stays `pending`), hard errors mark `failed` (no retry), unreadable credentials skip the plan, and the wave notification ships with the orchestrator (étapes 4 and 5 merged).
