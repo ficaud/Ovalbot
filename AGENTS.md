@@ -4,6 +4,15 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-10-31 — Premier run réel : la page « revente épuisée » devient SeatGone
+
+- Contexte: premier run live (12:53) — login OK, 4 places listées, plan `single taken=1`, puis `checkout add failed: add-to-cart form not found on the resale page` → `MissingContext` → `failed` + alerte. L'utilisateur avait réussi à ajouter ces places manuellement : entre le poll (12:53:04) et le refresh d'`add_seat` (12:53:09), la revente s'était vidée.
+- Diagnostic (capture fournie, `page_out_of_stock.html.gz`) : la variante « épuisée » rend `drupal-settings-json` + `form_build_id` + le formulaire add-to-cart, mais **ni** `input.hubber-slider-input`, **ni** blobs `data-json`, et affiche `Aucun billet n'est actuellement disponible` (`div.product-not-on-sale-info`). L'extracteur exigeait le slider → `None` → `MissingContext` (terminale) au lieu de `SeatGone` (churn).
+- Fix `bot/parser/src/interface/curl/checkout.rs::add_seat` : le garde de présence des places passe **avant** `extract_action_context`, avec en plus le marqueur `product-not-on-sale-info` → `SeatGone` même si une liste obsolète subsistait. `MissingContext` ne signifie plus que « places listées mais machinerie absente » (évolution du layout). Steps renumérotés, doc `# Errors` alignée.
+- Fixture `fixtures/page_out_of_stock.html.gz` (capture live du 31/10, gzip −76 %) + test `add_seat_reads_a_sold_out_page_as_seat_gone` (assert `extract_action_context` = None, aucune place listée, `SeatGone`, aucun POST) ; parser 69 → 70 tests.
+- Effet côté orchestrateur : aucun changement, `SeatGone` est déjà « skip + continue / pending ». Le `failed` du run réel se corrige par `UPDATE ticket_requests SET status='pending' WHERE user_id=2 AND match_id=11877;` (pas de retry automatique d'un `failed`).
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps`, `cargo test --workspace --jobs 2` verts. `CART_URL` toujours la racine (choix utilisateur).
+
 ### 2026-10-31 — Durcissement du checkout avant le premier run réel
 
 - Goal: user asked whether the first dry run was green enough to go live. The logs only proved scan → matching (`checkout disabled (CART_ENABLED): purchase plans logged only`), and a dry run returns before `load_credentials`, so credentials/login/add-to-cart had never been exercised against the real site. Decision: harden the error semantics and the staging signals first.
