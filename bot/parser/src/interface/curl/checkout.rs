@@ -393,10 +393,31 @@ fn urlencode(s: &str) -> String {
 /// # Returns
 /// The full POST target URL
 fn build_add_to_cart_url(base: &str, ajax_url: &str) -> String {
-    if ajax_url.contains('?') {
-        format!("{base}{ajax_url}&_wrapper_format=drupal_ajax")
+    let url = absolute_url(base, ajax_url);
+    if url.contains('?') {
+        format!("{url}&_wrapper_format=drupal_ajax")
     } else {
-        format!("{base}{ajax_url}?_wrapper_format=drupal_ajax")
+        format!("{url}?_wrapper_format=drupal_ajax")
+    }
+}
+
+/// Absolute form of a page URL.
+///
+/// The settings JSON carries a site-relative path; the BigPipe fallback builds
+/// the product URL already absolute. Prefixing the base in both cases produced
+/// `https://shop.examplehttps://shop.example/...` (a bogus host), so the base is
+/// only added for relative URLs.
+///
+/// # Arguments
+/// * `base` - The shop base URL
+/// * `url` - A relative path or an already absolute URL
+/// # Returns
+/// The absolute URL
+fn absolute_url(base: &str, url: &str) -> String {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        url.to_string()
+    } else {
+        format!("{base}{url}")
     }
 }
 
@@ -796,10 +817,9 @@ impl ShopSession {
         // Step 4: POST the add-to-cart request (XHR header set of the site).
         let url = build_add_to_cart_url(&self.base, &context.ajax_url);
         let body = build_add_to_cart_body(&context, pack_id, tickets);
-        let referer = format!(
-            "{}{}",
-            self.base,
-            context.ajax_url.split('?').next().unwrap_or("")
+        let referer = absolute_url(
+            &self.base,
+            context.ajax_url.split('?').next().unwrap_or(""),
         );
         let response = match post_form(
             &url,

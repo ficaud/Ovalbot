@@ -4,13 +4,29 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-01 — Contexte add-to-cart tolérant (pages BigPipe) + diagnostic
+
+- Contexte: sur le banc d'essai basket, le login réussit puis la tentative échoue systématiquement en `MissingContext` (~1 s) ; le dump (une fois le dossier correctement créé) ne servait à rien tant qu'on ne savait pas quelle pièce manquait.
+- `bot/parser/src/interface/curl/checkout.rs`:
+  - suppression de la structure `serde` stricte `json::Settings` : `parse_drupal_settings` renvoie un `serde_json::Value` et les champs sont lus par pointeur (`/ajaxPageState/libraries`, `/ajaxPageState/theme`, `/ajax/edit-add-to-cart/url`). Une nouvelle clé ou un type inattendu ne casse plus tout le parsing.
+  - `extract_action_context(html, fallback_url)`: l'endpoint AJAX n'est plus obligatoire dans les settings — repli sur l'URL produit + `ajax_form=1` (`default_ajax_url`), exactement ce que montrent les captures. `form_build_id` reste requis (sans lui, pas de POST).
+  - `context_diagnostic` : le WARN `MissingContext` logge désormais `bytes= settings= ajax_entry= libraries= form_build_id= slider=` — plus besoin du dump pour savoir ce qui manque.
+- Tests: parser 78 → 79 (`action_context_falls_back_to_the_product_url` : settings sans `edit-add-to-cart`, endpoint reconstruit, absence de `form_build_id` → `None`, diagnostic cohérent).
+- Docs: `dump_backet.md` (ligne de log diagnostique, **chemin du volume de dump** selon le compose — `./data` ou `./data-dev` —, variables à déclarer dans `environment:` pour ne plus les répéter en `-e`, commandes de vérification `echo $CHECKOUT_DUMP_DIR` / `ls /data` / fichier `probe`), README (même précision volume + variable), CHANGELOG 0.4.0, ce journal.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps`, `cargo test --workspace --jobs 2` (21 suites ; parser 79, lib 78, checkout 17, purchases 18, resale 8).
+- Dumps réels (DENAIN, session authentifiée) : les trois tentatives sont `missing_context`. Analyse de `ovalbot_page_*` : la page **contient** tout, mais
+  - le `drupal-settings-json` global n'a **aucune carte `ajax`** (seulement `ajaxPageState`, `ajaxTrustedUrl`, `bigPipePlaceholderIds`…) → l'ancienne structure serde stricte échouait ;
+  - le formulaire, `form_build_id`, `form_token`, le slider et le listing des packs sont **échappés dans un chunk BigPipe** (`\u0022`), donc invisibles au parseur DOM (d'où le garde de présence sauté) mais lisibles par `extract_hidden_input`/`extract_slider_bounds`.
+  - Fixture `fixtures/page_basket_auth.html.gz` (96 Ko → 17 Ko, sans PII vérifiée) + test `action_context_from_the_authenticated_basket_page` : endpoint AJAX reconstruit (`product?ajax_form=1`), `form_build_id` échappé trouvé, slider `32.00/32`, thème `hubber_reference8`, diagnostic `ajax_entry=false form_build_id=true slider=true`.
+- Prochaine étape: rebuild de l'image avec ce code puis relance de la capture basket ; le contexte doit passer et le POST produire une réponse AJAX (succès ou rejet), désormais dumpée dans les deux cas.
+
 ### 2026-11-01 — Dump par tentative d'ajout + `MissingContext` réessayable
 
 - Objectif: pouvoir enquêter sur une tentative d'ajout réelle (succès **ou** échec) sans deviner, et arrêter de clore une demande sur une page BigPipe transitoire.
 - `bot/parser/src/interface/curl/checkout.rs`: `CHECKOUT_DUMP_DIR` capture désormais **chaque tentative** via `AttemptDump` (un id partagé par trois fichiers) : `ovalbot_page_<id>.txt` (page réellement reçue), `ovalbot_response_<id>.txt` (réponse AJAX quand un POST a eu lieu) et `ovalbot_attempt_<id>.txt` (pack, tickets, bornes du slider, `outcome`). Issues tracées : `added`, `rejected`, `missing_context`, `pack_absent`, `pack_changed`, `expired_form`, `waiting_queue`, `post_network`. Sans la variable, aucune écriture. Remplace l'ancien `dump_if_enabled` (échecs seulement).
 - `src/services/bot/checkout.rs`: `MissingContext` rejoint `is_retryable` — la vague est reportée, la demande reste `pending`, plus d'alerte d'échec. Seul un **login refusé** clôt encore en `failed` (le bras générique restant n'est qu'un filet pour une future variante terminale).
 - Tests: parser 76 → 78 (`attempt_dump_writes_page_response_and_metadata`, `attempt_dump_is_a_noop_without_a_directory`) ; `tests/checkout.rs` : `hard_add_failure_marks_failed` devient `missing_context_keeps_request_pending` (1 claim, `pending`, alerte `failed=false`).
-- Docs: README (dump : trois fichiers par tentative + issues), CHANGELOG 0.4.0, ce journal.
+- Docs: README (dump : trois fichiers par tentative + issues, création du dossier avec l'uid 10001), procédure de capture `dump_backet.md` (prérequis, demande SQL, lancement Docker/sources, re-déclenchement par purge des offres, analyse, nettoyage), CHANGELOG 0.4.0, ce journal.
 - Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps`, `cargo test --workspace --jobs 2` (21 suites ; lib 78, parser 78, checkout 17, purchases 18, resale 8).
 - Reste à faire (session de capture): lancer en réel là où se trouvent les identifiants boutique (le devcontainer n'en a aucun : base locale sans `shop_password_cipher`), `BOT_SPORT=basket BOT_BASKET_MATCH_ID=900001 BOT_BASKET_OPPONENT=DENAIN CART_ENABLED=true CART_DRY_RUN=false CHECKOUT_DUMP_DIR=/data/dumps`, puis analyser les fichiers `ovalbot_*_<id>.txt` pour figer les marqueurs et, si besoin, corriger l'extraction.
 
