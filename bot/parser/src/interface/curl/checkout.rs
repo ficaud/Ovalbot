@@ -3,8 +3,9 @@
 //!
 //! This module is the only consumer-facing piece of the purchase feature: the
 //! OvalBot orchestrator opens a [`ShopSession`] with credentials, then calls
-//! [`ShopSession::add_seat`] once per seat inside the same login session. The
-//! passive scan never touches it.
+//! [`ShopSession::add_pack`] once per resale pack (a pack is atomic: a 2-ticket
+//! listing cannot be split) inside the same login session. The passive scan
+//! never touches it.
 //!
 //! The flow mirrors the billetterie's own Drupal behavior:
 //! - Two-step login (`email` then `password`) against `/fr/user/login`, with a
@@ -24,7 +25,6 @@
 //!   file and is deleted when the [`ShopSession`] is dropped.
 
 use crate::app::clubs::larochelle::parse_seat;
-use crate::core::seat::SeatId;
 use crate::interface::match_manager::is_waiting_queue;
 use curl::easy::{Easy, List};
 use scraper::{Html, Selector};
@@ -67,7 +67,8 @@ pub enum CheckoutError {
     /// The fresh resale page did not carry the add-to-cart machinery
     /// (settings JSON, slider or form id missing).
     MissingContext,
-    /// The seat is no longer listed on the fresh resale page — someone took it.
+    /// The resale pack is no longer listed on the fresh page — someone took it
+    /// (a pack is sold atomically, all its tickets disappear together).
     SeatGone,
     /// The add-to-cart POST was rejected as an expired form / invalid session.
     ExpiredForm,
@@ -84,7 +85,7 @@ impl std::fmt::Display for CheckoutError {
             CheckoutError::MissingContext => {
                 f.write_str("add-to-cart form not found on the resale page")
             }
-            CheckoutError::SeatGone => f.write_str("seat no longer present on the resale page"),
+            CheckoutError::SeatGone => f.write_str("pack no longer present on the resale page"),
             CheckoutError::ExpiredForm => {
                 f.write_str("add-to-cart rejected: expired form or invalid session")
             }
@@ -306,19 +307,30 @@ fn build_add_to_cart_url(base: &str, ajax_url: &str) -> String {
 
 /// Builds the exact form-encoded body of the add-to-cart POST — the format the
 /// billetterie's frontend produces when "Ajouter à mon panier" is clicked.
-/// The referenced field is the seat; the slider spans the pack's price range.
+///
+/// The billetterie sells a resale **pack atomically**: every ticket of the pack
+/// is submitted at once, comma-joined in `selected_tickets_{pack_id}`
+/// (`t1,t2`), and `resale_pack_selected` names the pack. A single-ticket pack
+/// sends one id. Payload captured live on 2026-11-01: a 2-ticket pack went out
+/// as `selected_tickets_34681=50587%2C50590`.
 ///
 /// # Arguments
 /// * `context` - The page context extracted from the fresh resale page
-/// * `seat` - The seat to add
+/// * `pack_id` - The resale pack to add
+/// * `tickets` - Every ticket id of that pack
 /// # Returns
 /// The x-www-form-urlencoded body
-fn build_add_to_cart_body(context: &ActionContext, seat: &SeatId) -> String {
+fn build_add_to_cart_body(context: &ActionContext, pack_id: u64, tickets: &[String]) -> String {
+    let selected = tickets
+        .iter()
+        .map(|ticket| urlencode(ticket))
+        .collect::<Vec<_>>()
+        .join("%2C");
     format!(
         "nb_tickets_selector=0\
         &price_slider={min}%2C{max}\
         &sort=price-asc\
-        &selected_tickets_{pack_id}={ticket_id}\
+        &selected_tickets_{pack_id}={selected}\
         &tickets_selected=\
         &resale_pack_selected={pack_id}\
         &form_build_id={form_build_id}\
@@ -332,8 +344,6 @@ fn build_add_to_cart_body(context: &ActionContext, seat: &SeatId) -> String {
         &ajax_page_state%5Blibraries%5D={libraries}",
         min = urlencode(&context.price_min),
         max = urlencode(&context.price_max),
-        pack_id = seat.pack_id,
-        ticket_id = urlencode(&seat.ticket_id),
         form_build_id = urlencode(&context.form_build_id),
         form_token = urlencode(&context.form_token),
         theme = urlencode(&context.theme),
@@ -605,40 +615,55 @@ impl ShopSession {
         })
     }
 
-    /// Adds one seat to the session's cart: refreshes the resale page (seat
-    /// presence guard first, then a fresh add-to-cart context), then POSTs the
-    /// add-to-cart request.
+    /// Adds one resale **pack** to the session's cart: refreshes the resale page
+    /// (pack presence guard first, then a fresh add-to-cart context), then POSTs
+    /// the add-to-cart request carrying every ticket of the pack.
     ///
-    /// Callers add several seats (a group request) by calling this repeatedly
-    /// within the same session; each call self-resynchronizes the Drupal form
-    /// ids against the fresh page.
+    /// The billetterie sells packs atomically (a 2-ticket resale cannot be
+    /// split), so the pack is the add unit. Callers add several packs (a group
+    /// request) by calling this repeatedly within the same session; each call
+    /// self-resynchronizes the Drupal form ids against the fresh page.
     ///
     /// # Arguments
     /// * `resale_url` - The absolute resale product URL
-    /// * `seat` - The seat to add (pack + ticket from the fresh scan)
+    /// * `pack_id` - The resale pack to add (from the fresh scan)
+    /// * `tickets` - Every ticket id of that pack (the whole pack)
     /// # Errors
     /// [`CheckoutError::WaitingQueue`] when the shop is under load,
-    /// [`CheckoutError::SeatGone`] when the seat vanished or the resale sold
-    /// out (the listing and its price slider disappear together),
-    /// [`CheckoutError::MissingContext`] when seats are still listed but the
+    /// [`CheckoutError::SeatGone`] when the pack vanished, changed composition
+    /// or the resale sold out (the listing and its price slider disappear
+    /// together),
+    /// [`CheckoutError::MissingContext`] when packs are still listed but the
     /// add-to-cart machinery is gone (site layout change),
     /// [`CheckoutError::ExpiredForm`] when the POST is rejected as expired,
     /// [`CheckoutError::Network`] on transport failure
-    pub fn add_seat(&self, resale_url: &str, seat: &SeatId) -> Result<(), CheckoutError> {
+    pub fn add_pack(
+        &self,
+        resale_url: &str,
+        pack_id: u64,
+        tickets: &[String],
+    ) -> Result<(), CheckoutError> {
         // Step 1: refresh the page within the session (tokens are per render).
         let (final_url, html) = fetch_with_jar(resale_url, Some(self.jar.path()))?;
         if is_waiting_queue(&final_url, &html) {
             return Err(CheckoutError::WaitingQueue);
         }
 
-        // Step 2: guard the seat presence first. A resale that sold out between
+        // Step 2: guard the pack presence first. A resale that sold out between
         // the scan and this refresh renders without the listing AND without the
         // price slider: that is churn (`SeatGone`), not a missing form.
-        let listed = parse_seat::parse_pack_ticket_ids(&html);
-        let present = listed.iter().any(|(pack_id, ticket_ids)| {
-            *pack_id == seat.pack_id && ticket_ids.iter().any(|t| t == &seat.ticket_id)
-        });
-        if !present || html.contains(OUT_OF_STOCK_MARKER) {
+        let fresh = parse_seat::parse_pack_ticket_ids(&html)
+            .into_iter()
+            .find(|(listed_pack, _)| *listed_pack == pack_id);
+        let Some((_, listed_tickets)) = fresh else {
+            return Err(CheckoutError::SeatGone);
+        };
+        if html.contains(OUT_OF_STOCK_MARKER) || !same_tickets(&listed_tickets, tickets) {
+            // The pack disappeared or was re-minted with another composition:
+            // the plan is stale, the next wave will re-plan from fresh seats.
+            log::debug!(
+                "[CHECKOUT] pack {pack_id} changed or gone (wanted {tickets:?}, found {listed_tickets:?})"
+            );
             return Err(CheckoutError::SeatGone);
         }
 
@@ -647,7 +672,7 @@ impl ShopSession {
 
         // Step 4: POST the add-to-cart request (XHR header set of the site).
         let url = build_add_to_cart_url(&self.base, &context.ajax_url);
-        let body = build_add_to_cart_body(&context, seat);
+        let body = build_add_to_cart_body(&context, pack_id, tickets);
         let referer = format!(
             "{}{}",
             self.base,
@@ -670,6 +695,25 @@ impl ShopSession {
         }
         Ok(())
     }
+}
+
+/// Whether two ticket-id lists describe the same pack composition,
+/// order-insensitively (the page's ticket map has no stable order).
+///
+/// # Arguments
+/// * `left` - One ticket-id list
+/// * `right` - The other ticket-id list
+/// # Returns
+/// `true` when both hold exactly the same ids
+fn same_tickets(left: &[String], right: &[String]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut left = left.to_vec();
+    let mut right = right.to_vec();
+    left.sort_unstable();
+    right.sort_unstable();
+    left == right
 }
 
 /// Builds a unique temp path for one session's cookie jar.
@@ -784,15 +828,11 @@ mod tests {
         assert_eq!(urlencode("44.00"), "44.00");
     }
 
-    // The POST body carries the seat, the fresh ids and the replayed state.
+    // The POST body carries the pack, the fresh ids and the replayed state.
     #[test]
     fn add_to_cart_body_contains_every_required_field() {
         let context = extract_action_context(&FIXTURE_RESALE).expect("context");
-        let seat = SeatId {
-            pack_id: 33850,
-            ticket_id: "49432".to_string(),
-        };
-        let body = build_add_to_cart_body(&context, &seat);
+        let body = build_add_to_cart_body(&context, 33850, &["49432".to_string()]);
         assert!(body.contains("selected_tickets_33850=49432"));
         assert!(body.contains("resale_pack_selected=33850"));
         assert!(body.contains("price_slider=44.00%2C59"));
@@ -811,6 +851,17 @@ mod tests {
             "ajax_page_state%5Blibraries%5D={}",
             urlencode(&context.libraries)
         )));
+    }
+
+    // A 2-ticket pack (the fixture's pack 33853) is submitted atomically: both
+    // ids, comma-joined, exactly like the live payload captured on 2026-11-01.
+    #[test]
+    fn add_to_cart_body_joins_every_ticket_of_a_pack() {
+        let context = extract_action_context(&FIXTURE_RESALE).expect("context");
+        let body =
+            build_add_to_cart_body(&context, 33853, &["49438".to_string(), "49435".to_string()]);
+        assert!(body.contains("selected_tickets_33853=49438%2C49435"));
+        assert!(body.contains("resale_pack_selected=33853"));
     }
 
     // Query-separator normalization: the endpoint already carries `?ajax_form=1`.
@@ -1014,10 +1065,10 @@ mod tests {
         ));
     }
 
-    // Adding a seat inside one session: fresh page → context + presence guard
-    // → POST with the seat in the body and the XHR headers.
+    // Adding a pack inside one session: fresh page → context + presence guard
+    // → POST with the pack in the body and the XHR headers.
     #[test]
-    fn add_seat_posts_the_add_to_cart_request() {
+    fn add_pack_posts_the_add_to_cart_request() {
         let (base, requests) = serve_mock(vec![
             page(LOGIN_PAGE, 200),
             page(STEP2_PAGE, 200),
@@ -1033,13 +1084,11 @@ mod tests {
         );
 
         let session = ShopSession::login(&base, "user@example.com", "secret").expect("login");
-        let seat = SeatId {
-            pack_id: 33850,
-            ticket_id: "49432".to_string(),
-        };
-        session.add_seat(&resale_url, &seat).expect("add-to-cart");
+        session
+            .add_pack(&resale_url, 33850, &["49432".to_string()])
+            .expect("add-to-cart");
 
-        // The POST landed on the fixture page path and carries the seat.
+        // The POST landed on the fixture page path and carries the pack.
         let log = requests.lock().expect("log");
         let post = log
             .iter()
@@ -1058,7 +1107,7 @@ mod tests {
 
     // A stale-session rejection body is mapped to ExpiredForm.
     #[test]
-    fn add_seat_reports_the_expired_form_rejection() {
+    fn add_pack_reports_the_expired_form_rejection() {
         let (base, requests) = serve_mock(vec![
             page(LOGIN_PAGE, 200),
             page(STEP2_PAGE, 200),
@@ -1073,12 +1122,10 @@ mod tests {
             context.ajax_url.split('?').next().expect("path")
         );
         let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
-        let seat = SeatId {
-            pack_id: 33850,
-            ticket_id: "49432".to_string(),
-        };
         assert_eq!(
-            session.add_seat(&resale_url, &seat).expect_err("must fail"),
+            session
+                .add_pack(&resale_url, 33850, &["49432".to_string()])
+                .expect_err("must fail"),
             CheckoutError::ExpiredForm
         );
         assert_eq!(requests.lock().expect("log").len(), 6);
@@ -1087,7 +1134,7 @@ mod tests {
     // A seat that vanished from the fresh page is reported as SeatGone (no
     // add-to-cart POST is sent).
     #[test]
-    fn add_seat_reports_a_seat_gone() {
+    fn add_pack_reports_a_seat_gone() {
         let (base, requests) = serve_mock(vec![
             page(LOGIN_PAGE, 200),
             page(STEP2_PAGE, 200),
@@ -1101,12 +1148,10 @@ mod tests {
             context.ajax_url.split('?').next().expect("path")
         );
         let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
-        let seat = SeatId {
-            pack_id: 999,
-            ticket_id: "0".to_string(),
-        };
         assert_eq!(
-            session.add_seat(&resale_url, &seat).expect_err("must fail"),
+            session
+                .add_pack(&resale_url, 999, &["0".to_string()])
+                .expect_err("must fail"),
             CheckoutError::SeatGone
         );
         // 4 login requests + 1 page fetch; no POST.
@@ -1118,14 +1163,14 @@ mod tests {
     // add-to-cart context), but it must be reported as SeatGone, not as a
     // terminal missing form.
     #[test]
-    fn add_seat_reads_a_sold_out_page_as_seat_gone() {
+    fn add_pack_reads_a_sold_out_page_as_seat_gone() {
         assert!(
             extract_action_context(&FIXTURE_OUT_OF_STOCK).is_none(),
             "the sold-out fixture has no add-to-cart context"
         );
         assert!(
             parse_seat::parse_pack_ticket_ids(&FIXTURE_OUT_OF_STOCK).is_empty(),
-            "the sold-out fixture lists no seat"
+            "the sold-out fixture lists no pack"
         );
 
         let (base, requests) = serve_mock(vec![
@@ -1136,13 +1181,13 @@ mod tests {
             page(&*FIXTURE_OUT_OF_STOCK, 200),
         ]);
         let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
-        let seat = SeatId {
-            pack_id: 34700,
-            ticket_id: "50624".to_string(),
-        };
         assert_eq!(
             session
-                .add_seat(&format!("{base}/fr/product/1360/revente"), &seat)
+                .add_pack(
+                    &format!("{base}/fr/product/1360/revente"),
+                    34700,
+                    &["50624".to_string()],
+                )
                 .expect_err("must fail"),
             CheckoutError::SeatGone
         );
@@ -1150,9 +1195,37 @@ mod tests {
         assert_eq!(requests.lock().expect("log").len(), 5);
     }
 
-    // The waiting queue during the seat addition is reported distinctly.
+    // A pack re-minted with another composition (one ticket sold inside a duo,
+    // ids changed) is stale: SeatGone, never a truncated POST.
     #[test]
-    fn add_seat_reports_the_waiting_queue() {
+    fn add_pack_reports_a_repacked_pack_as_seat_gone() {
+        let (base, requests) = serve_mock(vec![
+            page(LOGIN_PAGE, 200),
+            page(STEP2_PAGE, 200),
+            page("<html>connecté</html>", 200),
+            page(BASKET_AUTHENTICATED, 200),
+            page(&*FIXTURE_RESALE, 200),
+        ]);
+        let context = extract_action_context(&FIXTURE_RESALE).expect("context");
+        let resale_url = format!(
+            "{base}{}",
+            context.ajax_url.split('?').next().expect("path")
+        );
+        let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
+        // Pack 33853 lists 49435 and 49438: asking for one of them only is a
+        // different composition, so the plan is stale.
+        assert_eq!(
+            session
+                .add_pack(&resale_url, 33853, &["49435".to_string()])
+                .expect_err("must fail"),
+            CheckoutError::SeatGone
+        );
+        assert_eq!(requests.lock().expect("log").len(), 5);
+    }
+
+    // The waiting queue during the pack addition is reported distinctly.
+    #[test]
+    fn add_pack_reports_the_waiting_queue() {
         let (base, requests) = serve_mock(vec![
             page(LOGIN_PAGE, 200),
             page(STEP2_PAGE, 200),
@@ -1161,13 +1234,13 @@ mod tests {
             page(QUEUED, 307),
         ]);
         let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
-        let seat = SeatId {
-            pack_id: 33850,
-            ticket_id: "49432".to_string(),
-        };
         assert_eq!(
             session
-                .add_seat(&format!("{base}/fr/product/1/resale"), &seat)
+                .add_pack(
+                    &format!("{base}/fr/product/1/resale"),
+                    33850,
+                    &["49432".to_string()],
+                )
                 .expect_err("must fail"),
             CheckoutError::WaitingQueue
         );

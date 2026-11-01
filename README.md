@@ -124,6 +124,10 @@ With `CART_ENABLED=true`, a request is only closed as `failed` on a refused shop
 login or a vanished add-to-cart context (resale closed). Seat-gone, waiting
 queue, network and expired-form errors leave it `pending` for the next wave.
 
+Resale packs are **atomic**: the billetterie cannot split a 2-ticket listing, so
+the bot adds a whole pack in one request and only plans packs that fit the
+remaining quota of a request (a 2-ticket pack never serves a 1-seat request).
+
 See `.env.example` for a ready-to-copy template.
 
 ## Testing
