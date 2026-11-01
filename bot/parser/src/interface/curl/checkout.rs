@@ -19,10 +19,21 @@
 //!   anonymous captures — empty is tolerated) and an `ajax_page_state` replay
 //!   (`theme` + `libraries`), sent with the same `X-Requested-With` XHR
 //!   headers the site's own frontend uses.
+//! - On an available resale the listing and the price slider are injected by a
+//!   **BigPipe lazy builder** after the initial render, so the fresh page may
+//!   legitimately carry no `data-json`: the pack presence guard only runs when
+//!   a listing is actually present, and the escaped slider markup is read from
+//!   the raw HTML (fallback: the pack's own price span).
+//! - The add verdict comes from the AJAX command list: the pack row gains
+//!   `added-to-cart` (or its JSON says `is_already_in_cart`, or the response
+//!   ends with `refreshCartTimeout`). Anything else maps to
+//!   [`CheckoutError::SeatGone`] — the pack never reached the cart.
 //! - A stale/invalid-session rejection is detected by its body markers
 //!   ("périmé" / `alert-danger` + `formulaire`) → [`CheckoutError::ExpiredForm`].
 //! - Sessions are deliberately short-lived: the cookie jar lives in a temp
 //!   file and is deleted when the [`ShopSession`] is dropped.
+//! - Set `CHECKOUT_DUMP_DIR` to dump the page and/or AJAX response on a
+//!   checkout failure (diagnostic only, nothing is written otherwise).
 
 use crate::app::clubs::larochelle::parse_seat;
 use crate::interface::match_manager::is_waiting_queue;
@@ -156,9 +167,14 @@ mod json {
 }
 
 /// Extracts the [`ActionContext`] of a resale page: the `drupal-settings-json`
-/// values plus the form ids. `None` when the page misses any required piece
-/// (settings, `edit-add-to-cart` url, slider, form id) — e.g. a closed resale
-/// page.
+/// values plus the form ids. `None` when the page misses a required piece
+/// (settings, `edit-add-to-cart` url or `form_build_id`) — e.g. a page whose
+/// lazy-built form never arrived.
+///
+/// The price slider is optional: on an available resale the form (and its
+/// slider) is injected by a BigPipe lazy builder, so the bounds are read from
+/// the raw HTML (including escaped chunks) or left empty for the caller's
+/// fallback.
 ///
 /// # Arguments
 /// * `html` - The resale page HTML
@@ -182,9 +198,17 @@ pub fn extract_action_context(html: &str) -> Option<ActionContext> {
     }
 
     let slider_selector = Selector::parse("input.hubber-slider-input").unwrap();
-    let slider = document.select(&slider_selector).next()?;
-    let price_min = slider.value().attr("data-min").unwrap_or("").to_string();
-    let price_max = slider.value().attr("data-max").unwrap_or("").to_string();
+    let (price_min, price_max) = document
+        .select(&slider_selector)
+        .next()
+        .and_then(|slider| {
+            Some((
+                slider.value().attr("data-min")?.to_string(),
+                slider.value().attr("data-max")?.to_string(),
+            ))
+        })
+        .or_else(|| extract_slider_bounds(html))
+        .unwrap_or_default();
 
     // form_build_id is required (the form must be on the page); form_token is
     // optional — anonymous pages ship without one and the POST still works.
@@ -209,6 +233,47 @@ pub fn extract_action_context(html: &str) -> Option<ActionContext> {
         form_build_id,
         form_token,
     })
+}
+
+/// Reads the price-slider bounds from the raw HTML, including the
+/// BigPipe/AJAX-escaped markup the site injects after the initial render
+/// (`data-min=\u002249.00\u0022`).
+///
+/// # Arguments
+/// * `html` - The resale page HTML (raw, with its escaped chunks)
+/// # Returns
+/// `(min, max)` as printed on the page, or `None` when no slider is present
+fn extract_slider_bounds(html: &str) -> Option<(String, String)> {
+    let start = html.find("hubber-slider-input")?;
+    let window = &html[start..(start + 800).min(html.len())];
+    Some((
+        attribute_value(window, "data-min")?,
+        attribute_value(window, "data-max")?,
+    ))
+}
+
+/// Reads one `name="value"` (or `name=\u0022value\u0022`) attribute from a
+/// substring.
+///
+/// # Arguments
+/// * `window` - The substring to scan
+/// * `name` - The attribute name, without the trailing `=`
+/// # Returns
+/// The attribute value, or `None` when absent or unquoted
+fn attribute_value(window: &str, name: &str) -> Option<String> {
+    let marker = format!("{name}=");
+    let pos = window.find(&marker)? + marker.len();
+    let rest = &window[pos..];
+    let quote = if rest.starts_with("\\u0022") {
+        "\\u0022"
+    } else if rest.starts_with('"') {
+        "\""
+    } else {
+        return None;
+    };
+    let value = &rest[quote.len()..];
+    let end = value.find(quote)?;
+    Some(value[..end].to_string())
 }
 
 /// Extracts the Drupal `form_build_id` from a form page (plain HTML form or
@@ -630,18 +695,22 @@ impl ShopSession {
     /// * `tickets` - Every ticket id of that pack (the whole pack)
     /// # Errors
     /// [`CheckoutError::WaitingQueue`] when the shop is under load,
-    /// [`CheckoutError::SeatGone`] when the pack vanished, changed composition
-    /// or the resale sold out (the listing and its price slider disappear
-    /// together),
-    /// [`CheckoutError::MissingContext`] when packs are still listed but the
-    /// add-to-cart machinery is gone (site layout change),
+    /// [`CheckoutError::SeatGone`] when the pack vanished, changed composition,
+    /// the resale sold out, or the POST was rejected (no cart confirmation),
+    /// [`CheckoutError::MissingContext`] when the page lost its add-to-cart
+    /// machinery (site layout change),
     /// [`CheckoutError::ExpiredForm`] when the POST is rejected as expired,
     /// [`CheckoutError::Network`] on transport failure
+    ///
+    /// # Arguments
+    /// * `price_min`, `price_max` - Fallback slider bounds, used when the page
+    ///   does not expose the lazily-built price slider
     pub fn add_pack(
         &self,
         resale_url: &str,
         pack_id: u64,
         tickets: &[String],
+        price_range: (String, String),
     ) -> Result<(), CheckoutError> {
         // Step 1: refresh the page within the session (tokens are per render).
         let (final_url, html) = fetch_with_jar(resale_url, Some(self.jar.path()))?;
@@ -649,26 +718,43 @@ impl ShopSession {
             return Err(CheckoutError::WaitingQueue);
         }
 
-        // Step 2: guard the pack presence first. A resale that sold out between
-        // the scan and this refresh renders without the listing AND without the
-        // price slider: that is churn (`SeatGone`), not a missing form.
-        let fresh = parse_seat::parse_pack_ticket_ids(&html)
-            .into_iter()
-            .find(|(listed_pack, _)| *listed_pack == pack_id);
-        let Some((_, listed_tickets)) = fresh else {
-            return Err(CheckoutError::SeatGone);
-        };
-        if html.contains(OUT_OF_STOCK_MARKER) || !same_tickets(&listed_tickets, tickets) {
-            // The pack disappeared or was re-minted with another composition:
-            // the plan is stale, the next wave will re-plan from fresh seats.
-            log::debug!(
-                "[CHECKOUT] pack {pack_id} changed or gone (wanted {tickets:?}, found {listed_tickets:?})"
-            );
-            return Err(CheckoutError::SeatGone);
+        // Step 2: guard the pack presence, but only when the page really lists
+        // packs. On an available resale the listing (and the price slider) are
+        // injected by a BigPipe lazy builder after the initial render, so a
+        // curl fetch legitimately sees none: in that case the plan's ids (fresh
+        // from the scan) are trusted and the POST verdict decides.
+        let listed = parse_seat::parse_pack_ticket_ids(&html);
+        if !listed.is_empty() {
+            let fresh = listed
+                .iter()
+                .find(|(listed_pack, _)| *listed_pack == pack_id);
+            let Some((_, listed_tickets)) = fresh else {
+                log::debug!("[CHECKOUT] pack {pack_id} absent from the listed packs");
+                dump_if_enabled("page", &html);
+                return Err(CheckoutError::SeatGone);
+            };
+            if html.contains(OUT_OF_STOCK_MARKER) || !same_tickets(listed_tickets, tickets) {
+                // The pack disappeared or was re-minted with another
+                // composition: the plan is stale, the next wave re-plans from
+                // fresh seats.
+                log::debug!(
+                    "[CHECKOUT] pack {pack_id} changed or gone (wanted {tickets:?}, found {listed_tickets:?})"
+                );
+                dump_if_enabled("page", &html);
+                return Err(CheckoutError::SeatGone);
+            }
         }
 
-        // Step 3: rebuild the add-to-cart context from the still-listed page.
-        let context = extract_action_context(&html).ok_or(CheckoutError::MissingContext)?;
+        // Step 3: rebuild the add-to-cart context (settings + form id).
+        let Some(mut context) = extract_action_context(&html) else {
+            log::warn!("[CHECKOUT] add-to-cart context missing from the resale page");
+            dump_if_enabled("page", &html);
+            return Err(CheckoutError::MissingContext);
+        };
+        if context.price_min.is_empty() || context.price_max.is_empty() {
+            context.price_min = price_range.0;
+            context.price_max = price_range.1;
+        }
 
         // Step 4: POST the add-to-cart request (XHR header set of the site).
         let url = build_add_to_cart_url(&self.base, &context.ajax_url);
@@ -691,9 +777,59 @@ impl ShopSession {
             || response.contains("p%C3%A9rim%C3%A9")
             || (response.contains("alert-danger") && response.contains("formulaire"))
         {
+            dump_if_enabled("response", &response);
             return Err(CheckoutError::ExpiredForm);
         }
+
+        // Step 6: the AJAX command list is the only trustworthy verdict — an
+        // accepted add re-renders the pack `added-to-cart`; anything else means
+        // the pack was gone between the plan and the POST.
+        if !pack_added(&response, pack_id) {
+            log::debug!("[CHECKOUT] pack {pack_id} add not confirmed by the response");
+            dump_if_enabled("response", &response);
+            return Err(CheckoutError::SeatGone);
+        }
         Ok(())
+    }
+}
+
+/// Whether the add-to-cart AJAX response confirms the pack landed in the cart.
+///
+/// Success markers captured live on 2026-11-01 (pack 34720): the pack row gets
+/// the `added-to-cart` class, its re-rendered JSON carries
+/// `is_already_in_cart`, and the response ends with `refreshCartTimeout`. A
+/// response with none of them is a rejection, mapped to `SeatGone` (the next
+/// wave re-plans).
+///
+/// # Arguments
+/// * `response` - The AJAX response body
+/// * `pack_id` - The pack that was submitted
+/// # Returns
+/// `true` when the response carries a success marker for that pack
+fn pack_added(response: &str, pack_id: u64) -> bool {
+    response.contains(&pack_id.to_string())
+        && (response.contains("added-to-cart")
+            || response.contains("is_already_in_cart")
+            || response.contains("refreshCartTimeout"))
+}
+
+/// Writes a diagnostic dump of `body` when `CHECKOUT_DUMP_DIR` is set (a no-op
+/// otherwise, the normal production path).
+///
+/// # Arguments
+/// * `kind` - File-name stem (`page`, `response`, …)
+/// * `body` - The raw payload to save
+fn dump_if_enabled(kind: &str, body: &str) {
+    let Ok(dir) = std::env::var("CHECKOUT_DUMP_DIR") else {
+        return;
+    };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = PathBuf::from(dir).join(format!("ovalbot_{kind}_{nanos}.txt"));
+    if let Err(e) = std::fs::write(&path, body) {
+        log::warn!("[CHECKOUT] failed to dump {kind}: {e}");
     }
 }
 
@@ -789,6 +925,23 @@ mod tests {
         assert_eq!(extract_form_build_id(escaped).as_deref(), Some("form-456"));
 
         assert_eq!(extract_form_build_id("<html>no form</html>"), None);
+    }
+
+    // The price slider is read from the raw HTML too, including the
+    // BigPipe/AJAX-escaped markup the site injects after the initial render.
+    #[test]
+    fn slider_bounds_are_read_from_bigpipe_markup() {
+        let escaped = r#"<script>{"data":"\u003Cinput class=\u0022hubber-slider-input\u0022 data-min=\u002249.00\u0022 data-max=\u002249\u0022\u003E"}</script>"#;
+        assert_eq!(
+            extract_slider_bounds(escaped),
+            Some(("49.00".to_string(), "49".to_string()))
+        );
+        assert_eq!(
+            extract_slider_bounds(&FIXTURE_RESALE),
+            Some(("44.00".to_string(), "59".to_string()))
+        );
+        // The sold-out page has neither slider nor escaped chunk.
+        assert_eq!(extract_slider_bounds(&FIXTURE_OUT_OF_STOCK), None);
     }
 
     // The fixture context carries the live values of the capture.
@@ -973,7 +1126,16 @@ mod tests {
     const BASKET_AUTHENTICATED: &str =
         "<html><body class=\"user-logged-in\">Se déconnecter</body></html>";
     const BASKET_ANONYMOUS: &str = "<html><body>Connexion</body></html>";
-    const ADD_OK: &str = "[]";
+    // Success AJAX response shape, mirroring the live capture of 2026-11-01:
+    // the pack row gains `added-to-cart` and the cart timeout is refreshed.
+    fn add_ok(pack_id: u64) -> String {
+        format!(
+            r#"[{{"command":"invoke","selector":".js-resale-listing-table tr[data-resale-pack=\"{pack_id}\"] .resale-pack-details","method":"addClass","args":["added-to-cart"]}},{{"command":"redrawListingRow","data":"{pack_id}"}},{{"command":"refreshCartTimeout","data":1498}}]"#
+        )
+    }
+
+    // A response that carries no success marker (pack gone / rejected).
+    const ADD_REJECTED: &str = r#"[{"command":"update_build_id","old":"form-a","new":"form-b"}]"#;
     const ADD_EXPIRED: &str =
         r#"{"markup":"<div class=\"alert-danger\">Un message formulaire</div>"}"#;
     const QUEUED: &str = "Move to waiting queue";
@@ -1075,7 +1237,7 @@ mod tests {
             page("<html>connecté</html>", 200),
             page(BASKET_AUTHENTICATED, 200),
             page(&*FIXTURE_RESALE, 200),
-            page(ADD_OK, 200),
+            page(add_ok(33850), 200),
         ]);
         let context = extract_action_context(&FIXTURE_RESALE).expect("context");
         let resale_url = format!(
@@ -1085,7 +1247,12 @@ mod tests {
 
         let session = ShopSession::login(&base, "user@example.com", "secret").expect("login");
         session
-            .add_pack(&resale_url, 33850, &["49432".to_string()])
+            .add_pack(
+                &resale_url,
+                33850,
+                &["49432".to_string()],
+                ("44.00".into(), "59".into()),
+            )
             .expect("add-to-cart");
 
         // The POST landed on the fixture page path and carries the pack.
@@ -1103,6 +1270,88 @@ mod tests {
             "refer header present"
         );
         assert_eq!(log.len(), 6);
+    }
+
+    // On an available resale the listing and the slider are injected later by
+    // BigPipe: the fresh page carries no `data-json` and the escaped slider.
+    // The bot trusts the plan ids and POSTs with the escaped slider bounds.
+    #[test]
+    fn add_pack_posts_when_the_page_has_no_listing() {
+        let bigpipe_page = r#"<html><body>
+<script data-drupal-selector="drupal-settings-json">{"ajaxPageState":{"theme":"hubber_reference8","libraries":"lib-abc"},"ajax":{"edit-add-to-cart":{"url":"/fr/product/1360/revente?ajax_form=1"}}}</script>
+<input type="hidden" name="form_build_id" value="form-bigpipe-1" />
+<script>{"data":"\u003Cinput class=\u0022hubber-slider-input\u0022 data-min=\u002249.00\u0022 data-max=\u002249\u0022\u003E"}</script>
+</body></html>"#;
+
+        let (base, requests) = serve_mock(vec![
+            page(LOGIN_PAGE, 200),
+            page(STEP2_PAGE, 200),
+            page("<html>connecté</html>", 200),
+            page(BASKET_AUTHENTICATED, 200),
+            page(bigpipe_page, 200),
+            page(add_ok(34720), 200),
+        ]);
+        let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
+        session
+            .add_pack(
+                &format!("{base}/fr/product/1360/revente"),
+                34720,
+                &["50656".to_string()],
+                ("49.00".into(), "49".into()),
+            )
+            .expect("add-to-cart");
+
+        let log = requests.lock().expect("log");
+        let post = log
+            .iter()
+            .find(|r| r.contains("POST /fr/product/1360"))
+            .expect("add-to-cart POST recorded");
+        assert!(post.contains("selected_tickets_34720=50656"));
+        assert!(post.contains("price_slider=49.00%2C49"));
+        assert_eq!(log.len(), 6);
+    }
+
+    // A response without any success marker means the pack was gone: SeatGone,
+    // never a claim on a pack that never reached the cart.
+    #[test]
+    fn add_pack_reports_a_rejected_add_as_seat_gone() {
+        let (base, requests) = serve_mock(vec![
+            page(LOGIN_PAGE, 200),
+            page(STEP2_PAGE, 200),
+            page("<html>connecté</html>", 200),
+            page(BASKET_AUTHENTICATED, 200),
+            page(&*FIXTURE_RESALE, 200),
+            page(ADD_REJECTED, 200),
+        ]);
+        let context = extract_action_context(&FIXTURE_RESALE).expect("context");
+        let resale_url = format!(
+            "{base}{}",
+            context.ajax_url.split('?').next().expect("path")
+        );
+        let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
+        assert_eq!(
+            session
+                .add_pack(
+                    &resale_url,
+                    33850,
+                    &["49432".to_string()],
+                    ("44.00".into(), "59".into())
+                )
+                .expect_err("must fail"),
+            CheckoutError::SeatGone
+        );
+        assert_eq!(requests.lock().expect("log").len(), 6);
+    }
+
+    // The live success response (2026-11-01) carries all three markers; a
+    // response for another pack or with none of them is a rejection.
+    #[test]
+    fn pack_added_reads_the_live_success_response() {
+        let live = r#"[{"command":"update_build_id","old":"form-a","new":"form-b"},{"command":"insert","method":"replaceWith","selector":".js-show-temp-cart-wrapper .ticket-form-footer-container","data":"\u003Cdiv class=\u0022total-price\u0022\u003E49\u00a0\u20ac\u003C\/div\u003E"},{"command":"invoke","selector":".js-resale-listing-table tr[data-resale-pack=\u002234720\u0022] .resale-pack-details","method":"addClass","args":["added-to-cart"]},{"command":"redrawListingRow","data":"34720"},{"command":"refreshCartTimeout","data":1498}]"#;
+        assert!(pack_added(live, 34720));
+        assert!(!pack_added(live, 11111));
+        assert!(!pack_added(ADD_REJECTED, 34720));
+        assert!(!pack_added("[]", 34720));
     }
 
     // A stale-session rejection body is mapped to ExpiredForm.
@@ -1124,7 +1373,12 @@ mod tests {
         let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
         assert_eq!(
             session
-                .add_pack(&resale_url, 33850, &["49432".to_string()])
+                .add_pack(
+                    &resale_url,
+                    33850,
+                    &["49432".to_string()],
+                    ("44.00".into(), "59".into())
+                )
                 .expect_err("must fail"),
             CheckoutError::ExpiredForm
         );
@@ -1150,7 +1404,12 @@ mod tests {
         let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
         assert_eq!(
             session
-                .add_pack(&resale_url, 999, &["0".to_string()])
+                .add_pack(
+                    &resale_url,
+                    999,
+                    &["0".to_string()],
+                    ("44.00".into(), "59".into())
+                )
                 .expect_err("must fail"),
             CheckoutError::SeatGone
         );
@@ -1158,15 +1417,13 @@ mod tests {
         assert_eq!(requests.lock().expect("log").len(), 5);
     }
 
-    // A resale that sold out between the scan and the fresh page is churn:
-    // the sold-out variant has no listing and no price slider (so no
-    // add-to-cart context), but it must be reported as SeatGone, not as a
-    // terminal missing form.
+    // A sold-out resale page no longer lists packs: the bot trusts the plan ids
+    // and POSTs, and the AJAX verdict (no success marker) maps to SeatGone.
     #[test]
     fn add_pack_reads_a_sold_out_page_as_seat_gone() {
         assert!(
-            extract_action_context(&FIXTURE_OUT_OF_STOCK).is_none(),
-            "the sold-out fixture has no add-to-cart context"
+            extract_action_context(&FIXTURE_OUT_OF_STOCK).is_some(),
+            "the sold-out page still carries the add-to-cart form and settings"
         );
         assert!(
             parse_seat::parse_pack_ticket_ids(&FIXTURE_OUT_OF_STOCK).is_empty(),
@@ -1179,6 +1436,7 @@ mod tests {
             page("<html>connecté</html>", 200),
             page(BASKET_AUTHENTICATED, 200),
             page(&*FIXTURE_OUT_OF_STOCK, 200),
+            page(ADD_REJECTED, 200),
         ]);
         let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
         assert_eq!(
@@ -1187,12 +1445,13 @@ mod tests {
                     &format!("{base}/fr/product/1360/revente"),
                     34700,
                     &["50624".to_string()],
+                    ("44.00".into(), "44".into()),
                 )
                 .expect_err("must fail"),
             CheckoutError::SeatGone
         );
-        // 4 login requests + 1 page fetch; no POST.
-        assert_eq!(requests.lock().expect("log").len(), 5);
+        // 4 login requests + 1 page fetch + 1 rejected POST.
+        assert_eq!(requests.lock().expect("log").len(), 6);
     }
 
     // A pack re-minted with another composition (one ticket sold inside a duo,
@@ -1216,7 +1475,12 @@ mod tests {
         // different composition, so the plan is stale.
         assert_eq!(
             session
-                .add_pack(&resale_url, 33853, &["49435".to_string()])
+                .add_pack(
+                    &resale_url,
+                    33853,
+                    &["49435".to_string()],
+                    ("59.00".into(), "59".into())
+                )
                 .expect_err("must fail"),
             CheckoutError::SeatGone
         );
@@ -1240,6 +1504,7 @@ mod tests {
                     &format!("{base}/fr/product/1/resale"),
                     33850,
                     &["49432".to_string()],
+                    ("44.00".into(), "59".into()),
                 )
                 .expect_err("must fail"),
             CheckoutError::WaitingQueue

@@ -4,6 +4,21 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-01 — BigPipe : le verdict d'ajout vient de la réponse AJAX, pas de la page
+
+- Contexte: après le fix « packs atomiques », chaque vague finissait en `seat skipped (resale churn)` en ~4-6 s **alors que l'utilisateur réussissait à prendre la place manuellement 3 minutes plus tard**. La capture de son payload a montré les mêmes `pack_id`/`ticket_id` que le plan, et la réponse AJAX d'un ajout réussi a révélé la cause : sur une revente **disponible**, le formulaire add-to-cart, le slider et le listing sont injectés par un **BigPipe lazy builder** (`hubber_resale.product_lazy_builder:addToCartWithResaleForm`+`data-big-pipe-placeholder-id`). Le HTML brut récupéré par curl n'a donc ni `input.hubber-slider-input` ni `div.js-listing-plain[data-json]` → faux `MissingContext` (12:53) puis faux `SeatGone` (17:56 et suivants). Ce n'était pas la course login → POST.
+- `bot/parser/src/interface/curl/checkout.rs`:
+  - `extract_action_context`: le slider n'est plus obligatoire ; lecture DOM puis **scanner brut** (`extract_slider_bounds`/`attribute_value`) qui accepte aussi la forme échappée `data-min=\u002249.00\u0022` des chunks BigPipe. `MissingContext` ne signifie plus que « settings / url AJAX / form_build_id absents ».
+  - `add_pack(..., price_range)`: le garde de présence ne s'applique **que si la page contient un listing** ; sinon les ids du plan (frais, issus du scan anonyme) sont utilisés. Repli `price_slider` sur la plage de prix du pack (les captures montrent `min = max = prix`, ex. `49%2C49`).
+  - **Verdict d'ajout** (`pack_added`): succès seulement si la réponse AJAX contient l'id du pack **et** un marqueur live (`added-to-cart`, `is_already_in_cart`, `refreshCartTimeout`, capture du 01/11) ; sinon `SeatGone` — un pack jamais entré au panier n'est jamais claimé.
+  - `CHECKOUT_DUMP_DIR` (optionnel) écrit la page ou la réponse AJAX sur échec pour diagnostic ; rien en production par défaut.
+- `src/services/bot/checkout.rs`: `CartSession::add_pack` prend `price_range` ; `pack_price_range(seats, pack_id)` calcule le repli (min/max des prix du pack, 2 décimales) ; `RealSession` transmet.
+- Entretien: la capture a aussi confirmé `"allow_split":false` dans le JSON des packs (atomicité) et `update_build_id` (le `form_build_id` tourne après chaque POST — notre refetch par pack le gère déjà).
+- Tests: parser 72 → 76 (`slider_bounds_are_read_from_bigpipe_markup`, `add_pack_posts_when_the_page_has_no_listing` — page synthétique sans `data-json` + slider échappé, `add_pack_reports_a_rejected_add_as_seat_gone`, `pack_added_reads_the_live_success_response` ; sold-out désormais testé avec verdict POST). Fixtures `add_ok(pack_id)` / `ADD_REJECTED` pour scripter le mock.
+- Docs: en-tête du module parser, README (verdict AJAX), CHANGELOG 0.4.0, ce journal. Pas de migration, pas de frontend.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps`, `cargo test --workspace --jobs 2` (21 suites ; parser 76, lib 74, checkout 17, purchases 18).
+- Reste ouvert: session boutique chaude (~6 s → ~1,5 s) si la course redevient le facteur limitant, et le nettoyage de la demande de test admin (`DELETE FROM ticket_requests WHERE user_id = 1 AND match_id = 11877;`).
+
 ### 2026-11-01 — Packs de revente atomiques : un POST par pack, matcher pack-aware
 
 - Contexte: le run réel de 01:34 planifiait `single taken=1` sur un pack de 2 places (`pack_id=34709`, tickets 50636 + 50639) puis `SeatGone` au refresh. L'utilisateur confirme côté site : **on ne peut pas prendre une place seule d'un pack** — le pack est l'unité de vente, et son payload navigateur (capturé le 01/11) le prouve : tous les tickets du pack partent en une fois, `selected_tickets_34681=50587%2C50590` + `resale_pack_selected=34681`. Notre POST n'envoyait qu'un ticket, structurellement faux pour tout pack > 1.

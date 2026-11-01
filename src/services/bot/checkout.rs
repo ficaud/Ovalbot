@@ -52,6 +52,13 @@ pub trait CartSession: Send {
     /// Adds one whole resale pack to the session's cart (the caller guarantees
     /// the pack is still listed by [étape 1](crate::services::bot)).
     ///
+    /// # Arguments
+    /// * `resale_url` — the resale product page
+    /// * `pack_id` — the atomic pack to add
+    /// * `tickets` — every ticket id of that pack
+    /// * `price_range` — `price_slider` fallback when the page does not expose
+    ///   its lazily built slider
+    ///
     /// # Errors
     /// [`CheckoutError`] — `SeatGone`/`WaitingQueue` are retry-later churn,
     /// the others end the attempt.
@@ -60,6 +67,7 @@ pub trait CartSession: Send {
         resale_url: &str,
         pack_id: u64,
         tickets: &[String],
+        price_range: (String, String),
     ) -> Result<(), CheckoutError>;
 }
 
@@ -119,11 +127,12 @@ impl CartSession for RealSession {
         resale_url: &str,
         pack_id: u64,
         tickets: &[String],
+        price_range: (String, String),
     ) -> Result<(), CheckoutError> {
         let session = std::sync::Arc::clone(&self.0);
         let url = resale_url.to_string();
         let tickets = tickets.to_vec();
-        tokio::task::spawn_blocking(move || session.add_pack(&url, pack_id, &tickets))
+        tokio::task::spawn_blocking(move || session.add_pack(&url, pack_id, &tickets, price_range))
             .await
             .map_err(|e| CheckoutError::Network(format!("add-to-cart task failed: {e}")))?
     }
@@ -253,8 +262,9 @@ async fn execute_plan(state: &AppState, target: &CheckoutTarget, plan: &PlanChec
     let mut added = 0usize;
     let mut hard_failure = false;
     for (pack_id, tickets) in group_packs(&plan.seats) {
+        let price_range = pack_price_range(&plan.seats, pack_id);
         match session
-            .add_pack(&target.resale_link, pack_id, &tickets)
+            .add_pack(&target.resale_link, pack_id, &tickets, price_range)
             .await
         {
             Ok(()) => {
@@ -385,6 +395,30 @@ fn group_packs(seats: &[Seat]) -> Vec<(u64, Vec<String>)> {
         tickets.sort_unstable();
     }
     packs
+}
+
+/// The pack's price span as printed on the page (`49.00`, `59.00`), used as the
+/// `price_slider` fallback when the resale page does not expose the lazily
+/// built slider.
+///
+/// # Arguments
+/// * `seats` — the plan's seats
+/// * `pack_id` — the pack whose seats are considered
+/// # Returns
+/// `(min, max)` with two decimals, or two empty strings when no price parses
+fn pack_price_range(seats: &[Seat], pack_id: u64) -> (String, String) {
+    let prices: Vec<f64> = seats
+        .iter()
+        .filter(|seat| seat.id.pack_id == pack_id)
+        .filter_map(|seat| seat.price.replace(',', ".").parse::<f64>().ok())
+        .collect();
+    match (
+        prices.iter().copied().reduce(f64::min),
+        prices.iter().copied().reduce(f64::max),
+    ) {
+        (Some(min), Some(max)) => (format!("{min:.2}"), format!("{max:.2}")),
+        _ => (String::new(), String::new()),
+    }
 }
 
 /// Builds the wave notification payload.
