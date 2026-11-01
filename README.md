@@ -127,6 +127,9 @@ queue, network and expired-form errors leave it `pending` for the next wave.
 Resale packs are **atomic**: the billetterie cannot split a 2-ticket listing, so
 the bot adds a whole pack in one request and only plans packs that fit the
 remaining quota of a request (a 2-ticket pack never serves a 1-seat request).
+An add is only claimed when the site's AJAX response confirms it (`added-to-cart`
+/ `is_already_in_cart` / `refreshCartTimeout`); anything else leaves the request
+`pending` for the next wave.
 
 See `.env.example` for a ready-to-copy template.
 

@@ -228,6 +228,7 @@ impl CartSession for RecordingSession {
         _resale_url: &str,
         pack_id: u64,
         tickets: &[String],
+        _price_range: (String, String),
     ) -> Result<(), CheckoutError> {
         self.packs.lock().unwrap().push((pack_id, tickets.to_vec()));
         match self.outcomes.pop_front().unwrap_or(PackOutcome::Added) {
