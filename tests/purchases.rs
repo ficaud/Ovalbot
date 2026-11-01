@@ -23,11 +23,18 @@ fn group(places: u8) -> TicketRequestInput {
     TicketRequestInput::Group { places }
 }
 
-/// Builds a resale seat with an explicit ticket id, price and category.
+/// Builds a resale seat with an explicit ticket id, price and category, in its
+/// own 1-ticket pack (resale packs are atomic: independent test seats must not
+/// share one).
 fn seat(ticket_id: &str, price: &str, category: &str) -> Seat {
+    seat_in(pack_of(ticket_id), ticket_id, price, category)
+}
+
+/// Builds a resale seat inside an explicit pack (pack id + ticket id).
+fn seat_in(pack_id: u64, ticket_id: &str, price: &str, category: &str) -> Seat {
     Seat {
         id: SeatId {
-            pack_id: 33727,
+            pack_id,
             ticket_id: ticket_id.to_string(),
         },
         seat_info: SeatInfo {
@@ -41,6 +48,15 @@ fn seat(ticket_id: &str, price: &str, category: &str) -> Seat {
         },
         price: price.to_string(),
     }
+}
+
+/// Deterministic pack id for a test ticket, so each independent seat gets its
+/// own pack.
+fn pack_of(ticket_id: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ticket_id.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Forces the request's `created_at` (single-digit-ordering determinism);
@@ -68,13 +84,25 @@ async fn grant_shop(pool: &SqlitePool, user: i64, email: Option<&str>) {
 /// Records an offer in `ticket_offers`, optionally already claimed by a user,
 /// mirroring what `record_offers`/`claim_seat` write at scan/purchase time.
 async fn offered(pool: &SqlitePool, match_id: i64, ticket_id: &str, claimed_by: Option<i64>) {
+    offered_in(pool, match_id, pack_of(ticket_id), ticket_id, claimed_by).await;
+}
+
+/// Records an offer inside an explicit pack (multi-ticket pack tests).
+async fn offered_in(
+    pool: &SqlitePool,
+    match_id: i64,
+    pack_id: u64,
+    ticket_id: &str,
+    claimed_by: Option<i64>,
+) {
     sqlx::query(
         "INSERT INTO ticket_offers (match_id, title, date, pack_id, ticket_id, first_seen_at, claimed_by) \
          VALUES (?, 'Stade Rochelais vs Aviron Bayonnais', 'dimanche 8 novembre 15h00', \
-              33727, ?, ?, ?) \
+              ?, ?, ?, ?) \
          ON CONFLICT(match_id, pack_id, ticket_id) DO UPDATE SET claimed_by = excluded.claimed_by",
     )
     .bind(match_id)
+    .bind(pack_id as i64)
     .bind(ticket_id)
     .bind(ovalbot::common::time::now())
     .bind(claimed_by)
@@ -319,8 +347,12 @@ async fn group_takes_the_pelouse_available_progressively(pool: SqlitePool) {
     // one more pelouse appears: remaining = 1, so only that one is planned.
     offered(&pool, MATCH, "p1", None).await;
     offered(&pool, MATCH, "p2", None).await;
-    assert!(claim_seat(&pool, MATCH, 33727, "p1", user).await.unwrap());
-    assert!(claim_seat(&pool, MATCH, 33727, "p2", user).await.unwrap());
+    assert!(claim_seat(&pool, MATCH, pack_of("p1"), "p1", user)
+        .await
+        .unwrap());
+    assert!(claim_seat(&pool, MATCH, pack_of("p2"), "p2", user)
+        .await
+        .unwrap());
     offered(&pool, MATCH, "p3", None).await;
     let plans = plan_checkouts(
         &pool,
@@ -338,7 +370,9 @@ async fn group_takes_the_pelouse_available_progressively(pool: SqlitePool) {
 
     // Wave 3 — claim it and the order is complete → nothing planned anymore
     // (even with pelouse still listed, incl. the claimed one).
-    assert!(claim_seat(&pool, MATCH, 33727, "p3", user).await.unwrap());
+    assert!(claim_seat(&pool, MATCH, pack_of("p3"), "p3", user)
+        .await
+        .unwrap());
     let plans = plan_checkouts(
         &pool,
         MATCH,
@@ -439,13 +473,19 @@ async fn claim_seat_is_atomic(pool: SqlitePool) {
     let second = insert_active_user(&pool, "second@example.com").await;
     offered(&pool, MATCH, "p1", None).await;
 
-    assert!(claim_seat(&pool, MATCH, 33727, "p1", first).await.unwrap());
-    assert!(!claim_seat(&pool, MATCH, 33727, "p1", second).await.unwrap());
+    assert!(claim_seat(&pool, MATCH, pack_of("p1"), "p1", first)
+        .await
+        .unwrap());
+    assert!(!claim_seat(&pool, MATCH, pack_of("p1"), "p1", second)
+        .await
+        .unwrap());
     // A repeated call for the same user loses too (already claimed).
-    assert!(!claim_seat(&pool, MATCH, 33727, "p1", first).await.unwrap());
+    assert!(!claim_seat(&pool, MATCH, pack_of("p1"), "p1", first)
+        .await
+        .unwrap());
 
     // Unknown seat: never claimable.
-    assert!(!claim_seat(&pool, MATCH, 33727, "ghost", first)
+    assert!(!claim_seat(&pool, MATCH, pack_of("ghost"), "ghost", first)
         .await
         .unwrap());
 }
@@ -456,5 +496,105 @@ async fn no_candidates_is_quiet(pool: SqlitePool) {
     let plans = plan_checkouts(&pool, MATCH, &[seat("p1", "15.00", "Pelouse")])
         .await
         .unwrap();
+    assert!(plans.is_empty());
+}
+
+// A Single 1-seat request skips a 2-ticket pack (the billetterie cannot split
+// it) and takes the next 1-ticket pack instead.
+#[sqlx::test]
+async fn single_ignores_a_pack_larger_than_the_quota(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, MATCH, &single(1, 5000)).await.unwrap();
+    grant_shop(&pool, user, Some("shop@example.com")).await;
+
+    let plans = plan_checkouts(
+        &pool,
+        MATCH,
+        &[
+            seat_in(9001, "a", "44.00", "CATÉGORIE 4"),
+            seat_in(9001, "b", "44.00", "CATÉGORIE 4"),
+            seat("solo", "44.00", "CATÉGORIE 4"),
+        ],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].seats.len(), 1);
+    assert_eq!(plans[0].seats[0].id.ticket_id, "solo");
+}
+
+// A Group 4 request is served by two whole Pelouse duos (2 + 2).
+#[sqlx::test]
+async fn group_takes_whole_pelouse_packs(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, MATCH, &group(4)).await.unwrap();
+    grant_shop(&pool, user, Some("shop@example.com")).await;
+
+    let plans = plan_checkouts(
+        &pool,
+        MATCH,
+        &[
+            seat_in(9101, "a", "15.00", "Pelouse"),
+            seat_in(9101, "b", "15.00", "Pelouse"),
+            seat_in(9102, "c", "15.00", "Pelouse"),
+            seat_in(9102, "d", "15.00", "Pelouse"),
+        ],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(plans.len(), 1);
+    let seats = &plans[0].seats;
+    assert_eq!(seats.len(), 4);
+    let packs: std::collections::HashSet<u64> = seats.iter().map(|s| s.id.pack_id).collect();
+    assert_eq!(packs, [9101, 9102].into_iter().collect());
+}
+
+// One ticket claimed by someone (even from another wave) takes the whole pack
+// out of the market: the matcher never plans a truncated pack.
+#[sqlx::test]
+async fn one_claim_takes_the_whole_pack_out(pool: SqlitePool) {
+    let claimant = insert_active_user(&pool, "other@example.com").await;
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, MATCH, &single(4, 5000)).await.unwrap();
+    grant_shop(&pool, user, Some("shop@example.com")).await;
+    offered_in(&pool, MATCH, 9002, "a", Some(claimant)).await;
+
+    let plans = plan_checkouts(
+        &pool,
+        MATCH,
+        &[
+            seat_in(9002, "a", "44.00", "CATÉGORIE 4"),
+            seat_in(9002, "b", "44.00", "CATÉGORIE 4"),
+        ],
+    )
+    .await
+    .unwrap();
+
+    assert!(plans.is_empty());
+}
+
+// A Pelouse duo cannot top up a Group with a single place left.
+#[sqlx::test]
+async fn group_skips_a_pack_that_does_not_fit_the_remaining_quota(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, MATCH, &group(4)).await.unwrap();
+    grant_shop(&pool, user, Some("shop@example.com")).await;
+    for ticket in ["c1", "c2", "c3"] {
+        offered(&pool, MATCH, ticket, Some(user)).await;
+    }
+
+    let plans = plan_checkouts(
+        &pool,
+        MATCH,
+        &[
+            seat_in(9003, "a", "15.00", "Pelouse"),
+            seat_in(9003, "b", "15.00", "Pelouse"),
+        ],
+    )
+    .await
+    .unwrap();
+
     assert!(plans.is_empty());
 }

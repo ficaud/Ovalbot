@@ -11,10 +11,12 @@
 //! 2. load the user's decrypted shop credentials ([`crate::services::accounts::shop`]);
 //!    a missing key (rotated `SECRET_KEY`) or missing credentials leaves the
 //!    request `pending` — nothing can be acted on;
-//! 3. log in ([`CartShop::login`]) and add each planned seat
-//!    ([`CartSession::add_seat`]);
+//! 3. log in ([`CartShop::login`]) and add each planned **pack**
+//!    ([`CartSession::add_pack`]) — a resale pack is atomic, so one POST per
+//!    pack, carrying every ticket of it;
 //! 4. a successful add is recorded with [`crate::services::bot::purchases::claim_seat`]
-//!    (the anti-double-claim of the progressive fill);
+//!    for every ticket of the pack (the anti-double-claim of the progressive
+//!    fill);
 //! 5. each wave ends with a notification carrying the `claims/total` progress
 //!    (email + Telegram) — the 20-minute cart window makes every wave
 //!    actionable;
@@ -44,16 +46,21 @@ use crate::services::tickets;
 /// of every cart notification).
 pub const CART_URL: &str = "https://billetterie.staderochelais.com";
 
-/// A shop login succeeded: the callable session used to add seats.
+/// A shop login succeeded: the callable session used to add packs.
 #[async_trait]
 pub trait CartSession: Send {
-    /// Adds one seat to the session's cart (the caller guarantees the seat is
-    /// still listed by [étape 1](crate::services::bot)).
+    /// Adds one whole resale pack to the session's cart (the caller guarantees
+    /// the pack is still listed by [étape 1](crate::services::bot)).
     ///
     /// # Errors
     /// [`CheckoutError`] — `SeatGone`/`WaitingQueue` are retry-later churn,
     /// the others end the attempt.
-    async fn add_seat(&mut self, resale_url: &str, seat: &Seat) -> Result<(), CheckoutError>;
+    async fn add_pack(
+        &mut self,
+        resale_url: &str,
+        pack_id: u64,
+        tickets: &[String],
+    ) -> Result<(), CheckoutError>;
 }
 
 /// Factory of shop sessions, injected into [`AppState`] so the orchestrator is
@@ -107,11 +114,16 @@ struct RealSession(std::sync::Arc<ShopSession>);
 
 #[async_trait]
 impl CartSession for RealSession {
-    async fn add_seat(&mut self, resale_url: &str, seat: &Seat) -> Result<(), CheckoutError> {
+    async fn add_pack(
+        &mut self,
+        resale_url: &str,
+        pack_id: u64,
+        tickets: &[String],
+    ) -> Result<(), CheckoutError> {
         let session = std::sync::Arc::clone(&self.0);
         let url = resale_url.to_string();
-        let seat_id = seat.id.clone();
-        tokio::task::spawn_blocking(move || session.add_seat(&url, &seat_id))
+        let tickets = tickets.to_vec();
+        tokio::task::spawn_blocking(move || session.add_pack(&url, pack_id, &tickets))
             .await
             .map_err(|e| CheckoutError::Network(format!("add-to-cart task failed: {e}")))?
     }
@@ -240,43 +252,43 @@ async fn execute_plan(state: &AppState, target: &CheckoutTarget, plan: &PlanChec
 
     let mut added = 0usize;
     let mut hard_failure = false;
-    for seat in &plan.seats {
-        match session.add_seat(&target.resale_link, seat).await {
+    for (pack_id, tickets) in group_packs(&plan.seats) {
+        match session
+            .add_pack(&target.resale_link, pack_id, &tickets)
+            .await
+        {
             Ok(()) => {
-                added += 1;
-                match purchases::claim_seat(
-                    &state.pool,
-                    match_id,
-                    seat.id.pack_id,
-                    &seat.id.ticket_id,
-                    user_id,
-                )
-                .await
-                {
-                    Ok(true) => tracing::info!(
-                        user_id,
-                        match_id,
-                        pack_id = seat.id.pack_id,
-                        ticket_id = %seat.id.ticket_id,
-                        "checkout: seat added to cart"
-                    ),
-                    Ok(false) => tracing::warn!(
-                        user_id,
-                        match_id,
-                        pack_id = seat.id.pack_id,
-                        ticket_id = %seat.id.ticket_id,
-                        "checkout: seat added but already claimed in DB (site won the race)"
-                    ),
-                    Err(e) => tracing::warn!("checkout: failed to record claim: {e}"),
+                added += tickets.len();
+                for ticket in &tickets {
+                    match purchases::claim_seat(&state.pool, match_id, pack_id, ticket, user_id)
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => tracing::warn!(
+                            user_id,
+                            match_id,
+                            pack_id,
+                            ticket_id = %ticket,
+                            "checkout: seat added but already claimed in DB (site won the race)"
+                        ),
+                        Err(e) => tracing::warn!("checkout: failed to record claim: {e}"),
+                    }
                 }
+                tracing::info!(
+                    user_id,
+                    match_id,
+                    pack_id,
+                    seats = tickets.len(),
+                    "checkout: pack added to cart"
+                );
             }
             Err(CheckoutError::SeatGone) | Err(CheckoutError::WaitingQueue) => {
                 tracing::debug!(
                     user_id,
                     match_id,
-                    pack_id = seat.id.pack_id,
-                    ticket_id = %seat.id.ticket_id,
-                    "checkout: seat skipped (resale churn)"
+                    pack_id,
+                    seats = tickets.len(),
+                    "checkout: pack skipped (resale churn)"
                 );
             }
             Err(e) if is_retryable(&e) => {
@@ -348,6 +360,31 @@ async fn close_request(state: &AppState, user_id: i64, match_id: i64, accepted: 
         ),
         Err(e) => tracing::warn!("checkout: failed to close request: {e}"),
     }
+}
+
+/// Groups a plan's seats into their atomic resale packs, preserving the
+/// listing order. The billetterie cannot split a pack (a 2-ticket resale is
+/// added or lost as a whole), so each returned entry is one add-to-cart POST.
+///
+/// # Arguments
+/// * `seats` — the plan's seats, one entry per ticket
+/// # Returns
+/// `(pack_id, ticket ids)` pairs, tickets sorted for a deterministic payload
+fn group_packs(seats: &[Seat]) -> Vec<(u64, Vec<String>)> {
+    let mut packs: Vec<(u64, Vec<String>)> = Vec::new();
+    for seat in seats {
+        match packs
+            .iter_mut()
+            .find(|(pack_id, _)| *pack_id == seat.id.pack_id)
+        {
+            Some((_, tickets)) => tickets.push(seat.id.ticket_id.clone()),
+            None => packs.push((seat.id.pack_id, vec![seat.id.ticket_id.clone()])),
+        }
+    }
+    for (_, tickets) in &mut packs {
+        tickets.sort_unstable();
+    }
+    packs
 }
 
 /// Builds the wave notification payload.

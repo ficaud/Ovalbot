@@ -4,18 +4,22 @@
 //! with the user's stored shop credentials.
 //!
 //! **Progressive fill** (user-validated design): a request is a quota, not a
-//! one-shot basket. The bot takes unclaimed seats as they appear — one or
+//! one-shot basket. The bot takes unclaimed **packs** as they appear — one or
 //! several per pass, whatever kinds/categories they come in — until the
-//! ordered count is reached:
-//! - `single`: any category, price within the per-ticket budget, quota
+//! ordered count is reached. A resale pack is **atomic** (the billetterie
+//! cannot split a 2-ticket listing), so the pack is the planning and checkout
+//! unit: a pack is eligible only when every ticket of it matches the request
+//! and the whole pack fits the remaining quota.
+//! - `single`: any category, every ticket within the per-ticket budget, quota
 //!   `quantity` spread over as many waves as needed;
-//! - `group`: exactly like single but restricted to **Pelouse** seats (the
+//! - `group`: exactly like single but restricted to **Pelouse** packs (the
 //!   pelouse rate applies, no price match), quota `places`.
 //!
 //! Claimed seats live in `ticket_offers.claimed_by` (set by the orchestrator
-//! once the add-to-cart succeeded). The matcher plans only unclaimed seats
-//! and a request's headroom is its quota minus its own claims — so a served
-//! seat is never planned a second time, whatever the wave.
+//! once the add-to-cart succeeded). The matcher plans only unclaimed packs —
+//! one claimed ticket takes its whole pack out of the market — and a request's
+//! headroom is its quota minus its own claims, so a served pack is never
+//! planned a second time, whatever the wave.
 //!
 //! Serving rules:
 //! - Only `pending` rows in a buying kind are served; `notify` subscriptions
@@ -109,12 +113,18 @@ pub async fn plan_checkouts(
         return Ok(Vec::new());
     }
 
-    // Seats already in someone's cart drop out of the pool: the site keeps
-    // them listed but only one user's add-to-cart can ever win them.
+    // A pack is atomic: one ticket already claimed takes the whole pack out of
+    // the market (the site either keeps or drops the pack as a whole).
     let claimed: HashSet<(u64, String)> = claimed_seats(pool, match_id).await?;
+    let mut claimed_packs: HashSet<u64> = HashSet::new();
+    for seat in seats {
+        if claimed.contains(&(seat.id.pack_id, seat.id.ticket_id.clone())) {
+            claimed_packs.insert(seat.id.pack_id);
+        }
+    }
     let mut available: Vec<&Seat> = seats
         .iter()
-        .filter(|seat| !claimed.contains(&(seat.id.pack_id, seat.id.ticket_id.clone())))
+        .filter(|seat| !claimed_packs.contains(&seat.id.pack_id))
         .collect();
     let mut plans = Vec::new();
 
@@ -198,8 +208,41 @@ fn progress_suffix(candidate: &PurchaseCandidate) -> String {
 
 // ============================== PLANNERS ==============================
 
-/// Serves a `single` request: seats within the per-ticket budget, up to the
-/// remaining quota (`quantity` minus what the user already claimed).
+/// One resale pack inside the availability pool: the atomic purchase unit.
+struct PackRef {
+    /// Pack identity on the site.
+    pack_id: u64,
+    /// Indices into the pool, in listing order.
+    indices: Vec<usize>,
+}
+
+/// Groups the availability pool into its atomic packs, in first-seen order.
+///
+/// # Arguments
+/// * `available` — the unclaimed seats of the listing
+/// # Returns
+/// One [`PackRef`] per pack, its indices in listing order
+fn packs_of(available: &[&Seat]) -> Vec<PackRef> {
+    let mut packs: Vec<PackRef> = Vec::new();
+    for (index, seat) in available.iter().enumerate() {
+        match packs
+            .iter_mut()
+            .find(|pack| pack.pack_id == seat.id.pack_id)
+        {
+            Some(pack) => pack.indices.push(index),
+            None => packs.push(PackRef {
+                pack_id: seat.id.pack_id,
+                indices: vec![index],
+            }),
+        }
+    }
+    packs
+}
+
+/// Serves a `single` request: whole packs whose every ticket is within the
+/// per-ticket budget, up to the remaining quota (`quantity` minus what the
+/// user already claimed). A pack larger than the remaining quota is skipped
+/// (the billetterie cannot split it).
 fn plan_single(
     match_id: i64,
     candidate: &PurchaseCandidate,
@@ -229,27 +272,48 @@ fn plan_single(
         return (None, "no shop credentials stored".to_string());
     }
 
-    // First the eligible picks (capped at the remaining quota), then evict
-    // them from the shared pool — descending, because `swap_remove` shifts
-    // the last element into the removed slot.
-    let mut within: Vec<usize> = Vec::new();
-    let mut above_max = 0u32;
-    for (index, seat) in available.iter().enumerate() {
-        if within.len() == remaining as usize {
+    // Whole packs only, capped at the remaining quota; then evict the picks
+    // from the shared pool (descending: `swap_remove` shifts the last element
+    // into the removed slot).
+    let quota = remaining as usize;
+    let mut take: Vec<usize> = Vec::new();
+    let mut above_max_packs = 0u32;
+    let mut oversized_packs = 0u32;
+    for pack in packs_of(available) {
+        if take.len() >= quota {
             break;
         }
-        match parse_price_cents(&seat.price) {
-            Some(cents) if cents <= max => within.push(index),
-            Some(_) => above_max += 1,
-            None => tracing::debug!(
-                user_id = candidate.user_id,
-                match_id,
-                price = %seat.price,
-                "purchase matching: seat price not parsable, seat skipped"
-            ),
+        if pack.indices.len() > quota - take.len() {
+            oversized_packs += 1;
+            continue;
+        }
+        let mut eligible = true;
+        for &index in &pack.indices {
+            match parse_price_cents(&available[index].price) {
+                Some(cents) if cents <= max => {}
+                Some(_) => {
+                    eligible = false;
+                    above_max_packs += 1;
+                    break;
+                }
+                None => {
+                    eligible = false;
+                    tracing::debug!(
+                        user_id = candidate.user_id,
+                        match_id,
+                        pack_id = pack.pack_id,
+                        price = %available[index].price,
+                        "purchase matching: seat price not parsable, pack skipped"
+                    );
+                    break;
+                }
+            }
+        }
+        if eligible {
+            take.extend(pack.indices.iter().copied());
         }
     }
-    if within.is_empty() {
+    if take.is_empty() {
         let cheapest = available
             .iter()
             .filter_map(|s| parse_price_cents(&s.price))
@@ -258,29 +322,32 @@ fn plan_single(
         return (
             None,
             format!(
-                "no unclaimed seat within budget (max {}, {above_max} seat(s) priced \
-                 above it, cheapest on resale {})",
+                "no unclaimed pack within budget (max {}, {} pack(s) priced above it, \
+                 {} pack(s) larger than the remaining {} seat(s), cheapest on resale {})",
                 format_cents(max),
+                above_max_packs,
+                oversized_packs,
+                remaining,
                 format_cents(cheapest)
             ),
         );
     }
 
-    let mut taken_indices = within.clone();
-    taken_indices.sort_unstable_by(|a, b| b.cmp(a));
-    let taken = taken_indices
+    take.sort_unstable_by(|a, b| b.cmp(a));
+    let taken = take
         .iter()
         .map(|&index| (*available[index]).clone())
         .collect();
-    for &index in &taken_indices {
+    for &index in &take {
         available.swap_remove(index);
     }
     (Some(taken), String::new())
 }
 
-/// Serves a `group` request: **Pelouse** seats only, up to the remaining
+/// Serves a `group` request: **Pelouse** packs only, up to the remaining
 /// quota (`places` minus what the user already claimed). The pelouse rate
-/// applies, so no price match.
+/// applies, so no price match. A pack larger than the remaining quota is
+/// skipped (the billetterie cannot split it).
 fn plan_group(
     match_id: i64,
     candidate: &PurchaseCandidate,
@@ -301,33 +368,42 @@ fn plan_group(
         return (None, "no shop credentials stored".to_string());
     }
 
-    // First the eligible picks (capped at the remaining quota), then evict
-    // them from the shared pool — descending, because `swap_remove` shifts
-    // the last element into the removed slot.
-    let pelouse: Vec<usize> = available
-        .iter()
-        .enumerate()
-        .filter(|(_, seat)| is_pelouse(seat))
-        .map(|(index, _)| index)
-        .take(remaining as usize)
-        .collect();
-    if pelouse.is_empty() {
-        return (
-            None,
-            format!(
-                "no unclaimed Pelouse seat on the market (need {} more)",
-                remaining
-            ),
-        );
+    // Whole pelouse packs only, capped at the remaining quota.
+    let quota = remaining as usize;
+    let mut take: Vec<usize> = Vec::new();
+    let mut oversized_packs = 0u32;
+    for pack in packs_of(available) {
+        if take.len() >= quota {
+            break;
+        }
+        if pack.indices.len() > quota - take.len() {
+            oversized_packs += 1;
+            continue;
+        }
+        if pack
+            .indices
+            .iter()
+            .all(|&index| is_pelouse(available[index]))
+        {
+            take.extend(pack.indices.iter().copied());
+        }
+    }
+    if take.is_empty() {
+        let mut reason = format!("no unclaimed Pelouse pack on the market (need {remaining} more)");
+        if oversized_packs > 0 {
+            reason.push_str(&format!(
+                ", {oversized_packs} pack(s) larger than the remaining quota"
+            ));
+        }
+        return (None, reason);
     }
 
-    let mut taken_indices = pelouse.clone();
-    taken_indices.sort_unstable_by(|a, b| b.cmp(a));
-    let taken = taken_indices
+    take.sort_unstable_by(|a, b| b.cmp(a));
+    let taken = take
         .iter()
         .map(|&index| (*available[index]).clone())
         .collect();
-    for &index in &taken_indices {
+    for &index in &take {
         available.swap_remove(index);
     }
     (Some(taken), String::new())
@@ -518,13 +594,24 @@ pub fn parse_price_cents(raw: &str) -> Option<u32> {
 mod tests {
     use super::*;
     use parser::core::seat::{SeatComposition, SeatId, SeatInfo};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Builds a resale seat with a category and a raw price string.
+    /// Monotonic pack ids so each [`seat`] call mints its own 1-ticket pack.
+    static NEXT_PACK: AtomicU64 = AtomicU64::new(1);
+
+    /// Builds a resale seat in its own 1-ticket pack (resale packs are atomic,
+    /// so independent test seats must not share a pack).
     fn seat(price: &str, category: &str) -> Seat {
+        let pack_id = NEXT_PACK.fetch_add(1, Ordering::Relaxed);
+        seat_in(pack_id, &format!("t{pack_id}"), price, category)
+    }
+
+    /// Builds a resale seat inside an explicit pack (pack id + ticket id).
+    fn seat_in(pack_id: u64, ticket_id: &str, price: &str, category: &str) -> Seat {
         Seat {
             id: SeatId {
-                pack_id: 33727,
-                ticket_id: "t1".to_string(),
+                pack_id,
+                ticket_id: ticket_id.to_string(),
             },
             seat_info: SeatInfo {
                 full_name: format!("{category} Place 12"),
@@ -654,6 +741,79 @@ mod tests {
         assert_eq!(taken.unwrap().len(), 1);
     }
 
+    // A pack is atomic: a 2-ticket pack cannot serve a 1-seat quota.
+    #[test]
+    fn plan_single_skips_a_pack_larger_than_the_quota() {
+        let duo_a = seat_in(900, "a", "40.00", "CATÉGORIE 3");
+        let duo_b = seat_in(900, "b", "40.00", "CATÉGORIE 3");
+        let mut available = vec![&duo_a, &duo_b];
+        let (taken, reason) = plan_single(42, &single_candidate(1, 5000, true, 0), &mut available);
+        assert!(taken.is_none());
+        assert!(
+            reason.contains("1 pack(s) larger than the remaining 1 seat(s)"),
+            "{reason}"
+        );
+        assert_eq!(available.len(), 2, "the pack stays on the market");
+    }
+
+    // When the quota covers the whole pack, every ticket of it is planned at
+    // once (the checkout will send one add-to-cart POST for the pack).
+    #[test]
+    fn plan_single_takes_a_whole_pack_within_the_quota() {
+        let duo_a = seat_in(901, "a", "40.00", "CATÉGORIE 3");
+        let duo_b = seat_in(901, "b", "40.00", "CATÉGORIE 3");
+        let mut available = vec![&duo_a, &duo_b];
+        let (taken, reason) = plan_single(42, &single_candidate(2, 5000, true, 0), &mut available);
+        assert!(reason.is_empty(), "{reason}");
+        let taken = taken.unwrap();
+        assert_eq!(taken.len(), 2);
+        assert!(taken.iter().all(|s| s.id.pack_id == 901));
+        assert!(available.is_empty());
+    }
+
+    // A Pelouse duo is one purchase unit: a 4-place group takes both tickets.
+    #[test]
+    fn plan_group_takes_a_whole_pelouse_pack() {
+        let duo_a = seat_in(902, "a", "15.00", "Pelouse");
+        let duo_b = seat_in(902, "b", "15.00", "Pelouse");
+        let mut available = vec![&duo_a, &duo_b];
+        let (taken, reason) = plan_group(42, &group_candidate(4, true, 0), &mut available);
+        assert!(reason.is_empty(), "{reason}");
+        let taken = taken.unwrap();
+        assert_eq!(taken.len(), 2);
+        assert!(taken.iter().all(|s| s.id.pack_id == 902));
+    }
+
+    // A pelouse pack bigger than the remaining quota is skipped, not split.
+    #[test]
+    fn plan_group_skips_a_pack_that_does_not_fit() {
+        let trio = [
+            seat_in(903, "a", "15.00", "Pelouse"),
+            seat_in(903, "b", "15.00", "Pelouse"),
+            seat_in(903, "c", "15.00", "Pelouse"),
+        ];
+        let mut available: Vec<&Seat> = trio.iter().collect();
+        // 3/4 filled: 1 place left, a 3-ticket pack does not fit.
+        let (taken, reason) = plan_group(42, &group_candidate(4, true, 3), &mut available);
+        assert!(taken.is_none());
+        assert!(
+            reason.contains("1 pack(s) larger than the remaining quota"),
+            "{reason}"
+        );
+    }
+
+    // A mixed pack (pelouse + non-pelouse) cannot serve a group: the billetterie
+    // sells it whole.
+    #[test]
+    fn plan_group_ignores_a_mixed_pack() {
+        let pelouse = seat_in(904, "a", "15.00", "Pelouse");
+        let cat = seat_in(904, "b", "45.00", "CATÉGORIE 2");
+        let mut available = vec![&pelouse, &cat];
+        let (taken, reason) = plan_group(42, &group_candidate(4, true, 0), &mut available);
+        assert!(taken.is_none());
+        assert!(reason.contains("no unclaimed Pelouse pack"), "{reason}");
+    }
+
     // A request without shop credentials is skipped, whatever the seats.
     #[test]
     fn candidates_without_credentials_are_skipped() {
@@ -694,12 +854,12 @@ mod tests {
         let (taken, reason) = plan_single(42, &single_candidate(2, 4900, true, 0), &mut available);
         assert!(taken.is_none());
         assert!(
-            reason.contains("no unclaimed seat within budget"),
+            reason.contains("no unclaimed pack within budget"),
             "{reason}"
         );
         assert!(reason.contains("max 49.00 €"), "{reason}");
         assert!(reason.contains("cheapest on resale 55.00 €"), "{reason}");
-        assert!(reason.contains("2 seat(s)"), "{reason}");
+        assert!(reason.contains("2 pack(s)"), "{reason}");
     }
 
     // An empty listing produces the same priced diagnostic structure.
@@ -709,7 +869,7 @@ mod tests {
         let (taken, reason) = plan_single(42, &single_candidate(1, 4900, true, 0), &mut available);
         assert!(taken.is_none());
         assert!(
-            reason.contains("no unclaimed seat within budget"),
+            reason.contains("no unclaimed pack within budget"),
             "{reason}"
         );
     }
@@ -751,7 +911,7 @@ mod tests {
         );
         assert!(third.is_none());
         assert!(
-            reason.contains("no unclaimed seat within budget"),
+            reason.contains("no unclaimed pack within budget"),
             "{reason}"
         );
     }

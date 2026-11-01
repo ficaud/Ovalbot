@@ -15,7 +15,6 @@ use ovalbot::services::channels::telegram::{
     NoopTelegram, Telegram, TelegramConfig, TelegramError,
 };
 use ovalbot::services::state::AppState;
-use parser::core::seat::Seat;
 use parser::interface::curl::checkout::CheckoutError;
 use sqlx::SqlitePool;
 use std::collections::VecDeque;
@@ -101,11 +100,11 @@ impl Telegram for RecordingTelegram {
     }
 }
 
-/// What the fake shop does with the next `add_seat` call.
-pub enum SeatOutcome {
-    /// The add-to-cart succeeds (the seat lands in the fake cart).
+/// What the fake shop does with the next `add_pack` call.
+pub enum PackOutcome {
+    /// The add-to-cart succeeds (the pack lands in the fake cart).
     Added,
-    /// The seat disappeared from the resale page (retry-later churn).
+    /// The pack disappeared from the resale page (retry-later churn).
     SeatGone,
     /// The billetterie served its waiting queue (retry-later churn).
     WaitingQueue,
@@ -131,16 +130,21 @@ pub enum LoginOutcome {
     Network,
 }
 
-/// Fake [`CartShop`]: records logins and added seats, replays a scripted
-/// per-seat outcome queue, and can script the login outcome.
+/// Every `add_pack` call, as `(pack_id, ticket ids)`.
+pub type PackLog = Arc<Mutex<Vec<(u64, Vec<String>)>>>;
+
+/// Fake [`CartShop`]: records logins and added packs, replays a scripted
+/// per-pack outcome queue, and can script the login outcome.
 pub struct RecordingShop {
     /// Emails of every `login` attempt (order = call order).
     pub logins: Mutex<Vec<String>>,
     /// What every login answers.
     pub login_outcome: Mutex<LoginOutcome>,
-    /// Per-seat outcomes consumed in order (defaults to [`SeatOutcome::Added`]
+    /// Per-pack outcomes consumed in order (defaults to [`PackOutcome::Added`]
     /// once the queue is empty).
-    pub outcomes: Mutex<VecDeque<SeatOutcome>>,
+    pub outcomes: Mutex<VecDeque<PackOutcome>>,
+    /// Every `add_pack` call as `(pack_id, ticket ids)`.
+    pub packs: PackLog,
     /// Ticket ids of the seats the fake cart accepted.
     pub added: Arc<Mutex<Vec<String>>>,
 }
@@ -152,12 +156,13 @@ impl RecordingShop {
             logins: Mutex::new(Vec::new()),
             login_outcome: Mutex::new(LoginOutcome::Accept),
             outcomes: Mutex::new(VecDeque::new()),
+            packs: Arc::new(Mutex::new(Vec::new())),
             added: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    /// Scripts the per-seat outcomes, in add-call order.
-    pub fn with_outcomes(self, outcomes: Vec<SeatOutcome>) -> Self {
+    /// Scripts the per-pack outcomes, in add-call order.
+    pub fn with_outcomes(self, outcomes: Vec<PackOutcome>) -> Self {
         *self.outcomes.lock().unwrap() = outcomes.into();
         self
     }
@@ -184,7 +189,8 @@ impl RecordingShop {
 }
 
 struct RecordingSession {
-    outcomes: VecDeque<SeatOutcome>,
+    outcomes: VecDeque<PackOutcome>,
+    packs: PackLog,
     added: Arc<Mutex<Vec<String>>>,
 }
 
@@ -209,6 +215,7 @@ impl CartShop for RecordingShop {
         let outcomes = std::mem::take(&mut *self.outcomes.lock().unwrap());
         Ok(Box::new(RecordingSession {
             outcomes,
+            packs: Arc::clone(&self.packs),
             added: Arc::clone(&self.added),
         }))
     }
@@ -216,17 +223,23 @@ impl CartShop for RecordingShop {
 
 #[async_trait]
 impl CartSession for RecordingSession {
-    async fn add_seat(&mut self, _resale_url: &str, seat: &Seat) -> Result<(), CheckoutError> {
-        match self.outcomes.pop_front().unwrap_or(SeatOutcome::Added) {
-            SeatOutcome::Added => {
-                self.added.lock().unwrap().push(seat.id.ticket_id.clone());
+    async fn add_pack(
+        &mut self,
+        _resale_url: &str,
+        pack_id: u64,
+        tickets: &[String],
+    ) -> Result<(), CheckoutError> {
+        self.packs.lock().unwrap().push((pack_id, tickets.to_vec()));
+        match self.outcomes.pop_front().unwrap_or(PackOutcome::Added) {
+            PackOutcome::Added => {
+                self.added.lock().unwrap().extend(tickets.iter().cloned());
                 Ok(())
             }
-            SeatOutcome::SeatGone => Err(CheckoutError::SeatGone),
-            SeatOutcome::WaitingQueue => Err(CheckoutError::WaitingQueue),
-            SeatOutcome::ExpiredForm => Err(CheckoutError::ExpiredForm),
-            SeatOutcome::MissingContext => Err(CheckoutError::MissingContext),
-            SeatOutcome::Network => Err(CheckoutError::Network("fake outage".to_string())),
+            PackOutcome::SeatGone => Err(CheckoutError::SeatGone),
+            PackOutcome::WaitingQueue => Err(CheckoutError::WaitingQueue),
+            PackOutcome::ExpiredForm => Err(CheckoutError::ExpiredForm),
+            PackOutcome::MissingContext => Err(CheckoutError::MissingContext),
+            PackOutcome::Network => Err(CheckoutError::Network("fake outage".to_string())),
         }
     }
 }

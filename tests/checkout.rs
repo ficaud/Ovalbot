@@ -7,8 +7,8 @@ mod common;
 use std::sync::Arc;
 
 use common::{
-    insert_active_user, LoginOutcome, RecordingMailer, RecordingShop, RecordingTelegram,
-    SeatOutcome,
+    insert_active_user, LoginOutcome, PackOutcome, RecordingMailer, RecordingShop,
+    RecordingTelegram,
 };
 use ovalbot::common::crypto::SecretKey;
 use ovalbot::services::accounts::shop::set_credentials;
@@ -27,11 +27,18 @@ use sqlx::SqlitePool;
 
 const MATCH: i64 = 11877;
 
-/// Builds a resale seat with an explicit ticket id and category.
+/// Builds a resale seat with an explicit ticket id and category, in its own
+/// 1-ticket pack (resale packs are atomic: independent test seats must not
+/// share one).
 fn seat(ticket_id: &str, price: &str, category: &str) -> Seat {
+    seat_in(pack_of(ticket_id), ticket_id, price, category)
+}
+
+/// Builds a resale seat inside an explicit pack (pack id + ticket id).
+fn seat_in(pack_id: u64, ticket_id: &str, price: &str, category: &str) -> Seat {
     Seat {
         id: SeatId {
-            pack_id: 33727,
+            pack_id,
             ticket_id: ticket_id.to_string(),
         },
         seat_info: SeatInfo {
@@ -45,6 +52,15 @@ fn seat(ticket_id: &str, price: &str, category: &str) -> Seat {
         },
         price: price.to_string(),
     }
+}
+
+/// Deterministic pack id for a test ticket, so each independent seat gets its
+/// own pack.
+fn pack_of(ticket_id: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ticket_id.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Records the seats in `ticket_offers` (the scan's `record_offers` step) so
@@ -400,6 +416,64 @@ async fn completed_wave_claims_accepts_and_notifies(pool: SqlitePool) {
     assert!(messages[0].1.contains("1/1"));
 }
 
+// A 2-ticket pack is atomic: one add-to-cart call carries both tickets and both
+// claims are recorded, closing the order.
+#[sqlx::test]
+async fn wave_adds_a_two_ticket_pack_in_one_post(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(
+        &pool,
+        user,
+        MATCH,
+        &TicketRequestInput::Single {
+            quantity: 2,
+            max_price_cents: 5000,
+        },
+    )
+    .await
+    .unwrap();
+    profile(&pool, user, true, None).await;
+    let first = seat_in(34709, "50636", "44.00", "CATÉGORIE 4");
+    let second = seat_in(34709, "50639", "44.00", "CATÉGORIE 4");
+    offered(&pool, &[&first, &second]).await;
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let shop = Arc::new(RecordingShop::new());
+    let state = state(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        shop.clone(),
+        false,
+    );
+
+    execute_plans(
+        &state,
+        &target(),
+        vec![plan(
+            user,
+            TicketKind::Single,
+            2,
+            vec![first.clone(), second.clone()],
+        )],
+    )
+    .await;
+
+    // One POST for the whole pack, carrying both tickets.
+    let packs = { shop.packs.lock().unwrap().clone() };
+    assert_eq!(packs.len(), 1, "one add-to-cart call per pack");
+    assert_eq!(packs[0].0, 34709);
+    assert_eq!(packs[0].1, vec!["50636".to_string(), "50639".to_string()]);
+
+    assert_eq!(claimed(&pool, user).await, 2);
+    assert_eq!(status(&pool, user).await, TicketStatus::Accepted);
+    let mails = mailer.cart_alerts.lock().unwrap();
+    assert_eq!(mails.len(), 1);
+    assert_eq!((mails[0].1.added, mails[0].1.total), (2, 2));
+    assert!(!mails[0].1.failed);
+}
+
 // A progressive wave on a 4-place Group order: 2 seats claimed, request still
 // pending, notification carries the 2/4 progress.
 #[sqlx::test]
@@ -533,7 +607,7 @@ async fn seat_gone_is_tolerated(pool: SqlitePool) {
     let mailer = Arc::new(RecordingMailer::new());
     let telegram = Arc::new(RecordingTelegram::new());
     let shop = Arc::new(
-        RecordingShop::new().with_outcomes(vec![SeatOutcome::Added, SeatOutcome::SeatGone]),
+        RecordingShop::new().with_outcomes(vec![PackOutcome::Added, PackOutcome::SeatGone]),
     );
     let state = state(
         pool.clone(),
@@ -587,7 +661,7 @@ async fn hard_add_failure_marks_failed(pool: SqlitePool) {
     let mailer = Arc::new(RecordingMailer::new());
     let telegram = Arc::new(RecordingTelegram::new());
     let shop = Arc::new(
-        RecordingShop::new().with_outcomes(vec![SeatOutcome::Added, SeatOutcome::MissingContext]),
+        RecordingShop::new().with_outcomes(vec![PackOutcome::Added, PackOutcome::MissingContext]),
     );
     let state = state(
         pool.clone(),
@@ -641,7 +715,7 @@ async fn expired_form_keeps_request_pending(pool: SqlitePool) {
     let mailer = Arc::new(RecordingMailer::new());
     let telegram = Arc::new(RecordingTelegram::new());
     let shop = Arc::new(
-        RecordingShop::new().with_outcomes(vec![SeatOutcome::Added, SeatOutcome::ExpiredForm]),
+        RecordingShop::new().with_outcomes(vec![PackOutcome::Added, PackOutcome::ExpiredForm]),
     );
     let state = state(
         pool.clone(),
@@ -694,7 +768,7 @@ async fn network_error_keeps_request_pending(pool: SqlitePool) {
     let mailer = Arc::new(RecordingMailer::new());
     let telegram = Arc::new(RecordingTelegram::new());
     let shop = Arc::new(
-        RecordingShop::new().with_outcomes(vec![SeatOutcome::Added, SeatOutcome::Network]),
+        RecordingShop::new().with_outcomes(vec![PackOutcome::Added, PackOutcome::Network]),
     );
     let state = state(
         pool.clone(),
@@ -883,7 +957,7 @@ async fn all_seats_gone_sends_no_notification(pool: SqlitePool) {
 
     let mailer = Arc::new(RecordingMailer::new());
     let telegram = Arc::new(RecordingTelegram::new());
-    let shop = Arc::new(RecordingShop::new().with_outcomes(vec![SeatOutcome::SeatGone]));
+    let shop = Arc::new(RecordingShop::new().with_outcomes(vec![PackOutcome::SeatGone]));
     let state = state(
         pool.clone(),
         mailer.clone(),

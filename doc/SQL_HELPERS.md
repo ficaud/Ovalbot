@@ -131,3 +131,74 @@ FROM ticket_offers
 GROUP BY match_id, title, date
 ORDER BY first_seen DESC;"
 ```
+
+## Re-arm a ticket request closed as `failed`
+
+The bot closes a request as `failed` on a terminal checkout error (refused shop
+login or a layout change on the resale page), and **never retries it
+automatically**. The frontend then locks the request: it no longer counts as
+`pending`, so the modal shows “This request is now ‘FAILED’ and can no longer be
+modified”. Re-arming is a deliberate SQL action:
+
+1. List the failed requests (and check which match/user they belong to):
+
+```sql
+sqlite3 -box ovalbot.sqlite "
+SELECT u.email,
+       tr.match_id,
+       tr.kind,
+       tr.quantity,
+       tr.places,
+       tr.status,
+       tr.updated_at
+FROM ticket_requests tr
+JOIN users u ON u.id = tr.user_id
+WHERE tr.status = 'failed'
+ORDER BY tr.updated_at DESC;"
+```
+
+2. Put one request back into play (`AND status = 'failed'` keeps the command
+   idempotent: it does nothing if the request already moved on):
+
+```sql
+sqlite3 -box ovalbot.sqlite "
+UPDATE ticket_requests
+   SET status = 'pending',
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ WHERE user_id = 2
+   AND match_id = 11877
+   AND status = 'failed';"
+```
+
+3. Check the result (the modal is editable again once the request is
+   `pending`):
+
+```sql
+sqlite3 -box ovalbot.sqlite "
+SELECT tr.user_id,
+       u.email,
+       tr.match_id,
+       tr.kind,
+       tr.status,
+       tr.updated_at
+FROM ticket_requests tr
+JOIN users u ON u.id = tr.user_id
+WHERE tr.match_id = 11877;"
+```
+
+A `pending` request is only served by the **next new-seats wave**: the bot
+matches freshly listed resale seats, never the ones it already recorded (or the
+ones already sitting in a cart). To re-trigger a wave on demand for a test,
+forget the unclaimed offers of the match — they will be re-recorded as new on
+the next poll:
+
+```sql
+sqlite3 -box ovalbot.sqlite "
+DELETE FROM ticket_offers
+ WHERE match_id = 11877
+   AND claimed_by IS NULL;"
+```
+
+> Warning: those rows are re-announced as fresh seats, so a `notify` subscriber
+> on the same match receives the seats alert again — that is expected for a
+> manual test, not something to run routinely.
