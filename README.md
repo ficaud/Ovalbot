@@ -119,6 +119,7 @@ The backend reads these environment variables:
 | `BOT_HOME_REFRESH_SECS` | `60` | Seconds between two billetterie home-page fetches (link discovery). Each tick also re-polls the links learned earlier, so a queued home page never stops the polling. |
 | `CART_ENABLED` | `false` | Set `true` to let the bot add matching resale seats to users' shop carts (Phase 4B checkout). Requires `SECRET_KEY` and per-user shop credentials. |
 | `CART_DRY_RUN` | `true` | When `true`, the checkout only logs what it *would* add (plus `credentials=present\|missing\|unreadable`): no login, no add-to-cart, no claim, no notification. Set `false` to buy for real. |
+| `CHECKOUT_DUMP_DIR` | *(empty)* | When set, a failed add dumps the resale page and/or the AJAX response to this directory (diagnostic only, nothing is written by default — see below). |
 
 With `CART_ENABLED=true`, a request is only closed as `failed` on a refused shop
 login or a vanished add-to-cart context (resale closed). Seat-gone, waiting
@@ -132,6 +133,56 @@ An add is only claimed when the site's AJAX response confirms it (`added-to-cart
 `pending` for the next wave.
 
 See `.env.example` for a ready-to-copy template.
+
+### Diagnose a checkout failure (dump mode)
+
+With `CHECKOUT_DUMP_DIR` set, every failed add (seat gone, missing add-to-cart
+context, expired form, rejected POST) writes the raw page and/or the AJAX
+response to that directory. Nothing is written when the variable is unset.
+
+With Docker Compose, dump into the `./data` volume so the files land on the
+host, and stop the production container first (two bots must never share the
+SQLite database):
+
+```bash
+mkdir -p data/dumps
+docker compose stop ovalbot
+docker compose run --rm --service-ports \
+  -e RUST_LOG=ovalbot=debug \
+  -e CHECKOUT_DUMP_DIR=/data/dumps \
+  ovalbot
+```
+
+Then inspect them and restore the service:
+
+```bash
+ls -l data/dumps/ovalbot_*.txt      # ovalbot_page_*.txt / ovalbot_response_*.txt
+docker compose up -d
+```
+
+Running from source instead:
+
+```bash
+CHECKOUT_DUMP_DIR=/tmp/ovalbot-dumps RUST_LOG=ovalbot=debug,parser=debug \
+  cargo run --bin ovalbot
+```
+
+`RUST_LOG=ovalbot=debug` shows the checkout decisions (`checkout: pack skipped`,
+`checkout wave added nothing`, …); add `parser=debug` to also see the parser's
+own `[CHECKOUT]` traces.
+
+**Quitting the live log view.** The `docker compose run … ovalbot` command above
+attaches to the container's output:
+
+- `Ctrl+P` then `Ctrl+Q` detaches — the bot keeps running in the background
+  (find it with `docker ps`, then `docker logs -f <container>` to bring the
+  stream back). Add `--detach-keys="ctrl-x"` to the `run` command if
+  `Ctrl+P`/`Ctrl+Q` conflicts with your terminal.
+- `Ctrl+C` stops the container (and `--rm` removes it) — the bot stops too.
+
+If you run the service normally instead (`docker compose up -d` followed by
+`docker compose logs -f ovalbot`), `Ctrl+C` only closes the log stream and the
+bot keeps running. From source (`cargo run`), `Ctrl+C` stops the bot.
 
 ## Testing
 
