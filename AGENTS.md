@@ -18,7 +18,8 @@ Development notes kept up to date by the agent as work progresses.
   - le `drupal-settings-json` global n'a **aucune carte `ajax`** (seulement `ajaxPageState`, `ajaxTrustedUrl`, `bigPipePlaceholderIds`…) → l'ancienne structure serde stricte échouait ;
   - le formulaire, `form_build_id`, `form_token`, le slider et le listing des packs sont **échappés dans un chunk BigPipe** (`\u0022`), donc invisibles au parseur DOM (d'où le garde de présence sauté) mais lisibles par `extract_hidden_input`/`extract_slider_bounds`.
   - Fixture `fixtures/page_basket_auth.html.gz` (96 Ko → 17 Ko, sans PII vérifiée) + test `action_context_from_the_authenticated_basket_page` : endpoint AJAX reconstruit (`product?ajax_form=1`), `form_build_id` échappé trouvé, slider `32.00/32`, thème `hubber_reference8`, diagnostic `ajax_entry=false form_build_id=true slider=true`.
-- Prochaine étape: rebuild de l'image avec ce code puis relance de la capture basket ; le contexte doit passer et le POST produire une réponse AJAX (succès ou rejet), désormais dumpée dans les deux cas.
+- Run live 22:27 (image avec le parsing tolérant) : `outcome=post_network` — le contexte est donc construit et le POST tenté, mais l'URL reconstruite depuis le repli (absolue) était préfixée une seconde fois par la base → hôte `billetterie.staderochelais.comhttps`. Fix `absolute_url(base, url)` (base ajoutée seulement pour un chemin relatif), utilisée par `build_add_to_cart_url` et le `Referer` ; test de régression dans `add_to_cart_url_appends_the_wrapper_format` (cas absolu).
+- Prochaine étape: rebuild de l'image avec ce code puis relance de la capture basket ; le POST doit partir vers le bon hôte et produire une réponse AJAX (succès ou rejet), désormais dumpée dans les deux cas. Suspect n°1 si rejet : le `form_token` (le navigateur ne l'envoie pas, notre POST l'inclut).
 
 ### 2026-11-01 — Dump par tentative d'ajout + `MissingContext` réessayable
 
