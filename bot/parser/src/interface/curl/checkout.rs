@@ -817,10 +817,7 @@ impl ShopSession {
         // Step 4: POST the add-to-cart request (XHR header set of the site).
         let url = build_add_to_cart_url(&self.base, &context.ajax_url);
         let body = build_add_to_cart_body(&context, pack_id, tickets);
-        let referer = absolute_url(
-            &self.base,
-            context.ajax_url.split('?').next().unwrap_or(""),
-        );
+        let referer = absolute_url(&self.base, context.ajax_url.split('?').next().unwrap_or(""));
         let response = match post_form(
             &url,
             &body,
@@ -1192,6 +1189,26 @@ mod tests {
         assert_eq!(
             build_add_to_cart_url("https://shop.example", "/fr/product/1/r"),
             "https://shop.example/fr/product/1/r?_wrapper_format=drupal_ajax"
+        );
+        // The BigPipe fallback is already absolute: the base must not be
+        // prefixed a second time (`shop.examplehttps` was a live bug).
+        assert_eq!(
+            build_add_to_cart_url(
+                "https://shop.example",
+                "https://shop.example/fr/product/1/r?ajax_form=1"
+            ),
+            "https://shop.example/fr/product/1/r?ajax_form=1&_wrapper_format=drupal_ajax"
+        );
+        assert_eq!(
+            absolute_url("https://shop.example", "/fr/product/1/r"),
+            "https://shop.example/fr/product/1/r"
+        );
+        assert_eq!(
+            absolute_url(
+                "https://shop.example",
+                "https://shop.example/fr/product/1/r"
+            ),
+            "https://shop.example/fr/product/1/r"
         );
     }
 
