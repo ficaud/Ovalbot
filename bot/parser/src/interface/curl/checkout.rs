@@ -44,6 +44,11 @@ const DEFAULT_THEME: &str = "hubber_reference8";
 const LOGIN_PATH: &str = "/fr/user/login";
 const BASKET_PATH: &str = "/fr/basket";
 
+/// Class marker of the sold-out resale page variant: the listing and the
+/// price slider are gone, only "Aucun billet n'est actuellement disponible"
+/// remains. Treated as seat churn (`SeatGone`), never as a missing form.
+const OUT_OF_STOCK_MARKER: &str = "product-not-on-sale-info";
+
 // ============================== ERRORS ==============================
 
 /// Why one checkout step failed.
@@ -600,8 +605,9 @@ impl ShopSession {
         })
     }
 
-    /// Adds one seat to the session's cart: refreshes the resale page (fresh
-    /// context + seat presence guard), then POSTs the add-to-cart request.
+    /// Adds one seat to the session's cart: refreshes the resale page (seat
+    /// presence guard first, then a fresh add-to-cart context), then POSTs the
+    /// add-to-cart request.
     ///
     /// Callers add several seats (a group request) by calling this repeatedly
     /// within the same session; each call self-resynchronizes the Drupal form
@@ -612,9 +618,10 @@ impl ShopSession {
     /// * `seat` - The seat to add (pack + ticket from the fresh scan)
     /// # Errors
     /// [`CheckoutError::WaitingQueue`] when the shop is under load,
-    /// [`CheckoutError::MissingContext`] when the fresh page lost its
-    /// add-to-cart machinery (resale closed),
-    /// [`CheckoutError::SeatGone`] when the seat vanished from the page,
+    /// [`CheckoutError::SeatGone`] when the seat vanished or the resale sold
+    /// out (the listing and its price slider disappear together),
+    /// [`CheckoutError::MissingContext`] when seats are still listed but the
+    /// add-to-cart machinery is gone (site layout change),
     /// [`CheckoutError::ExpiredForm`] when the POST is rejected as expired,
     /// [`CheckoutError::Network`] on transport failure
     pub fn add_seat(&self, resale_url: &str, seat: &SeatId) -> Result<(), CheckoutError> {
@@ -624,19 +631,21 @@ impl ShopSession {
             return Err(CheckoutError::WaitingQueue);
         }
 
-        // Step 2: rebuild the context and guard the seat presence.
-        let context = extract_action_context(&html).ok_or(CheckoutError::MissingContext)?;
-        let present =
-            parse_seat::parse_pack_ticket_ids(&html)
-                .iter()
-                .any(|(pack_id, ticket_ids)| {
-                    *pack_id == seat.pack_id && ticket_ids.iter().any(|t| t == &seat.ticket_id)
-                });
-        if !present {
+        // Step 2: guard the seat presence first. A resale that sold out between
+        // the scan and this refresh renders without the listing AND without the
+        // price slider: that is churn (`SeatGone`), not a missing form.
+        let listed = parse_seat::parse_pack_ticket_ids(&html);
+        let present = listed.iter().any(|(pack_id, ticket_ids)| {
+            *pack_id == seat.pack_id && ticket_ids.iter().any(|t| t == &seat.ticket_id)
+        });
+        if !present || html.contains(OUT_OF_STOCK_MARKER) {
             return Err(CheckoutError::SeatGone);
         }
 
-        // Step 3: POST the add-to-cart request (XHR header set of the site).
+        // Step 3: rebuild the add-to-cart context from the still-listed page.
+        let context = extract_action_context(&html).ok_or(CheckoutError::MissingContext)?;
+
+        // Step 4: POST the add-to-cart request (XHR header set of the site).
         let url = build_add_to_cart_url(&self.base, &context.ajax_url);
         let body = build_add_to_cart_body(&context, seat);
         let referer = format!(
@@ -652,7 +661,7 @@ impl ShopSession {
         )?;
         log::info!("[CHECKOUT] add-to-cart response: {} bytes", response.len());
 
-        // Step 4: detect the stale/invalid-session rejection.
+        // Step 5: detect the stale/invalid-session rejection.
         if response.contains("p\u{e9}rim\u{e9}")
             || response.contains("p%C3%A9rim%C3%A9")
             || (response.contains("alert-danger") && response.contains("formulaire"))
@@ -696,6 +705,15 @@ mod tests {
     static FIXTURE_RESALE: LazyLock<String> = LazyLock::new(|| {
         gz_html(include_bytes!(
             "../../app/clubs/larochelle/fixtures/seat_page_resale_open.html.gz"
+        ))
+    });
+
+    // Captured live on 2026-10-31: the same resale right after it sold out —
+    // "Aucun billet n'est actuellement disponible", no listing, no price slider,
+    // while the add-to-cart form and its settings are still rendered.
+    static FIXTURE_OUT_OF_STOCK: LazyLock<String> = LazyLock::new(|| {
+        gz_html(include_bytes!(
+            "../../app/clubs/larochelle/fixtures/page_out_of_stock.html.gz"
         ))
     });
 
@@ -1089,6 +1107,43 @@ mod tests {
         };
         assert_eq!(
             session.add_seat(&resale_url, &seat).expect_err("must fail"),
+            CheckoutError::SeatGone
+        );
+        // 4 login requests + 1 page fetch; no POST.
+        assert_eq!(requests.lock().expect("log").len(), 5);
+    }
+
+    // A resale that sold out between the scan and the fresh page is churn:
+    // the sold-out variant has no listing and no price slider (so no
+    // add-to-cart context), but it must be reported as SeatGone, not as a
+    // terminal missing form.
+    #[test]
+    fn add_seat_reads_a_sold_out_page_as_seat_gone() {
+        assert!(
+            extract_action_context(&FIXTURE_OUT_OF_STOCK).is_none(),
+            "the sold-out fixture has no add-to-cart context"
+        );
+        assert!(
+            parse_seat::parse_pack_ticket_ids(&FIXTURE_OUT_OF_STOCK).is_empty(),
+            "the sold-out fixture lists no seat"
+        );
+
+        let (base, requests) = serve_mock(vec![
+            page(LOGIN_PAGE, 200),
+            page(STEP2_PAGE, 200),
+            page("<html>connecté</html>", 200),
+            page(BASKET_AUTHENTICATED, 200),
+            page(&*FIXTURE_OUT_OF_STOCK, 200),
+        ]);
+        let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
+        let seat = SeatId {
+            pack_id: 34700,
+            ticket_id: "50624".to_string(),
+        };
+        assert_eq!(
+            session
+                .add_seat(&format!("{base}/fr/product/1360/revente"), &seat)
+                .expect_err("must fail"),
             CheckoutError::SeatGone
         );
         // 4 login requests + 1 page fetch; no POST.
