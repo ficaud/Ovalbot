@@ -47,6 +47,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bot/purchase` : First serve the seat that just appears to avoid
   trying purchase one from a list that has been taken beforehand.
 
+### Changed
+
+- `bot checkout` : les notifications « places au panier » (e-mail, Telegram,
+  texte brut) pointent désormais leur **bouton principal vers la page du match**
+  (la page de revente du match pris, `CheckoutTarget.resale_link`) ; le lien
+  panier devient un lien secondaire, et l'alerte d'échec cite les deux.
+
+- `bot checkout` : la revente vend des **packs atomiques**. L'unité d'achat
+  devient le pack : un seul POST par pack avec tous ses billets
+  (`selected_tickets_{pack}=t1,t2`), et le matcher ne planifie que des packs
+  entiers tenant dans le quota restant — un pack plus gros que le quota est
+  ignoré (aucun dépassement de commande).
+- `bot checkout` : une file d'attente, une erreur réseau ou un formulaire
+  expiré laissent désormais la demande `pending` (nouvelle tentative à la
+  vague suivante) au lieu de la marquer `failed`. Seuls un login refusé et un
+  contexte d'ajout au panier disparu restent terminaux.
+- `bot checkout` : le dry run journalise la présence des identifiants boutique
+  (`credentials=present|missing|unreadable`) sans se connecter.
+- `bot checkout` : un `MissingContext` (page rendue en BigPipe sans la
+  machinerie d'ajout au panier) laisse désormais la demande `pending` au lieu
+  de la clore `failed` — seul un login boutique refusé reste terminal.
+- `main` : avertissement au démarrage quand `CART_ENABLED` est actif sans aucun
+  canal de notification réel (Resend et Telegram désactivés).
+
+### Fixed
+
+- `bot/parser` : les fichiers cookie jar des connexions échouées ne sont plus
+  laissés dans le répertoire temporaire.
+- `bot/parser` : une page de revente épuisée (plus de listing ni de slider de
+  prix) est désormais lue comme `SeatGone` (nouvelle tentative à la vague
+  suivante) et non plus comme un formulaire manquant (échec définitif).
+- `bot/parser` : le verdict d'ajout au panier vient de la réponse AJAX
+  (`added-to-cart` / `is_already_in_cart` / `refreshCartTimeout`) ; la page
+  disponible étant rendue en BigPipe, l'absence de listing ou de slider dans le
+  HTML brut n'est plus interprétée comme un échec.
+- `bot/parser` : avec `CHECKOUT_DUMP_DIR`, chaque tentative d'ajout écrit la
+  page reçue, la réponse AJAX et un fichier de métadonnées (pack, tickets,
+  bornes du slider, issue) — succès compris.
+- `bot/parser` : extraction du contexte d'ajout tolérante aux pages BigPipe —
+  `drupal-settings-json` lu sans structure typée (la page authentifiée réelle
+  n'a **pas** de carte `ajax`), endpoint AJAX reconstruit depuis l'URL produit
+  quand `edit-add-to-cart` est absent, et diagnostic (`settings=`,
+  `ajax_entry=`, `form_build_id=`, `slider=`) loggé quand le contexte reste
+  introuvable. La capture live du 01/11 (DENAIN, session authentifiée) sert de
+  fixture de régression.
+- `bot/parser` : l'endpoint AJAX reconstruit (URL produit déjà absolue) n'est
+  plus préfixé une seconde fois par la base — l'hôte devenait
+  `…staderochelais.comhttps` et le POST échouait en `Network` (run live du
+  01/11 22:27). `absolute_url` ne préfixe que les chemins relatifs, et le
+  `Referer` suit la même règle.
+
 ## [0.3.2] - 2026-10-26
 
 ### Added
