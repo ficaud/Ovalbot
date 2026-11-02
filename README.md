@@ -176,12 +176,21 @@ one attempt id: `ovalbot_page_<id>.txt` (the page the bot really fetched),
 `added`, `rejected`, `missing_context`, `pack_absent`, `expired_form`, …).
 Nothing is written when the variable is unset.
 
-With Docker Compose, dump into the `./data` volume so the files land on the
-host, and stop the production container first (two bots must never share the
-SQLite database):
+With Docker Compose, dump into the mounted data volume so the files land on the
+host (`./data` in this repository's compose file, possibly another path such as
+`./data-dev` in a deployment compose). The container runs as `ovalbot` (uid
+10001) and owns that volume, so create the dump directory **with that owner** (a
+host `mkdir` fails with `Permission denied`, and the bot then logs
+`failed to dump page: No such file or directory`). Also make sure
+`CHECKOUT_DUMP_DIR` reaches the container (via `-e` or the compose
+`environment:` block) — otherwise nothing is written and nothing is logged:
 
 ```bash
-mkdir -p data/dumps
+# either through the container (no sudo)…
+docker compose run --rm --entrypoint sh ovalbot -c 'mkdir -p /data/dumps'
+# …or with sudo (adapt the volume path: ./data or ./data-dev)
+sudo mkdir -p data/dumps && sudo chown 10001:10001 data/dumps
+
 docker compose stop ovalbot
 docker compose run --rm --service-ports \
   -e RUST_LOG=ovalbot=debug \
@@ -192,7 +201,7 @@ docker compose run --rm --service-ports \
 Then inspect them and restore the service:
 
 ```bash
-ls -l data/dumps/ovalbot_*.txt      # ovalbot_page_*.txt / ovalbot_response_*.txt
+ls -l data/dumps/ovalbot_*.txt      # or data-dev/dumps/… per your compose volume
 docker compose up -d
 ```
 

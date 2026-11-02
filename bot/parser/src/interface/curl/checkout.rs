@@ -1024,6 +1024,15 @@ mod tests {
         ))
     });
 
+    // Captured live on 2026-11-01 from the DENAIN basket resale with an
+    // authenticated session: the global settings carry no `ajax` map and the
+    // form, its id and the listing are escaped inside a BigPipe chunk.
+    static FIXTURE_BASKET_AUTH: LazyLock<String> = LazyLock::new(|| {
+        gz_html(include_bytes!(
+            "../../app/clubs/larochelle/fixtures/page_basket_auth.html.gz"
+        ))
+    });
+
     // ============================ EXTRACTION ============================
 
     // The committed fixture carries the real form_build_id of the capture.
@@ -1132,6 +1141,32 @@ mod tests {
         assert!(diagnostic.contains("ajax_entry=false"), "{diagnostic}");
         assert!(diagnostic.contains("form_build_id=true"), "{diagnostic}");
         assert!(diagnostic.contains("slider=false"), "{diagnostic}");
+    }
+
+    // The live authenticated basket page (2026-11-01) has no `ajax` map in its
+    // global settings and escapes the form/listing inside a BigPipe chunk: the
+    // product URL rebuilds the AJAX endpoint, and the escaped form id + slider
+    // are still readable.
+    #[test]
+    fn action_context_from_the_authenticated_basket_page() {
+        let page = &*FIXTURE_BASKET_AUTH;
+        let product = "https://billetterie.staderochelais.com/fr/product/1371/revente_j8_06_nov_stade_rochelais_denain";
+        let context = extract_action_context(page, Some(product)).expect("context");
+        assert_eq!(context.ajax_url, format!("{product}?ajax_form=1"));
+        assert!(context.form_build_id.starts_with("form-"));
+        assert_eq!(context.price_min, "32.00");
+        assert_eq!(context.price_max, "32");
+        assert!(!context.libraries.is_empty());
+        assert_eq!(context.theme, "hubber_reference8");
+        // The listing is escaped as well: the DOM parser sees no pack, which is
+        // exactly why the presence guard is skipped and the plan ids are used.
+        assert!(parse_seat::parse_pack_ticket_ids(page).is_empty());
+
+        let diagnostic = context_diagnostic(page);
+        assert!(diagnostic.contains("settings=true"), "{diagnostic}");
+        assert!(diagnostic.contains("ajax_entry=false"), "{diagnostic}");
+        assert!(diagnostic.contains("form_build_id=true"), "{diagnostic}");
+        assert!(diagnostic.contains("slider=true"), "{diagnostic}");
     }
 
     // urlencode escapes like a form: spaces to `+`, accents percent-encoded.
