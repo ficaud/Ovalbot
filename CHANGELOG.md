@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-11-04
+
+### Added
+
+- `bot/parser` : logging checkout using dupral extraction.
+- `common/crypto` : new modal for user registration that will get stored
+  using AES encryption.
+- `bot/purchase` : matching parsed seats and requests from user to
+  trigger the PlanCheckout.
+- `bot/parser/test` : real case pelouse seat composition for testing
+  purpose. This is to improve the overall bot testing and operating
+  in real case scenario.
+- `services/bot/checkout` : move PlanCheckout to real add to cart
+  operation using user credential.
+- `bot` : new parameter that enables full checkout exchange capture
+  to get more context whether there is an issue or not in the add to
+  cart process.
+- `bot/parser/test` : regression tests to avoid falling into the prefix
+  error again.
+- `mailer/cart_reader` : CTA now points to the match resale ticket link
+  so that the user only needs to connect itself to pursue the purchase.
+- `services/tickets` : user actions on a closed request from the ticket
+  request modal — confirm the purchase (`accepted → purchased`) and retry
+  (`accepted|failed → pending`, releasing the seats the bot had claimed so
+  the matcher can serve the request again). New routes
+
+### Changed
+- `rustls` : update from 0.23.45 to 0.23.46.
+
+### Fixed
+
+- `README` : add sudo to command for creating the data base folder.
+- `bot/services/checkout` : more robust checkout operation by better
+  management of the seat state.
+- `bot/parser` : use html extractor to detect seat gone in addition
+  of the missing machinery that is required to perform a dupral request.
+- `bot/services/checkout` : Checkout out ticket in packs instead. Tickets
+  are sold in pack and not in single id format. So we need to get the pack
+  id to communication with the resale website.
+- `bot/parser` : navigates durpal settings as a json to avoid getting MissingContext
+  error.
+- `bot/parser` : fix wrong prefix that produced a false link.
+- `bot/purchase` : First serve the seat that just appears to avoid
+  trying purchase one from a list that has been taken beforehand.
+- `services/bot/checkout` : les alertes panier rapportent la progression
+  cumulée (`claimed/total`, lue dans `ticket_offers`) au lieu du seul delta
+  de la vague.
+- `crypto` : use HKDF-SHA256 to prevent a bare SHA-256 and so that we will
+  be able to use the same AES key later on in the code without compromising
+  overall bot security.
+
 ## [0.3.2] - 2026-10-26
 
 ### Added
