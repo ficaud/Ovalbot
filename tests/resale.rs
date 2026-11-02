@@ -2,8 +2,8 @@
 //! polling-target selection, scan bookkeeping and retirement.
 
 use ovalbot::services::bot::resale::{
-    delete_one, links_to_scan, mark_scanned, upsert_discovered, DiscoveryCounts, ScanStatus,
-    ScanTarget,
+    delete_one, links_to_scan, links_to_scan_for, mark_scanned, upsert_discovered, DiscoveryCounts,
+    ScanStatus, ScanTarget,
 };
 use parser::core::club::ClubType;
 use parser::core::encounter::{Encounter, MatchNature};
@@ -260,4 +260,35 @@ async fn delete_one_removes_only_the_target_row(pool: SqlitePool) {
     )
     .await
     .unwrap());
+}
+
+/// The basket test bed polls only the links resolved to its synthetic id; the
+/// rugby loop (no filter) still sees everything.
+#[sqlx::test]
+async fn links_to_scan_for_filters_one_match(pool: SqlitePool) {
+    upsert_discovered(
+        &pool,
+        &[
+            linked(
+                "AVIRON BAYONNAIS",
+                "dimanche 8 novembre à 21h05",
+                "https://x/rugby",
+            ),
+            linked("DENAIN", "vendredi 6 novembre à 20h00", "https://x/basket"),
+        ],
+        &[Some(11877), Some(900_001)],
+    )
+    .await
+    .unwrap();
+
+    let all = links_to_scan_for(&pool, None).await.unwrap();
+    assert_eq!(all.len(), 2, "rugby mode polls every stored link");
+
+    let basket = links_to_scan_for(&pool, Some(900_001)).await.unwrap();
+    assert_eq!(basket.len(), 1);
+    assert_eq!(basket[0].title, "DENAIN");
+    assert_eq!(basket[0].match_id, Some(900_001));
+
+    let unknown = links_to_scan_for(&pool, Some(123)).await.unwrap();
+    assert!(unknown.is_empty());
 }

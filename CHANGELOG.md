@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bot/purchase` : First serve the seat that just appears to avoid
   trying purchase one from a list that has been taken beforehand.
 
+### Added
+
+- `bot` : mode banc d'essai basket (`BOT_SPORT=basket`, `BOT_BASKET_MATCH_ID`,
+  `BOT_BASKET_OPPONENT`) : les reventes basket, plus fréquentes, sont découvertes
+  et pollées seules et rattachées à un id de match synthétique, pour valider le
+  checkout de bout en bout avant de l'exercer sur le rugby.
+
 ### Changed
 
 - `bot checkout` : les notifications « places au panier » (e-mail, Telegram,

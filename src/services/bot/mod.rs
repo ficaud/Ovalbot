@@ -19,6 +19,11 @@
 //!
 //! `ticket_offers` is the single "new seats" source of truth: only the seats
 //! it actually inserts are logged, so a restart never re-announces old seats.
+//!
+//! Targeting is set once at startup ([`BotMode`]): `BOT_SPORT=rugby` (default)
+//! resolves against the LNR calendar, `BOT_SPORT=basket` restricts discovery
+//! and the poll to basketball resales and attaches them to the synthetic
+//! `BOT_BASKET_MATCH_ID` (test bed — the LNR calendar has no basket games).
 
 pub mod checkout;
 pub mod matching;
@@ -28,7 +33,7 @@ pub mod resale;
 use std::time::Duration;
 use std::time::Instant;
 
-use parser::core::encounter::Encounter;
+use parser::core::encounter::{Encounter, MatchNature};
 use parser::core::seat::Seat;
 use parser::interface::club_manager;
 use parser::interface::ScanError;
@@ -42,14 +47,179 @@ use crate::services::tickets::{self, OfferKey};
 
 // ============================== SCAN LOOP ==============================
 
+/// Which sport the scan targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sport {
+    /// Rugby only, resolved against the LNR calendar (the default).
+    Rugby,
+    /// Basketball test bed: every retained basket encounter is mapped to a
+    /// synthetic match id, because the LNR calendar has no basket games.
+    Basket,
+}
+
+impl Sport {
+    /// The value logged at startup.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Sport::Rugby => "rugby",
+            Sport::Basket => "basket",
+        }
+    }
+}
+
+/// Parses `BOT_SPORT` (`""`/`rugby`/`basket`, case-insensitive).
+///
+/// # Arguments
+/// * `value` - The raw environment value
+/// # Returns
+/// The sport, or `None` for an unknown value
+fn parse_sport(value: &str) -> Option<Sport> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "rugby" => Some(Sport::Rugby),
+        "basket" => Some(Sport::Basket),
+        _ => None,
+    }
+}
+
+/// Runtime targeting of the scan loop, read once at startup.
+#[derive(Debug, Clone)]
+pub struct BotMode {
+    /// Sport the discovery keeps and the poll serves.
+    pub sport: Sport,
+    /// `BOT_BASKET_MATCH_ID`: synthetic match id the basket test bed serves
+    /// (required in basket mode, the requests are created by SQL).
+    pub basket_match_id: Option<i64>,
+    /// `BOT_BASKET_OPPONENT`: optional opponent substring (case-insensitive)
+    /// to target a single basket match.
+    pub basket_opponent: Option<String>,
+}
+
+impl BotMode {
+    /// Reads the mode from the environment.
+    ///
+    /// # Errors
+    /// Returns a human-readable reason when basket mode is requested without a
+    /// valid `BOT_BASKET_MATCH_ID`.
+    fn from_env() -> Result<Self, String> {
+        let sport = std::env::var("BOT_SPORT").unwrap_or_default();
+        let basket_id = std::env::var("BOT_BASKET_MATCH_ID").ok();
+        let opponent = std::env::var("BOT_BASKET_OPPONENT").ok();
+        Self::from_values(&sport, basket_id.as_deref(), opponent.as_deref())
+    }
+
+    /// Builds a mode from raw values (unit-testable, no environment access).
+    ///
+    /// An unknown `BOT_SPORT` falls back to rugby with a warning; basket mode
+    /// refuses to start without a parseable `BOT_BASKET_MATCH_ID`.
+    ///
+    /// # Arguments
+    /// * `sport` - Raw `BOT_SPORT` value
+    /// * `basket_match_id` - Raw `BOT_BASKET_MATCH_ID` value
+    /// * `basket_opponent` - Raw `BOT_BASKET_OPPONENT` value
+    /// # Errors
+    /// Returns a reason when basket mode lacks a valid match id.
+    fn from_values(
+        sport: &str,
+        basket_match_id: Option<&str>,
+        basket_opponent: Option<&str>,
+    ) -> Result<Self, String> {
+        let sport = match parse_sport(sport) {
+            Some(sport) => sport,
+            None => {
+                tracing::warn!(
+                    value = %sport,
+                    "unknown BOT_SPORT, defaulting to rugby (expected 'rugby' or 'basket')"
+                );
+                Sport::Rugby
+            }
+        };
+        let basket_match_id = match basket_match_id.map(str::trim).filter(|v| !v.is_empty()) {
+            Some(raw) => Some(
+                raw.parse::<i64>()
+                    .map_err(|_| format!("BOT_BASKET_MATCH_ID is not an integer: {raw}"))?,
+            ),
+            None => None,
+        };
+        if sport == Sport::Basket && basket_match_id.is_none() {
+            return Err(
+                "BOT_SPORT=basket requires BOT_BASKET_MATCH_ID (the synthetic match id \
+                 the test requests are created with)"
+                    .to_string(),
+            );
+        }
+        let basket_opponent = basket_opponent
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_lowercase);
+        Ok(Self {
+            sport,
+            basket_match_id,
+            basket_opponent,
+        })
+    }
+
+    /// The `match_id` the direct poll is restricted to (`None` = poll all
+    /// stored links, the rugby behavior).
+    fn poll_match_id(&self) -> Option<i64> {
+        match self.sport {
+            Sport::Rugby => None,
+            Sport::Basket => self.basket_match_id,
+        }
+    }
+}
+
+/// Keeps the encounters the mode serves, in order.
+///
+/// Rugby mode keeps everything (the resolver, not the discovery, decides what
+/// maps to a calendar match — promotional badges must not drop rugby cards).
+/// Basket mode keeps basketball cards only, optionally restricted to one
+/// opponent.
+///
+/// # Arguments
+/// * `encounters` - The discovery result, filtered in place
+/// * `mode` - The runtime targeting
+fn retain_for_mode(encounters: &mut Vec<Encounter>, mode: &BotMode) {
+    if mode.sport == Sport::Rugby {
+        return;
+    }
+    encounters.retain(|encounter| {
+        encounter.nature == MatchNature::Basketball
+            && mode
+                .basket_opponent
+                .as_ref()
+                .is_none_or(|needle| encounter.title.to_lowercase().contains(needle))
+    });
+}
+
 /// Starts the ticket resale scanner loop (the bot). Disabled by default; enable
 /// with `BOT_ENABLED=true`. Two cadences: `BOT_SCAN_INTERVAL_SECS` drives the
 /// whole loop (direct poll of the stored links, default 60 s), and
 /// `BOT_HOME_REFRESH_SECS` the home-page discovery (default 60 s).
+///
+/// `BOT_SPORT=basket` switches the loop to the basketball test bed (see
+/// [`BotMode`]): only basket resales are discovered/polled and they are mapped
+/// to `BOT_BASKET_MATCH_ID`.
 pub fn spawn(state: AppState) {
     if !env_flag("BOT_ENABLED", true) {
         tracing::info!("bot scan disabled (set BOT_ENABLED=true to enable)");
         return;
+    }
+
+    let mode = match BotMode::from_env() {
+        Ok(mode) => mode,
+        Err(reason) => {
+            tracing::error!("bot scan disabled: {reason}");
+            return;
+        }
+    };
+    if let (Sport::Basket, Some(id)) = (mode.sport, mode.basket_match_id) {
+        if id < 900_000 {
+            tracing::warn!(
+                basket_match_id = id,
+                "BOT_BASKET_MATCH_ID looks like an LNR id (basket test ids are >= 900000)"
+            );
+        }
     }
 
     let club = club_manager::stade_rochelais();
@@ -57,6 +227,9 @@ pub fn spawn(state: AppState) {
     let home_secs = env_u64("BOT_HOME_REFRESH_SECS", 60);
 
     tracing::info!(
+        sport = mode.sport.as_str(),
+        basket_match_id = ?mode.basket_match_id,
+        basket_opponent = ?mode.basket_opponent,
         "bot scan enabled: resale poll every {poll_secs}s, home discovery every {home_secs}s"
     );
     tokio::spawn(async move {
@@ -66,8 +239,8 @@ pub fn spawn(state: AppState) {
         let mut last_refresh: Option<Instant> = None;
         loop {
             interval.tick().await;
-            discover_home(&state, &club, home_secs, &mut last_refresh).await;
-            poll_links(&state).await;
+            discover_home(&state, &club, home_secs, &mut last_refresh, &mode).await;
+            poll_links(&state, &mode).await;
         }
     });
 }
@@ -100,8 +273,9 @@ fn env_u64(name: &str, default: u64) -> u64 {
 // ============================== DISCOVERY PASS ==============================
 
 /// Runs the home-discovery pass when its cadence allows it: fetch + parse the
-/// match list, resolve every card against the calendar snapshot, then persist
-/// the links in `resale_links`.
+/// match list, keep the encounters the mode serves, resolve every card against
+/// the calendar snapshot (rugby) or the configured synthetic id (basket), then
+/// persist the links in `resale_links`.
 ///
 /// A queued or failed home page never aborts the loop: the caller just logs a
 /// warning and the stored links keep polling.
@@ -111,11 +285,13 @@ fn env_u64(name: &str, default: u64) -> u64 {
 /// * `club` - the club to discover
 /// * `home_secs` - the discovery cadence
 /// * `last_refresh` - pacing state, updated on the first success
+/// * `mode` - the runtime targeting (`BOT_SPORT`)
 async fn discover_home(
     state: &AppState,
     club: &parser::core::club::Club,
     home_secs: u64,
     last_refresh: &mut Option<Instant>,
+    mode: &BotMode,
 ) {
     // The first tick always discovers (cold start; the table may be empty).
     if !last_refresh.is_none_or(|at| at.elapsed().as_secs() >= home_secs) {
@@ -123,13 +299,15 @@ async fn discover_home(
     }
 
     match discover(club.clone()).await {
-        Ok(encounters) => {
-            // Resolve every encounter against the calendar snapshot: it is
-            // populated by the first sync, started before this loop.
+        Ok(mut encounters) => {
+            retain_for_mode(&mut encounters, mode);
+            // Resolve every encounter against the calendar snapshot (rugby) or
+            // the configured synthetic id (basket).
             let events = state.calendar.snapshot();
-            let match_ids = resolve_encounters(&encounters, &events);
+            let match_ids = resolve_encounters(&encounters, &events, mode);
             match resale::upsert_discovered(&state.pool, &encounters, &match_ids).await {
                 Ok(counts) => tracing::info!(
+                    sport = mode.sport.as_str(),
                     cards = encounters.len(),
                     links = counts.with_link,
                     new = counts.inserted,
@@ -155,43 +333,57 @@ async fn discover_home(
     }
 }
 
-/// Resolves every encounter against the calendar snapshot.
+/// Resolves every encounter to the `match_id` the rest of the bot works with.
 ///
-/// Unresolvable encounters (non-match cards, unknown opponents, unparseable
-/// date, no or ambiguous calendar match) log at debug and yield `None`,
-/// keeping index alignment with `encounters`.
+/// Rugby mode: the LNR calendar lookup; unresolvable encounters (non-match
+/// cards, unknown opponents, unparseable date, no or ambiguous calendar match)
+/// log at debug and yield `None`, keeping index alignment with `encounters`.
+/// Basket mode: every retained encounter maps to the configured synthetic id.
 ///
+/// # Arguments
+/// * `encounters` - The (mode-filtered) discovery result
+/// * `events` - The rugby calendar snapshot
+/// * `mode` - The runtime targeting
 /// # Returns
 /// One entry per encounter, in order: `Some(match_id)` when the encounter is
-/// tied to exactly one calendar match, `None` otherwise.
-fn resolve_encounters(encounters: &[Encounter], events: &[calendar::Event]) -> Vec<Option<u32>> {
+/// served, `None` otherwise.
+fn resolve_encounters(
+    encounters: &[Encounter],
+    events: &[calendar::Event],
+    mode: &BotMode,
+) -> Vec<Option<u32>> {
     encounters
         .iter()
-        .map(|encounter| match matching::resolve(encounter, events) {
-            Ok(match_id) => Some(match_id),
-            Err(e) => {
-                tracing::debug!(
-                    title = %encounter.title,
-                    date = %encounter.date,
-                    error = %e,
-                    "encounter not resolved"
-                );
-                None
-            }
+        .map(|encounter| match mode.sport {
+            Sport::Basket => mode.basket_match_id.and_then(|id| u32::try_from(id).ok()),
+            Sport::Rugby => match matching::resolve(encounter, events) {
+                Ok(match_id) => Some(match_id),
+                Err(e) => {
+                    tracing::debug!(
+                        title = %encounter.title,
+                        date = %encounter.date,
+                        error = %e,
+                        "encounter not resolved"
+                    );
+                    None
+                }
+            },
         })
         .collect()
 }
 
 // ============================== DIRECT POLL PASS ==============================
 
-/// Polls every stored resale link directly: fetches the product page, records
-/// the seats and alerts the requesters. The DB drives the loop, so a queued
-/// home page changes nothing here.
+/// Polls the stored resale links the mode serves: fetches the product page,
+/// records the seats and alerts the requesters. The DB drives the loop, so a
+/// queued home page changes nothing here.
 ///
-/// Fetch/dB failures warn and continue — one broken link cannot skip the
-/// others.
-async fn poll_links(state: &AppState) {
-    let targets = match resale::links_to_scan(&state.pool).await {
+/// In basket mode only the links resolved to the configured synthetic id are
+/// polled (the rugby links stay stored but are left untouched, so a test bed
+/// never buys a rugby seat). Fetch/dB failures warn and continue — one broken
+/// link cannot skip the others.
+async fn poll_links(state: &AppState, mode: &BotMode) {
+    let targets = match resale::links_to_scan_for(&state.pool, mode.poll_match_id()).await {
         Ok(targets) => targets,
         Err(e) => {
             tracing::warn!("resale poll: failed to read resale_links: {e}");
@@ -488,6 +680,15 @@ mod tests {
         assert!(seats_matching(&seats, &[]).is_empty());
     }
 
+    /// A rugby-mode targeting (the default).
+    fn rugby_mode() -> BotMode {
+        BotMode {
+            sport: Sport::Rugby,
+            basket_match_id: None,
+            basket_opponent: None,
+        }
+    }
+
     // Resolution happens once per discovery pass: known encounters map to
     // their calendar match id, anything else yields None.
     #[test]
@@ -514,8 +715,114 @@ mod tests {
         };
 
         assert_eq!(
-            resolve_encounters(&encounters, &[event]),
+            resolve_encounters(&encounters, &[event], &rugby_mode()),
             [Some(11877), None]
         );
+    }
+
+    // Basket mode bypasses the calendar: every retained encounter maps to the
+    // configured synthetic id.
+    #[test]
+    fn basket_mode_maps_every_encounter_to_the_configured_id() {
+        let encounters = [
+            Encounter::new(
+                ClubType::StadeRochelais,
+                "DENAIN".to_string(),
+                "vendredi 6 novembre à 20h00".to_string(),
+                MatchNature::Basketball,
+                None,
+            ),
+            Encounter::new(
+                ClubType::StadeRochelais,
+                "ÉVREUX".to_string(),
+                "samedi 14 novembre à 20h00".to_string(),
+                MatchNature::Basketball,
+                None,
+            ),
+        ];
+        let mode = BotMode {
+            sport: Sport::Basket,
+            basket_match_id: Some(900_001),
+            basket_opponent: None,
+        };
+        assert_eq!(
+            resolve_encounters(&encounters, &[], &mode),
+            [Some(900_001), Some(900_001)]
+        );
+    }
+
+    // Rugby mode keeps every card (promotional badges must not drop rugby
+    // cards); basket mode keeps basketball cards only, optionally by opponent.
+    #[test]
+    fn retain_for_mode_filters_the_discovery() {
+        let encounter = |title: &str, nature: MatchNature| {
+            Encounter::new(
+                ClubType::StadeRochelais,
+                title.to_string(),
+                "samedi 8 novembre à 20h00".to_string(),
+                nature,
+                None,
+            )
+        };
+        let mut encounters = vec![
+            encounter("AVIRON BAYONNAIS", MatchNature::Rugby),
+            encounter("DENAIN", MatchNature::Basketball),
+            encounter("BORDEAUX REPAS", MatchNature::Other),
+        ];
+
+        retain_for_mode(&mut encounters, &rugby_mode());
+        assert_eq!(encounters.len(), 3, "rugby keeps everything");
+
+        let basket_mode = BotMode {
+            sport: Sport::Basket,
+            basket_match_id: Some(900_001),
+            basket_opponent: None,
+        };
+        let mut encounters = vec![
+            encounter("AVIRON BAYONNAIS", MatchNature::Rugby),
+            encounter("DENAIN", MatchNature::Basketball),
+            encounter("ÉVREUX", MatchNature::Basketball),
+        ];
+        retain_for_mode(&mut encounters, &basket_mode);
+        assert_eq!(encounters.len(), 2);
+        assert!(encounters
+            .iter()
+            .all(|e| e.nature == MatchNature::Basketball));
+
+        let filtered = BotMode {
+            basket_opponent: Some("denain".to_string()),
+            ..basket_mode
+        };
+        retain_for_mode(&mut encounters, &filtered);
+        assert_eq!(encounters.len(), 1);
+        assert_eq!(encounters[0].title, "DENAIN");
+    }
+
+    // BOT_SPORT parsing: known values map, anything else is rejected so the
+    // caller can fall back to rugby with a warning.
+    #[test]
+    fn parse_sport_accepts_known_values() {
+        assert_eq!(parse_sport(""), Some(Sport::Rugby));
+        assert_eq!(parse_sport(" rugby "), Some(Sport::Rugby));
+        assert_eq!(parse_sport("BASKET"), Some(Sport::Basket));
+        assert_eq!(parse_sport("foot"), None);
+    }
+
+    // Basket mode refuses to start without a synthetic match id; rugby mode
+    // ignores it. The opponent is trimmed and lowercased.
+    #[test]
+    fn basket_mode_requires_a_match_id() {
+        assert!(BotMode::from_values("basket", None, None).is_err());
+        assert!(BotMode::from_values("basket", Some("abc"), None).is_err());
+
+        let mode = BotMode::from_values("basket", Some(" 900001 "), Some(" Denain ")).unwrap();
+        assert_eq!(mode.sport, Sport::Basket);
+        assert_eq!(mode.basket_match_id, Some(900_001));
+        assert_eq!(mode.basket_opponent.as_deref(), Some("denain"));
+
+        let rugby = BotMode::from_values("rugby", None, None).unwrap();
+        assert_eq!(rugby.sport, Sport::Rugby);
+        assert_eq!(rugby.poll_match_id(), None);
+        assert_eq!(mode.poll_match_id(), Some(900_001));
     }
 }

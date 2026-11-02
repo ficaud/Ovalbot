@@ -117,6 +117,9 @@ The backend reads these environment variables:
 | `BOT_ENABLED` | `false` | Set `true` to run the ticket resale scanner loop. |
 | `BOT_SCAN_INTERVAL_SECS` | `60` | Seconds between two loop ticks: the direct poll of the stored resale links. |
 | `BOT_HOME_REFRESH_SECS` | `60` | Seconds between two billetterie home-page fetches (link discovery). Each tick also re-polls the links learned earlier, so a queued home page never stops the polling. |
+| `BOT_SPORT` | `rugby` | Sport the bot serves: `rugby` (LNR calendar) or `basket` (test bed — see below). |
+| `BOT_BASKET_MATCH_ID` | *(empty)* | Basket mode only (required): synthetic match id the basket resales are attached to (use a value ≥ `900000`; requests are created by SQL, see `doc/SQL_HELPERS.md`). |
+| `BOT_BASKET_OPPONENT` | *(empty)* | Basket mode only (optional): case-insensitive title substring to target a single basket match (e.g. `DENAIN`). |
 | `CART_ENABLED` | `false` | Set `true` to let the bot add matching resale seats to users' shop carts (Phase 4B checkout). Requires `SECRET_KEY` and per-user shop credentials. |
 | `CART_DRY_RUN` | `true` | When `true`, the checkout only logs what it *would* add (plus `credentials=present\|missing\|unreadable`): no login, no add-to-cart, no claim, no notification. Set `false` to buy for real. |
 | `CHECKOUT_DUMP_DIR` | *(empty)* | When set, a failed add dumps the resale page and/or the AJAX response to this directory (diagnostic only, nothing is written by default — see below). |
@@ -133,6 +136,36 @@ An add is only claimed when the site's AJAX response confirms it (`added-to-cart
 `pending` for the next wave.
 
 See `.env.example` for a ready-to-copy template.
+
+### Basketball test mode (checkout validation)
+
+Basketball resales are frequent on the same billetterie, which makes them a good
+test bed for the checkout. `BOT_SPORT=basket` restricts discovery and the direct
+poll to basket resales and attaches them to a **synthetic match id**
+(`BOT_BASKET_MATCH_ID`), since the LNR calendar only knows rugby games. Rugby
+links stay stored but are not polled in this mode, so a test bed never buys a
+rugby seat.
+
+```bash
+BOT_SPORT=basket
+BOT_BASKET_MATCH_ID=900001
+# optional: only one opponent (title substring, case-insensitive)
+BOT_BASKET_OPPONENT=DENAIN
+```
+
+The request the bot must serve is created by SQL (the frontend only lists
+calendar matches) — see the “Basket test bed” section of
+[doc/SQL_HELPERS.md](doc/SQL_HELPERS.md). The logs then show the synthetic id:
+
+```
+bot scan enabled sport=basket basket_match_id=Some(900001) ...
+bot home refresh sport=basket cards=1 links=1 new=1 updated=0
+purchase matching: checkout plan user_id=1 match_id=900001 kind="single" ...
+```
+
+Unset `BOT_SPORT` (or set it back to `rugby`) to restore the normal behavior:
+the synthetic links keep their id but are ignored, and rugby discovery/polling
+resumes unchanged.
 
 ### Diagnose a checkout failure (dump mode)
 

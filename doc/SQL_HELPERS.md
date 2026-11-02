@@ -202,3 +202,56 @@ DELETE FROM ticket_offers
 > Warning: those rows are re-announced as fresh seats, so a `notify` subscriber
 > on the same match receives the seats alert again — that is expected for a
 > manual test, not something to run routinely.
+
+## Basket test bed: a request bound to a synthetic match id
+
+`BOT_SPORT=basket` attaches every basket resale to `BOT_BASKET_MATCH_ID` (use a
+value ≥ `900000` to stay clear of the LNR ids). The frontend cannot create such
+a request (it only lists calendar matches), so insert it here. Adapt `user_id`
+and the budget, then restart the bot with:
+
+```bash
+BOT_SPORT=basket BOT_BASKET_MATCH_ID=900001 BOT_BASKET_OPPONENT=DENAIN
+```
+
+Create (or reset) the request the bot should serve:
+
+```sql
+sqlite3 -box ovalbot.sqlite "
+INSERT INTO ticket_requests
+       (user_id, match_id, kind, quantity, max_price_cents, places, status,
+        created_at, updated_at)
+VALUES (1, 900001, 'single', 1, 6000, NULL, 'pending',
+        strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+        strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+ON CONFLICT(user_id, match_id) DO UPDATE SET
+       kind = excluded.kind,
+       quantity = excluded.quantity,
+       max_price_cents = excluded.max_price_cents,
+       places = excluded.places,
+       status = 'pending',
+       updated_at = excluded.updated_at;"
+```
+
+Check what the bot resolved (the basket links carry the synthetic id):
+
+```sql
+sqlite3 -box ovalbot.sqlite "
+SELECT title, date, resale_link, match_id, last_scan_status
+FROM resale_links
+WHERE match_id = 900001
+ORDER BY last_seen_at DESC;"
+```
+
+Remove the test bed when done (requests, offers and links of the synthetic id):
+
+```sql
+sqlite3 -box ovalbot.sqlite "
+DELETE FROM ticket_requests WHERE match_id = 900001;
+DELETE FROM ticket_offers   WHERE match_id = 900001;
+DELETE FROM resale_links    WHERE match_id = 900001;"
+```
+
+> Note: `ticket_offers.claimed_by` matters if you re-run a test — delete the
+> offer rows (as above) so the packs are planned again, or reset their
+> `claimed_by` instead.

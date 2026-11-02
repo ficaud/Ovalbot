@@ -205,6 +205,36 @@ pub async fn links_to_scan(pool: &SqlitePool) -> Result<Vec<ScanTarget>, AppErro
     Ok(targets)
 }
 
+/// Poll targets, optionally restricted to one resolved match id.
+///
+/// The rugby loop polls every stored link (`None`); the basket test bed polls
+/// only the links resolved to its synthetic id, so rugby links stay stored but
+/// untouched.
+///
+/// # Arguments
+/// * `pool` - SQLite pool
+/// * `match_id` - `Some(id)` to keep only that match's links, `None` for all
+/// # Errors
+/// `AppError::Sqlx` on query failure.
+pub async fn links_to_scan_for(
+    pool: &SqlitePool,
+    match_id: Option<i64>,
+) -> Result<Vec<ScanTarget>, AppError> {
+    let Some(match_id) = match_id else {
+        return links_to_scan(pool).await;
+    };
+    let targets = sqlx::query_as::<_, ScanTarget>(
+        "SELECT title, date, resale_link, match_id \
+         FROM resale_links \
+         WHERE match_id = ? \
+         ORDER BY first_seen_at, title, date",
+    )
+    .bind(match_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(targets)
+}
+
 /// Records the outcome of one direct poll.
 ///
 /// # Errors
