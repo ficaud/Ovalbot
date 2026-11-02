@@ -254,8 +254,8 @@ async fn send_seats_alert_falls_back_to_hash_without_link() {
     assert!(html.contains("href=\"#\""));
 }
 
-/// The cart alert posts the wave progress and the shop basket CTA, with the
-/// per-wave subject.
+/// The cart alert posts the wave progress, the match CTA and the basket link,
+/// with the per-wave subject.
 #[tokio::test]
 async fn send_cart_alert_posts_expected_request() {
     let (base_url, captured) = mock_resend(200).await;
@@ -263,6 +263,7 @@ async fn send_cart_alert_posts_expected_request() {
     let alert = CartAlert {
         opponent: "AVIRON BAYONNAIS".to_string(),
         date: "dimanche 8 novembre à 21h05".to_string(),
+        match_link: "https://billetterie.staderochelais.com/fr/product/1371/revente_j8".to_string(),
         cart_link: "https://billetterie.staderochelais.com/fr/basket".to_string(),
         added: 2,
         total: 4,
@@ -281,9 +282,17 @@ async fn send_cart_alert_posts_expected_request() {
     );
     let text = body["text"].as_str().unwrap();
     assert!(text.contains("2/4"));
+    assert!(text.contains(
+        "Voir les billets du match : https://billetterie.staderochelais.com/fr/product/1371/revente_j8"
+    ));
     assert!(text.contains("https://billetterie.staderochelais.com/fr/basket"));
     let html = body["html"].as_str().unwrap();
+    // The main CTA is the match page, the cart is the secondary link.
+    assert!(
+        html.contains("href=\"https://billetterie.staderochelais.com/fr/product/1371/revente_j8\"")
+    );
     assert!(html.contains("href=\"https://billetterie.staderochelais.com/fr/basket\""));
+    assert!(html.contains("Voir les billets du match"));
     assert!(html.contains("2/4"));
 }
 
@@ -295,6 +304,7 @@ async fn send_cart_alert_failure_subject() {
     let alert = CartAlert {
         opponent: "AVIRON BAYONNAIS".to_string(),
         date: "dimanche 8 novembre à 21h05".to_string(),
+        match_link: String::new(),
         cart_link: String::new(),
         added: 1,
         total: 2,

@@ -410,6 +410,7 @@ async fn completed_wave_claims_accepts_and_notifies(pool: SqlitePool) {
     assert_eq!(mails[0].1.total, 1);
     assert!(!mails[0].1.failed);
     assert_eq!(mails[0].1.cart_link, CART_URL);
+    assert_eq!(mails[0].1.match_link, target().resale_link);
     let messages = telegram.messages.lock().unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].0, "chat-42");
