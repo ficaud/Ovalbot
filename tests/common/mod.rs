@@ -110,7 +110,7 @@ pub enum PackOutcome {
     WaitingQueue,
     /// The POST was rejected as a stale form (retry-later churn).
     ExpiredForm,
-    /// The page lost its add-to-cart machinery (resale closed, terminal).
+    /// The page lost its add-to-cart machinery (retry-later churn).
     MissingContext,
     /// The transport failed (retry-later churn).
     Network,

@@ -4,6 +4,16 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-01 — Dump par tentative d'ajout + `MissingContext` réessayable
+
+- Objectif: pouvoir enquêter sur une tentative d'ajout réelle (succès **ou** échec) sans deviner, et arrêter de clore une demande sur une page BigPipe transitoire.
+- `bot/parser/src/interface/curl/checkout.rs`: `CHECKOUT_DUMP_DIR` capture désormais **chaque tentative** via `AttemptDump` (un id partagé par trois fichiers) : `ovalbot_page_<id>.txt` (page réellement reçue), `ovalbot_response_<id>.txt` (réponse AJAX quand un POST a eu lieu) et `ovalbot_attempt_<id>.txt` (pack, tickets, bornes du slider, `outcome`). Issues tracées : `added`, `rejected`, `missing_context`, `pack_absent`, `pack_changed`, `expired_form`, `waiting_queue`, `post_network`. Sans la variable, aucune écriture. Remplace l'ancien `dump_if_enabled` (échecs seulement).
+- `src/services/bot/checkout.rs`: `MissingContext` rejoint `is_retryable` — la vague est reportée, la demande reste `pending`, plus d'alerte d'échec. Seul un **login refusé** clôt encore en `failed` (le bras générique restant n'est qu'un filet pour une future variante terminale).
+- Tests: parser 76 → 78 (`attempt_dump_writes_page_response_and_metadata`, `attempt_dump_is_a_noop_without_a_directory`) ; `tests/checkout.rs` : `hard_add_failure_marks_failed` devient `missing_context_keeps_request_pending` (1 claim, `pending`, alerte `failed=false`).
+- Docs: README (dump : trois fichiers par tentative + issues), CHANGELOG 0.4.0, ce journal.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps`, `cargo test --workspace --jobs 2` (21 suites ; lib 78, parser 78, checkout 17, purchases 18, resale 8).
+- Reste à faire (session de capture): lancer en réel là où se trouvent les identifiants boutique (le devcontainer n'en a aucun : base locale sans `shop_password_cipher`), `BOT_SPORT=basket BOT_BASKET_MATCH_ID=900001 BOT_BASKET_OPPONENT=DENAIN CART_ENABLED=true CART_DRY_RUN=false CHECKOUT_DUMP_DIR=/data/dumps`, puis analyser les fichiers `ovalbot_*_<id>.txt` pour figer les marqueurs et, si besoin, corriger l'extraction.
+
 ### 2026-11-01 — BigPipe : le verdict d'ajout vient de la réponse AJAX, pas de la page
 
 - Contexte: après le fix « packs atomiques », chaque vague finissait en `seat skipped (resale churn)` en ~4-6 s **alors que l'utilisateur réussissait à prendre la place manuellement 3 minutes plus tard**. La capture de son payload a montré les mêmes `pack_id`/`ticket_id` que le plan, et la réponse AJAX d'un ajout réussi a révélé la cause : sur une revente **disponible**, le formulaire add-to-cart, le slider et le listing sont injectés par un **BigPipe lazy builder** (`hubber_resale.product_lazy_builder:addToCartWithResaleForm`+`data-big-pipe-placeholder-id`). Le HTML brut récupéré par curl n'a donc ni `input.hubber-slider-input` ni `div.js-listing-plain[data-json]` → faux `MissingContext` (12:53) puis faux `SeatGone` (17:56 et suivants). Ce n'était pas la course login → POST.
@@ -15,7 +25,7 @@ Development notes kept up to date by the agent as work progresses.
 - `src/services/bot/checkout.rs`: `CartSession::add_pack` prend `price_range` ; `pack_price_range(seats, pack_id)` calcule le repli (min/max des prix du pack, 2 décimales) ; `RealSession` transmet.
 - Entretien: la capture a aussi confirmé `"allow_split":false` dans le JSON des packs (atomicité) et `update_build_id` (le `form_build_id` tourne après chaque POST — notre refetch par pack le gère déjà).
 - Tests: parser 72 → 76 (`slider_bounds_are_read_from_bigpipe_markup`, `add_pack_posts_when_the_page_has_no_listing` — page synthétique sans `data-json` + slider échappé, `add_pack_reports_a_rejected_add_as_seat_gone`, `pack_added_reads_the_live_success_response` ; sold-out désormais testé avec verdict POST). Fixtures `add_ok(pack_id)` / `ADD_REJECTED` pour scripter le mock.
-- Docs: en-tête du module parser, README (verdict AJAX), CHANGELOG 0.4.0, ce journal. Pas de migration, pas de frontend.
+- Docs: en-tête du module parser, README (verdict AJAX + procédure « dump mode » avec `CHECKOUT_DUMP_DIR`, en Docker via le volume `./data` et en local), `.env.example`, CHANGELOG 0.4.0, ce journal. Pas de migration, pas de frontend.
 - Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps`, `cargo test --workspace --jobs 2` (21 suites ; parser 76, lib 74, checkout 17, purchases 18).
 - Reste ouvert: session boutique chaude (~6 s → ~1,5 s) si la course redevient le facteur limitant, et le nettoyage de la demande de test admin (`DELETE FROM ticket_requests WHERE user_id = 1 AND match_id = 11877;`).
 

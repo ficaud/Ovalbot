@@ -39,7 +39,7 @@ use crate::app::clubs::larochelle::parse_seat;
 use crate::interface::match_manager::is_waiting_queue;
 use curl::easy::{Easy, List};
 use scraper::{Html, Selector};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 // ============================== CONSTANTS ==============================
@@ -693,6 +693,8 @@ impl ShopSession {
     /// * `resale_url` - The absolute resale product URL
     /// * `pack_id` - The resale pack to add (from the fresh scan)
     /// * `tickets` - Every ticket id of that pack (the whole pack)
+    /// * `price_range` - `price_slider` fallback, used when the page does not
+    ///   expose its lazily-built price slider
     /// # Errors
     /// [`CheckoutError::WaitingQueue`] when the shop is under load,
     /// [`CheckoutError::SeatGone`] when the pack vanished, changed composition,
@@ -702,9 +704,8 @@ impl ShopSession {
     /// [`CheckoutError::ExpiredForm`] when the POST is rejected as expired,
     /// [`CheckoutError::Network`] on transport failure
     ///
-    /// # Arguments
-    /// * `price_min`, `price_max` - Fallback slider bounds, used when the page
-    ///   does not expose the lazily-built price slider
+    /// With `CHECKOUT_DUMP_DIR` set, every attempt writes the fetched page, the
+    /// AJAX response and an `attempt` metadata file there (diagnostic only).
     pub fn add_pack(
         &self,
         resale_url: &str,
@@ -712,9 +713,12 @@ impl ShopSession {
         tickets: &[String],
         price_range: (String, String),
     ) -> Result<(), CheckoutError> {
+        let dump = AttemptDump::from_env(pack_id, tickets, &price_range);
+
         // Step 1: refresh the page within the session (tokens are per render).
         let (final_url, html) = fetch_with_jar(resale_url, Some(self.jar.path()))?;
         if is_waiting_queue(&final_url, &html) {
+            dump.finish("waiting_queue", Some(&html), None);
             return Err(CheckoutError::WaitingQueue);
         }
 
@@ -730,7 +734,7 @@ impl ShopSession {
                 .find(|(listed_pack, _)| *listed_pack == pack_id);
             let Some((_, listed_tickets)) = fresh else {
                 log::debug!("[CHECKOUT] pack {pack_id} absent from the listed packs");
-                dump_if_enabled("page", &html);
+                dump.finish("pack_absent", Some(&html), None);
                 return Err(CheckoutError::SeatGone);
             };
             if html.contains(OUT_OF_STOCK_MARKER) || !same_tickets(listed_tickets, tickets) {
@@ -740,7 +744,7 @@ impl ShopSession {
                 log::debug!(
                     "[CHECKOUT] pack {pack_id} changed or gone (wanted {tickets:?}, found {listed_tickets:?})"
                 );
-                dump_if_enabled("page", &html);
+                dump.finish("pack_changed", Some(&html), None);
                 return Err(CheckoutError::SeatGone);
             }
         }
@@ -748,7 +752,7 @@ impl ShopSession {
         // Step 3: rebuild the add-to-cart context (settings + form id).
         let Some(mut context) = extract_action_context(&html) else {
             log::warn!("[CHECKOUT] add-to-cart context missing from the resale page");
-            dump_if_enabled("page", &html);
+            dump.finish("missing_context", Some(&html), None);
             return Err(CheckoutError::MissingContext);
         };
         if context.price_min.is_empty() || context.price_max.is_empty() {
@@ -764,12 +768,18 @@ impl ShopSession {
             self.base,
             context.ajax_url.split('?').next().unwrap_or("")
         );
-        let response = post_form(
+        let response = match post_form(
             &url,
             &body,
             Some(self.jar.path()),
             &add_to_cart_headers(&referer),
-        )?;
+        ) {
+            Ok(response) => response,
+            Err(e) => {
+                dump.finish("post_network", Some(&html), None);
+                return Err(e);
+            }
+        };
         log::info!("[CHECKOUT] add-to-cart response: {} bytes", response.len());
 
         // Step 5: detect the stale/invalid-session rejection.
@@ -777,7 +787,7 @@ impl ShopSession {
             || response.contains("p%C3%A9rim%C3%A9")
             || (response.contains("alert-danger") && response.contains("formulaire"))
         {
-            dump_if_enabled("response", &response);
+            dump.finish("expired_form", Some(&html), Some(&response));
             return Err(CheckoutError::ExpiredForm);
         }
 
@@ -786,9 +796,10 @@ impl ShopSession {
         // the pack was gone between the plan and the POST.
         if !pack_added(&response, pack_id) {
             log::debug!("[CHECKOUT] pack {pack_id} add not confirmed by the response");
-            dump_if_enabled("response", &response);
+            dump.finish("rejected", Some(&html), Some(&response));
             return Err(CheckoutError::SeatGone);
         }
+        dump.finish("added", Some(&html), Some(&response));
         Ok(())
     }
 }
@@ -813,21 +824,87 @@ fn pack_added(response: &str, pack_id: u64) -> bool {
             || response.contains("refreshCartTimeout"))
 }
 
-/// Writes a diagnostic dump of `body` when `CHECKOUT_DUMP_DIR` is set (a no-op
-/// otherwise, the normal production path).
+/// One diagnostic capture of an add attempt, enabled by `CHECKOUT_DUMP_DIR`.
+///
+/// Every attempt (success included) writes three files sharing one attempt id:
+/// `ovalbot_page_<id>.txt` (the page the bot really fetched),
+/// `ovalbot_response_<id>.txt` (the AJAX response, when a POST happened) and
+/// `ovalbot_attempt_<id>.txt` (pack, tickets, price range, outcome).
+struct AttemptDump {
+    /// Capture directory; `None` disables the dump entirely.
+    dir: Option<PathBuf>,
+    /// Attempt id shared by the three file names.
+    stem: String,
+    /// Pack the attempt targeted.
+    pack_id: u64,
+    /// Tickets of that pack.
+    tickets: Vec<String>,
+    /// Lower slider bound sent (or read).
+    price_min: String,
+    /// Upper slider bound sent (or read).
+    price_max: String,
+}
+
+impl AttemptDump {
+    /// Reads `CHECKOUT_DUMP_DIR` and prepares the attempt id.
+    ///
+    /// # Arguments
+    /// * `pack_id` - The pack the attempt targets
+    /// * `tickets` - Its ticket ids
+    /// * `price_range` - The slider fallback used for the POST
+    fn from_env(pack_id: u64, tickets: &[String], price_range: &(String, String)) -> Self {
+        let dir = std::env::var("CHECKOUT_DUMP_DIR")
+            .ok()
+            .map(|dir| dir.trim().to_string())
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        Self {
+            dir,
+            stem: nanos.to_string(),
+            pack_id,
+            tickets: tickets.to_vec(),
+            price_min: price_range.0.clone(),
+            price_max: price_range.1.clone(),
+        }
+    }
+
+    /// Writes the attempt files (no-op without `CHECKOUT_DUMP_DIR`).
+    ///
+    /// # Arguments
+    /// * `outcome` - Short verdict (`added`, `rejected`, `missing_context`, …)
+    /// * `page` - The fetched page, when available
+    /// * `response` - The AJAX response, when a POST happened
+    fn finish(&self, outcome: &str, page: Option<&str>, response: Option<&str>) {
+        let Some(dir) = &self.dir else {
+            return;
+        };
+        if let Some(page) = page {
+            write_dump(dir, "page", &self.stem, page);
+        }
+        if let Some(response) = response {
+            write_dump(dir, "response", &self.stem, response);
+        }
+        let meta = format!(
+            "attempt={}\npack_id={}\ntickets={:?}\nprice_min={}\nprice_max={}\noutcome={outcome}\n",
+            self.stem, self.pack_id, self.tickets, self.price_min, self.price_max,
+        );
+        write_dump(dir, "attempt", &self.stem, &meta);
+    }
+}
+
+/// Writes one diagnostic file, warning (never failing) on I/O errors.
 ///
 /// # Arguments
-/// * `kind` - File-name stem (`page`, `response`, …)
+/// * `dir` - The capture directory (must exist)
+/// * `kind` - File-name kind (`page`, `response`, `attempt`)
+/// * `stem` - The attempt id
 /// * `body` - The raw payload to save
-fn dump_if_enabled(kind: &str, body: &str) {
-    let Ok(dir) = std::env::var("CHECKOUT_DUMP_DIR") else {
-        return;
-    };
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let path = PathBuf::from(dir).join(format!("ovalbot_{kind}_{nanos}.txt"));
+fn write_dump(dir: &Path, kind: &str, stem: &str, body: &str) {
+    let path = dir.join(format!("ovalbot_{kind}_{stem}.txt"));
     if let Err(e) = std::fs::write(&path, body) {
         log::warn!("[CHECKOUT] failed to dump {kind}: {e}");
     }
@@ -1352,6 +1429,51 @@ mod tests {
         assert!(!pack_added(live, 11111));
         assert!(!pack_added(ADD_REJECTED, 34720));
         assert!(!pack_added("[]", 34720));
+    }
+
+    // The diagnostic capture writes one file per kind sharing the attempt id,
+    // and the metadata carries the pack, tickets, slider bounds and outcome.
+    #[test]
+    fn attempt_dump_writes_page_response_and_metadata() {
+        let dir = std::env::temp_dir().join(format!("ovalbot-dump-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dump = AttemptDump {
+            dir: Some(dir.clone()),
+            stem: "42".to_string(),
+            pack_id: 900,
+            tickets: vec!["a".to_string(), "b".to_string()],
+            price_min: "49.00".to_string(),
+            price_max: "49".to_string(),
+        };
+        dump.finish("added", Some("<html/>"), Some("[]"));
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("ovalbot_page_42.txt")).expect("page"),
+            "<html/>"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("ovalbot_response_42.txt")).expect("response"),
+            "[]"
+        );
+        let meta = std::fs::read_to_string(dir.join("ovalbot_attempt_42.txt")).expect("meta");
+        assert!(meta.contains("pack_id=900"), "{meta}");
+        assert!(meta.contains("tickets=[\"a\", \"b\"]"), "{meta}");
+        assert!(meta.contains("outcome=added"), "{meta}");
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    // Without CHECKOUT_DUMP_DIR the capture is a no-op (no panic, no file).
+    #[test]
+    fn attempt_dump_is_a_noop_without_a_directory() {
+        let dump = AttemptDump {
+            dir: None,
+            stem: "43".to_string(),
+            pack_id: 900,
+            tickets: vec!["a".to_string()],
+            price_min: "49.00".to_string(),
+            price_max: "49".to_string(),
+        };
+        dump.finish("rejected", Some("<html/>"), None);
     }
 
     // A stale-session rejection body is mapped to ExpiredForm.
