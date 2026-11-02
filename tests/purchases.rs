@@ -5,8 +5,8 @@
 mod common;
 
 use common::insert_active_user;
-use ovalbot::services::bot::purchases::{claim_seat, plan_checkouts};
-use ovalbot::services::tickets::{upsert, TicketKind, TicketRequestInput};
+use ovalbot::services::bot::purchases::{claim_seat, plan_checkouts, plan_checkouts_with_fresh};
+use ovalbot::services::tickets::{upsert, OfferKey, TicketKind, TicketRequestInput};
 use parser::core::seat::{Seat, SeatComposition, SeatId, SeatInfo};
 use sqlx::SqlitePool;
 
@@ -597,4 +597,51 @@ async fn group_skips_a_pack_that_does_not_fit_the_remaining_quota(pool: SqlitePo
     .unwrap();
 
     assert!(plans.is_empty());
+}
+
+// A seat that just appeared is served before an older (and cheaper) listing
+// entry: the older one may already be gone, the fresh one is the live offer.
+#[sqlx::test]
+async fn fresh_seats_are_served_before_older_ones(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, MATCH, &single(1, 6000)).await.unwrap();
+    grant_shop(&pool, user, Some("shop@example.com")).await;
+
+    let older = seat("older", "40.00", "CATÉGORIE 3");
+    let fresh = seat("fresh", "49.00", "CATÉGORIE 3");
+    let fresh_key = OfferKey {
+        pack_id: fresh.id.pack_id,
+        ticket_id: fresh.id.ticket_id.clone(),
+    };
+
+    let plans =
+        plan_checkouts_with_fresh(&pool, MATCH, &[older.clone(), fresh.clone()], &[fresh_key])
+            .await
+            .unwrap();
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].seats.len(), 1);
+    assert_eq!(plans[0].seats[0].id.ticket_id, "fresh");
+}
+
+// Without a freshness hint the plan is still deterministic: the cheapest
+// candidate wins, whatever the listing order.
+#[sqlx::test]
+async fn plan_is_deterministic_whatever_the_listing_order(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, MATCH, &single(1, 6000)).await.unwrap();
+    grant_shop(&pool, user, Some("shop@example.com")).await;
+
+    let cheap = seat("cheap", "40.00", "CATÉGORIE 3");
+    let pricey = seat("pricey", "49.00", "CATÉGORIE 3");
+
+    let forward = plan_checkouts(&pool, MATCH, &[pricey.clone(), cheap.clone()])
+        .await
+        .unwrap();
+    let backward = plan_checkouts(&pool, MATCH, &[cheap, pricey])
+        .await
+        .unwrap();
+
+    assert_eq!(forward[0].seats[0].id.ticket_id, "cheap");
+    assert_eq!(backward[0].seats[0].id.ticket_id, "cheap");
 }

@@ -331,7 +331,9 @@ async fn poll_one(state: &AppState, target: &ScanTarget) {
         // the plans into real add-to-cart calls (behind `CART_ENABLED`). Every
         // skip/plan reason is logged inside; a matching/checkout failure never
         // stops the poll.
-        match purchases::plan_checkouts(&state.pool, i64::from(event_id), &seats).await {
+        match purchases::plan_checkouts_with_fresh(&state.pool, i64::from(event_id), &seats, &fresh)
+            .await
+        {
             Ok(plans) if !plans.is_empty() => {
                 let checkout_target = checkout::CheckoutTarget {
                     match_id: i64::from(event_id),
