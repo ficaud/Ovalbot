@@ -21,15 +21,16 @@
 //!    (email + Telegram) — the 20-minute cart window makes every wave
 //!    actionable;
 //! 6. the request is closed `accepted` once the total is claimed, or `failed`
-//!    on a terminal error (refused login / lost add-to-cart context); shop
-//!    churn is retried on the next wave.
+//!    on a refused shop login; every other error is shop churn, retried on the
+//!    next wave.
 //!
 //! `SeatGone` / `WaitingQueue` are normal resale churn: the seat is skipped,
 //! the wave continues with the others, and the request stays `pending` for the
-//! next new-seats wave. `Network` and `ExpiredForm` are retried later too: the
-//! wave stops where it stands, whatever was already added is reported, and the
-//! request stays `pending`. Only a refused login or a lost add-to-cart context
-//! (resale closed) ends the request as `failed`.
+//! next new-seats wave. `Network`, `ExpiredForm` and `MissingContext` are
+//! retried later too (the resale page is rendered by BigPipe, so a page without
+//! the add-to-cart machinery is usually transient): the wave stops where it
+//! stands, whatever was already added is reported, and the request stays
+//! `pending`. Only a **refused login** ends the request as `failed`.
 
 use async_trait::async_trait;
 use parser::core::seat::Seat;
@@ -157,10 +158,12 @@ pub struct CheckoutTarget {
 /// Whether a checkout error is environmental churn worth retrying on a later
 /// wave, rather than a reason to close the user's request.
 ///
-/// `SeatGone` (seat taken by somebody else), `WaitingQueue` (shop under load),
-/// `Network` (transport hiccup) and `ExpiredForm` (stale Drupal form or
-/// session) all leave the request `pending`: the next new-seats wave logs in
-/// again and re-adds whatever is still listed.
+/// `SeatGone` (pack taken by somebody else), `WaitingQueue` (shop under load),
+/// `Network` (transport hiccup), `ExpiredForm` (stale Drupal form or session)
+/// and `MissingContext` (the BigPipe page arrived without its add-to-cart
+/// machinery) all leave the request `pending`: the next new-seats wave logs in
+/// again and re-adds whatever is still listed. A refused login is the only
+/// terminal error left.
 fn is_retryable(error: &CheckoutError) -> bool {
     matches!(
         error,
@@ -168,6 +171,7 @@ fn is_retryable(error: &CheckoutError) -> bool {
             | CheckoutError::WaitingQueue
             | CheckoutError::Network(_)
             | CheckoutError::ExpiredForm
+            | CheckoutError::MissingContext
     )
 }
 
@@ -309,6 +313,9 @@ async fn execute_plan(state: &AppState, target: &CheckoutTarget, plan: &PlanChec
                 break;
             }
             Err(e) => {
+                // Safety net: every add error is retryable today (a refused
+                // login never reaches this loop), so this branch only guards
+                // against a future terminal variant.
                 tracing::warn!(user_id, match_id, "checkout add failed: {e}");
                 hard_failure = true;
                 break;

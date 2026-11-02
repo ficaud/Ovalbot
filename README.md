@@ -122,8 +122,8 @@ The backend reads these environment variables:
 | `CHECKOUT_DUMP_DIR` | *(empty)* | When set, a failed add dumps the resale page and/or the AJAX response to this directory (diagnostic only, nothing is written by default — see below). |
 
 With `CART_ENABLED=true`, a request is only closed as `failed` on a refused shop
-login or a vanished add-to-cart context (resale closed). Seat-gone, waiting
-queue, network and expired-form errors leave it `pending` for the next wave.
+login. Seat-gone, waiting queue, network, expired-form and missing add-to-cart
+context errors all leave it `pending` for the next wave.
 
 Resale packs are **atomic**: the billetterie cannot split a 2-ticket listing, so
 the bot adds a whole pack in one request and only plans packs that fit the
@@ -136,9 +136,12 @@ See `.env.example` for a ready-to-copy template.
 
 ### Diagnose a checkout failure (dump mode)
 
-With `CHECKOUT_DUMP_DIR` set, every failed add (seat gone, missing add-to-cart
-context, expired form, rejected POST) writes the raw page and/or the AJAX
-response to that directory. Nothing is written when the variable is unset.
+With `CHECKOUT_DUMP_DIR` set, **every add attempt** writes three files sharing
+one attempt id: `ovalbot_page_<id>.txt` (the page the bot really fetched),
+`ovalbot_response_<id>.txt` (the AJAX response, when a POST happened) and
+`ovalbot_attempt_<id>.txt` (pack, tickets, slider bounds and the outcome:
+`added`, `rejected`, `missing_context`, `pack_absent`, `expired_form`, …).
+Nothing is written when the variable is unset.
 
 With Docker Compose, dump into the `./data` volume so the files land on the
 host, and stop the production container first (two bots must never share the

@@ -637,10 +637,10 @@ async fn seat_gone_is_tolerated(pool: SqlitePool) {
     assert!(!mails[0].1.failed);
 }
 
-// A terminal add error closes the request as failed, notifying what is already
-// in the cart.
+// A missing add-to-cart context (BigPipe page without its machinery) is churn:
+// what was already added is reported and the request keeps waiting.
 #[sqlx::test]
-async fn hard_add_failure_marks_failed(pool: SqlitePool) {
+async fn missing_context_keeps_request_pending(pool: SqlitePool) {
     let user = insert_active_user(&pool, "a@example.com").await;
     upsert(
         &pool,
@@ -684,10 +684,10 @@ async fn hard_add_failure_marks_failed(pool: SqlitePool) {
     .await;
 
     assert_eq!(claimed(&pool, user).await, 1);
-    assert_eq!(status(&pool, user).await, TicketStatus::Failed);
+    assert_eq!(status(&pool, user).await, TicketStatus::Pending);
     let mails = mailer.cart_alerts.lock().unwrap();
     assert_eq!(mails.len(), 1);
-    assert!(mails[0].1.failed);
+    assert!(!mails[0].1.failed);
     assert_eq!(mails[0].1.added, 1);
 }
 
