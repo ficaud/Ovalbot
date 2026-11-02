@@ -75,7 +75,9 @@ const DEFAULT_SEATS_ALERT_HTML: &str = "<p>Nouvelles places de rugby en revente 
 
 const DEFAULT_CART_ALERT_HTML: &str = "<p><strong>{{added}}</strong> place(s) ajoutée(s) à ton \
 panier pour Stade Rochelais vs <strong>{{opponent}}</strong> ({{date}}) — {{progress}} au total.</p>\
-<p>Tu as environ 20 minutes pour payer.</p><p><a href=\"{{link}}\">Accéder à mon panier</a></p>";
+<p>Tu as environ 20 minutes pour payer.</p>\
+<p><a href=\"{{link}}\">Voir les billets du match</a></p>\
+<p><a href=\"{{cart_link}}\">Accéder à mon panier</a></p>";
 
 /// The two HTML bodies, loaded from `TEMPLATE_DIR` (see [`load_templates`]).
 #[derive(Debug, Clone)]
@@ -321,7 +323,9 @@ impl Mailer for ResendMailer {
 
     /// Notification that seats are in the user's shop cart: subject/text
     /// from the alert, the HTML template fills `{{opponent}}` / `{{date}}` /
-    /// `{{added}}` / `{{progress}}` / `{{link}}` (empty link → `#`).
+    /// `{{added}}` / `{{progress}}` / `{{link}}` (the match's ticketing page)
+    /// and `{{cart_link}}` (the payment page). An empty link falls back to the
+    /// cart, then to `#`.
     async fn send_cart_alert(&self, email: &str, alert: &CartAlert) -> Result<(), MailError> {
         let subject = if alert.failed {
             format!(
@@ -334,10 +338,17 @@ impl Mailer for ResendMailer {
                 alert.added, alert.opponent
             )
         };
-        let link = if alert.cart_link.is_empty() {
+        let link = if !alert.match_link.is_empty() {
+            alert.match_link.as_str()
+        } else if !alert.cart_link.is_empty() {
+            alert.cart_link.as_str()
+        } else {
+            "#"
+        };
+        let cart_link = if alert.cart_link.is_empty() {
             "#"
         } else {
-            &alert.cart_link
+            alert.cart_link.as_str()
         };
         let html = render(
             &self.templates.cart_alert_html,
@@ -347,6 +358,7 @@ impl Mailer for ResendMailer {
                 ("added", &alert.added.to_string()),
                 ("progress", &alert.progress()),
                 ("link", link),
+                ("cart_link", cart_link),
             ],
         );
         self.send(email, &subject, &html, &alert.plain_text()).await

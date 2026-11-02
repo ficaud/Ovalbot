@@ -175,6 +175,9 @@ pub struct CartAlert {
     pub opponent: String,
     /// Encounter date, free-form French string from the site.
     pub date: String,
+    /// The match's ticketing page (the resale product the seats came from) —
+    /// the primary call to action of the notification.
+    pub match_link: String,
     /// The shop cart page where the added seats wait to be paid.
     pub cart_link: String,
     /// Seats this wave actually put into the cart.
@@ -193,6 +196,17 @@ impl CartAlert {
         format!("{}/{}", self.added, self.total)
     }
 
+    /// The primary link of the notification: the match's ticketing page, with
+    /// the cart as a fallback when the match page is unknown.
+    #[must_use]
+    fn match_or_cart_link(&self) -> &str {
+        if self.match_link.is_empty() {
+            &self.cart_link
+        } else {
+            &self.match_link
+        }
+    }
+
     /// Plain-text body shared by the email text part (the HTML body is the
     /// `cart_ready.html` template).
     #[must_use]
@@ -201,17 +215,26 @@ impl CartAlert {
             format!(
                 "L'ajout automatique au panier a échoué après {} place(s) ({} commandée(s)) \
                  pour Stade Rochelais vs {} ({}).\n\
-                 Va payer ce qui est déjà dans ton panier, ou recommence la demande : {}",
-                self.added, self.total, self.opponent, self.date, self.cart_link
+                 Va payer ce qui est déjà dans ton panier, ou recommence la demande : {}\n\
+                 Billets du match : {}",
+                self.added,
+                self.total,
+                self.opponent,
+                self.date,
+                self.cart_link,
+                self.match_or_cart_link()
             )
         } else {
             format!(
                 "{} place(s) ajoutée(s) à ton panier pour Stade Rochelais vs {} ({}) — \
-                 {} au total.\nTu as environ 20 minutes pour payer : {}",
+                 {} au total.\n\
+                 Voir les billets du match : {}\n\
+                 Tu as environ 20 minutes pour payer : {}",
                 self.added,
                 self.opponent,
                 self.date,
                 self.progress(),
+                self.match_or_cart_link(),
                 self.cart_link
             )
         }
@@ -241,9 +264,15 @@ impl CartAlert {
                 self.progress()
             ));
         }
+        if !self.match_link.is_empty() {
+            text.push_str(&format!(
+                "🎟️ <a href=\"{}\">Voir les billets du match</a>\n",
+                escape_html(&self.match_link)
+            ));
+        }
         if !self.cart_link.is_empty() {
             text.push_str(&format!(
-                "🔗 <a href=\"{}\">Accéder au panier</a>\n",
+                "🛒 <a href=\"{}\">Accéder au panier</a>\n",
                 escape_html(&self.cart_link)
             ));
         }
@@ -418,6 +447,8 @@ mod tests {
         let alert = CartAlert {
             opponent: "AVIRON BAYONNAIS".to_string(),
             date: "dimanche 8 novembre à 21h05".to_string(),
+            match_link: "https://billetterie.staderochelais.com/fr/product/1371/revente_j8"
+                .to_string(),
             cart_link: "https://billetterie.staderochelais.com/fr/basket".to_string(),
             added: 2,
             total: 4,
@@ -431,11 +462,13 @@ mod tests {
              🆚 AVIRON BAYONNAIS\n\
              📅 dimanche 8 novembre à 21h05\n\n\
              🛒 2 place(s) ajoutée(s) au panier — 2/4 au total.\n\
-             🔗 <a href=\"https://billetterie.staderochelais.com/fr/basket\">Accéder au panier</a>\n\n\
+             🎟️ <a href=\"https://billetterie.staderochelais.com/fr/product/1371/revente_j8\">Voir les billets du match</a>\n\
+             🛒 <a href=\"https://billetterie.staderochelais.com/fr/basket\">Accéder au panier</a>\n\n\
              ⏳ Tu as environ 20 minutes pour payer."
         );
 
-        // A failed wave says what is in the cart; an empty link drops the CTA.
+        // A failed wave says what is in the cart; an empty cart link drops the
+        // cart CTA but keeps the match one.
         let failed = CartAlert {
             cart_link: String::new(),
             failed: true,
@@ -445,7 +478,8 @@ mod tests {
         assert!(
             text.contains("⚠️ Ajout au panier interrompu : 2 place(s) dedans (4 commandée(s)).")
         );
-        assert!(!text.contains("🔗"));
+        assert!(text.contains("Voir les billets du match"));
+        assert!(!text.contains("Accéder au panier"));
         assert!(text.contains("⏳ Tu as environ 20 minutes pour payer."));
     }
 
@@ -455,6 +489,8 @@ mod tests {
         let alert = CartAlert {
             opponent: "AVIRON BAYONNAIS".to_string(),
             date: "dimanche 8 novembre à 21h05".to_string(),
+            match_link: "https://billetterie.staderochelais.com/fr/product/1371/revente_j8"
+                .to_string(),
             cart_link: "https://billetterie.staderochelais.com/fr/basket".to_string(),
             added: 1,
             total: 2,
@@ -463,6 +499,9 @@ mod tests {
         let text = alert.plain_text();
         assert!(text.contains("1 place(s) ajoutée(s)"));
         assert!(text.contains("1/2"));
+        assert!(text.contains(
+            "Voir les billets du match : https://billetterie.staderochelais.com/fr/product/1371/revente_j8"
+        ));
         assert!(text.contains("https://billetterie.staderochelais.com/fr/basket"));
 
         let failed = CartAlert {
@@ -472,5 +511,6 @@ mod tests {
         let text = failed.plain_text();
         assert!(text.contains("a échoué"));
         assert!(text.contains("1"));
+        assert!(text.contains("Billets du match"));
     }
 }

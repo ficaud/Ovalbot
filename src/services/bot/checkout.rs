@@ -433,6 +433,7 @@ fn wave_alert(target: &CheckoutTarget, added: usize, total: u32, failed: bool) -
     CartAlert {
         opponent: target.title.clone(),
         date: target.date.clone(),
+        match_link: target.resale_link.clone(),
         cart_link: CART_URL.to_string(),
         added,
         total,
