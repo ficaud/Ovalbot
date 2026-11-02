@@ -25,6 +25,10 @@
 //! - Only `pending` rows in a buying kind are served; `notify` subscriptions
 //!   go to the seats alerts ([`crate::services::notifications`]), `duo` is
 //!   out of the Phase 4B scope (v1).
+//! - **Freshness first**: the seats `record_offers` just inserted are served
+//!   before older listing entries (an older pack may already be gone), and the
+//!   pool is ordered deterministically (fresh, then price, then ticket id) so
+//!   two identical listings always produce the same plan.
 //! - Requests are served **oldest first** (`created_at ASC`): a contested
 //!   seat goes to the oldest demand.
 //! - A request without stored shop credentials cannot be executed: it is
@@ -40,7 +44,7 @@ use parser::core::seat::Seat;
 use sqlx::SqlitePool;
 
 use crate::common::error::AppError;
-use crate::services::tickets::TicketKind;
+use crate::services::tickets::{OfferKey, TicketKind};
 
 // ============================== TYPES ==============================
 
@@ -88,6 +92,22 @@ pub struct PlanCheckout {
 
 // ============================== SERVICE ==============================
 
+/// Plans the checkouts for one match's current resale listing, without a
+/// freshness hint (every seat is treated as equally old).
+///
+/// Thin wrapper over [`plan_checkouts_with_fresh`] for callers that only have
+/// the listing.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
+pub async fn plan_checkouts(
+    pool: &SqlitePool,
+    match_id: i64,
+    seats: &[Seat],
+) -> Result<Vec<PlanCheckout>, AppError> {
+    plan_checkouts_with_fresh(pool, match_id, seats, &[]).await
+}
+
 /// Plans the checkouts for one match's current resale listing against its
 /// pending buying requests.
 ///
@@ -97,16 +117,21 @@ pub struct PlanCheckout {
 /// (`ticket_offers.claimed_by`); plans fill a request's quota in one or many
 /// waves ([`claim_seat`] records each success).
 ///
+/// # Arguments
+/// * `fresh` - The seats inserted by the current wave (`record_offers`); they
+///   are served first, since an older listing entry may already be gone.
+///
 /// # Returns
 /// One [`PlanCheckout`] per served request (oldest first), plus a debug/info
 /// log trail for every decision.
 ///
 /// # Errors
 /// `AppError::Sqlx` on query failure.
-pub async fn plan_checkouts(
+pub async fn plan_checkouts_with_fresh(
     pool: &SqlitePool,
     match_id: i64,
     seats: &[Seat],
+    fresh: &[OfferKey],
 ) -> Result<Vec<PlanCheckout>, AppError> {
     let candidates = candidate_requests(pool, match_id).await?;
     if candidates.is_empty() {
@@ -126,6 +151,11 @@ pub async fn plan_checkouts(
         .iter()
         .filter(|seat| !claimed_packs.contains(&seat.id.pack_id))
         .collect();
+    let fresh_keys: HashSet<(u64, String)> = fresh
+        .iter()
+        .map(|key| (key.pack_id, key.ticket_id.clone()))
+        .collect();
+    sort_available(&mut available, &fresh_keys);
     let mut plans = Vec::new();
 
     for candidate in candidates {
@@ -151,12 +181,16 @@ pub async fn plan_checkouts(
             }
         };
         if let Some(seats_taken) = planned {
+            let mut packs: Vec<u64> = seats_taken.iter().map(|seat| seat.id.pack_id).collect();
+            packs.sort_unstable();
+            packs.dedup();
             tracing::info!(
                 user_id = candidate.user_id,
                 match_id,
                 kind = kind.as_str(),
                 taken = seats_taken.len(),
                 claimed = candidate.claimed,
+                packs = ?packs,
                 "purchase matching: checkout plan"
             );
             let total = match kind {
@@ -207,6 +241,30 @@ fn progress_suffix(candidate: &PurchaseCandidate) -> String {
 }
 
 // ============================== PLANNERS ==============================
+
+/// Orders the availability pool the matcher scans: seats from the current wave
+/// first (they are the ones still likely on sale), then by price, then by
+/// ticket id — a deterministic order, since the parser yields seats from a
+/// hash map and listing order used to be arbitrary.
+///
+/// # Arguments
+/// * `available` - The unclaimed seats of the listing
+/// * `fresh` - The seats inserted by the current wave
+fn sort_available(available: &mut [&Seat], fresh: &HashSet<(u64, String)>) {
+    available.sort_by(|left, right| {
+        let left_fresh = fresh.contains(&(left.id.pack_id, left.id.ticket_id.clone()));
+        let right_fresh = fresh.contains(&(right.id.pack_id, right.id.ticket_id.clone()));
+        right_fresh
+            .cmp(&left_fresh)
+            .then_with(|| {
+                let left_price = parse_price_cents(&left.price).unwrap_or(u32::MAX);
+                let right_price = parse_price_cents(&right.price).unwrap_or(u32::MAX);
+                left_price.cmp(&right_price)
+            })
+            .then_with(|| left.id.ticket_id.cmp(&right.id.ticket_id))
+            .then_with(|| left.id.pack_id.cmp(&right.id.pack_id))
+    });
+}
 
 /// One resale pack inside the availability pool: the atomic purchase unit.
 struct PackRef {
@@ -273,8 +331,8 @@ fn plan_single(
     }
 
     // Whole packs only, capped at the remaining quota; then evict the picks
-    // from the shared pool (descending: `swap_remove` shifts the last element
-    // into the removed slot).
+    // from the shared pool (descending, so indices stay valid). `remove` keeps
+    // the pool ordered for the next request.
     let quota = remaining as usize;
     let mut take: Vec<usize> = Vec::new();
     let mut above_max_packs = 0u32;
@@ -339,7 +397,7 @@ fn plan_single(
         .map(|&index| (*available[index]).clone())
         .collect();
     for &index in &take {
-        available.swap_remove(index);
+        available.remove(index);
     }
     (Some(taken), String::new())
 }
@@ -368,7 +426,8 @@ fn plan_group(
         return (None, "no shop credentials stored".to_string());
     }
 
-    // Whole pelouse packs only, capped at the remaining quota.
+    // Whole pelouse packs only, capped at the remaining quota; eviction keeps
+    // the pool ordered for the next request.
     let quota = remaining as usize;
     let mut take: Vec<usize> = Vec::new();
     let mut oversized_packs = 0u32;
@@ -404,7 +463,7 @@ fn plan_group(
         .map(|&index| (*available[index]).clone())
         .collect();
     for &index in &take {
-        available.swap_remove(index);
+        available.remove(index);
     }
     (Some(taken), String::new())
 }
@@ -655,6 +714,51 @@ mod tests {
             created_at: String::new(),
             claimed,
         }
+    }
+
+    // The matcher order is freshness first, then price, then ticket id: a
+    // current-wave seat is never shadowed by an older listing entry.
+    #[test]
+    fn sort_available_puts_fresh_seats_first() {
+        let old_cheap = seat("39.00", "CATÉGORIE 3");
+        let fresh_pricey = seat("49.00", "CATÉGORIE 3");
+        let fresh_cheap = seat("45.00", "CATÉGORIE 3");
+        let mut available = vec![&old_cheap, &fresh_pricey, &fresh_cheap];
+        let fresh: HashSet<(u64, String)> = [&fresh_pricey, &fresh_cheap]
+            .iter()
+            .map(|seat| (seat.id.pack_id, seat.id.ticket_id.clone()))
+            .collect();
+
+        sort_available(&mut available, &fresh);
+
+        let ids: Vec<&str> = available
+            .iter()
+            .map(|seat| seat.id.ticket_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                fresh_cheap.id.ticket_id.as_str(),
+                fresh_pricey.id.ticket_id.as_str(),
+                old_cheap.id.ticket_id.as_str()
+            ]
+        );
+    }
+
+    // Without a freshness hint the order is still deterministic: cheapest
+    // first, then ticket id.
+    #[test]
+    fn sort_available_is_deterministic() {
+        let cheap = seat("40.00", "CATÉGORIE 3");
+        let pricey = seat("49.00", "CATÉGORIE 3");
+        let mut forward = vec![&cheap, &pricey];
+        let mut backward = vec![&pricey, &cheap];
+
+        sort_available(&mut forward, &HashSet::new());
+        sort_available(&mut backward, &HashSet::new());
+
+        assert_eq!(forward[0].id.ticket_id, cheap.id.ticket_id);
+        assert_eq!(backward[0].id.ticket_id, cheap.id.ticket_id);
     }
 
     // Common integer / decimal price shapes all land on the expected cents.
