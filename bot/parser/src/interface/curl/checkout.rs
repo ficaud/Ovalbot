@@ -132,73 +132,67 @@ pub struct ActionContext {
     pub form_token: String,
 }
 
-/// Private module containing the JSON structures deserialized from the page's
-/// `drupal-settings-json` script.
-mod json {
-    use serde::Deserialize;
-    use std::collections::HashMap;
-
-    /// Root of the `drupal-settings-json` script, reduced to what the
-    /// add-to-cart request replays.
-    #[derive(Deserialize)]
-    pub struct Settings {
-        /// The page's replayable AJAX state (libraries, theme).
-        #[serde(rename = "ajaxPageState")]
-        pub ajax_page_state: Option<AjaxPageState>,
-        /// Drupal AJAX actions by form element id.
-        pub ajax: HashMap<String, AjaxEntry>,
-    }
-
-    /// Replayable `ajaxPageState` fields.
-    #[derive(Deserialize)]
-    pub struct AjaxPageState {
-        /// Libraries string to echo in the POST.
-        pub libraries: Option<String>,
-        /// The theme name, e.g. `hubber_reference8`.
-        pub theme: Option<String>,
-    }
-
-    /// One registered Drupal AJAX action.
-    #[derive(Deserialize)]
-    pub struct AjaxEntry {
-        /// The AJAX endpoint used by the action.
-        pub url: String,
-    }
-}
-
-/// Extracts the [`ActionContext`] of a resale page: the `drupal-settings-json`
-/// values plus the form ids. `None` when the page misses a required piece
-/// (settings, `edit-add-to-cart` url or `form_build_id`) — e.g. a page whose
-/// lazy-built form never arrived.
+/// Parses the page's `drupal-settings-json` script into a JSON value.
 ///
-/// The price slider is optional: on an available resale the form (and its
-/// slider) is injected by a BigPipe lazy builder, so the bounds are read from
-/// the raw HTML (including escaped chunks) or left empty for the caller's
-/// fallback.
+/// The structure evolves between site releases, so the settings are navigated
+/// lazily (a strict typed struct breaks on any new key shape).
 ///
 /// # Arguments
 /// * `html` - The resale page HTML
 /// # Returns
-/// The page context, or `None` when the add-to-cart machinery is absent
-pub fn extract_action_context(html: &str) -> Option<ActionContext> {
+/// The parsed settings, or `None` when the script is absent or not JSON
+fn parse_drupal_settings(html: &str) -> Option<serde_json::Value> {
     let document = Html::parse_document(html);
-
-    let script_selector =
-        Selector::parse("script[data-drupal-selector='drupal-settings-json']").unwrap();
-    let settings_json = document
-        .select(&script_selector)
+    let selector = Selector::parse("script[data-drupal-selector='drupal-settings-json']").unwrap();
+    let text = document
+        .select(&selector)
         .next()?
         .text()
         .collect::<String>();
-    let settings: json::Settings = serde_json::from_str(&settings_json).ok()?;
+    serde_json::from_str(&text).ok()
+}
 
-    let ajax_url = settings.ajax.get("edit-add-to-cart")?.url.clone();
-    if ajax_url.is_empty() {
-        return None;
-    }
+/// Extracts the [`ActionContext`] of a resale page: the `drupal-settings-json`
+/// values plus the form ids. `None` when the page misses a required piece
+/// (settings or `form_build_id`) — e.g. a page whose lazy-built form never
+/// arrived.
+///
+/// On an available resale the form, its price slider and the `edit-add-to-cart`
+/// AJAX entry are injected by a BigPipe lazy builder, so the page may legally
+/// carry none of them: the slider falls back to the raw HTML (escaped chunks
+/// included), the AJAX endpoint falls back to the product URL with
+/// `ajax_form=1`, and the slider bounds are left empty for the caller.
+///
+/// # Arguments
+/// * `html` - The resale page HTML
+/// * `fallback_url` - The resale product URL, used to rebuild the AJAX endpoint
+///   when the settings JSON does not carry `edit-add-to-cart`
+/// # Returns
+/// The page context, or `None` when the add-to-cart machinery is absent
+pub fn extract_action_context(html: &str, fallback_url: Option<&str>) -> Option<ActionContext> {
+    let settings = parse_drupal_settings(html)?;
+
+    let ajax_url = settings
+        .pointer("/ajax/edit-add-to-cart/url")
+        .and_then(serde_json::Value::as_str)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+        .or_else(|| fallback_url.map(default_ajax_url))?;
+
+    let libraries = settings
+        .pointer("/ajaxPageState/libraries")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let theme = settings
+        .pointer("/ajaxPageState/theme")
+        .and_then(serde_json::Value::as_str)
+        .filter(|theme| !theme.is_empty())
+        .unwrap_or(DEFAULT_THEME)
+        .to_string();
 
     let slider_selector = Selector::parse("input.hubber-slider-input").unwrap();
-    let (price_min, price_max) = document
+    let (price_min, price_max) = Html::parse_document(html)
         .select(&slider_selector)
         .next()
         .and_then(|slider| {
@@ -217,22 +211,58 @@ pub fn extract_action_context(html: &str) -> Option<ActionContext> {
 
     Some(ActionContext {
         ajax_url,
-        libraries: settings
-            .ajax_page_state
-            .as_ref()
-            .and_then(|s| s.libraries.clone())
-            .unwrap_or_default(),
-        theme: settings
-            .ajax_page_state
-            .as_ref()
-            .and_then(|s| s.theme.clone())
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| DEFAULT_THEME.to_string()),
+        libraries,
+        theme,
         price_min,
         price_max,
         form_build_id,
         form_token,
     })
+}
+
+/// The add-to-cart AJAX endpoint of a product page, used when the settings JSON
+/// does not carry `edit-add-to-cart` (BigPipe pages): the product URL with
+/// `ajax_form=1`, exactly what the captures show.
+///
+/// # Arguments
+/// * `resale_url` - The resale product URL
+/// # Returns
+/// The product URL with the `ajax_form=1` query parameter
+fn default_ajax_url(resale_url: &str) -> String {
+    if resale_url.contains('?') {
+        format!("{resale_url}&ajax_form=1")
+    } else {
+        format!("{resale_url}?ajax_form=1")
+    }
+}
+
+/// One-line report of the context pieces a page carries, logged when the
+/// add-to-cart context cannot be built (no dump needed to know what is missing).
+///
+/// # Arguments
+/// * `html` - The resale page HTML
+/// # Returns
+/// A compact `key=value` diagnostic
+fn context_diagnostic(html: &str) -> String {
+    let settings = parse_drupal_settings(html);
+    let has_ajax_entry = settings
+        .as_ref()
+        .and_then(|value| value.pointer("/ajax/edit-add-to-cart/url"))
+        .and_then(serde_json::Value::as_str)
+        .is_some();
+    let has_libraries = settings
+        .as_ref()
+        .and_then(|value| value.pointer("/ajaxPageState/libraries"))
+        .and_then(serde_json::Value::as_str)
+        .is_some();
+    format!(
+        "bytes={} settings={} ajax_entry={has_ajax_entry} libraries={has_libraries} \
+         form_build_id={} slider={}",
+        html.len(),
+        settings.is_some(),
+        extract_form_build_id(html).is_some(),
+        extract_slider_bounds(html).is_some(),
+    )
 }
 
 /// Reads the price-slider bounds from the raw HTML, including the
@@ -750,8 +780,11 @@ impl ShopSession {
         }
 
         // Step 3: rebuild the add-to-cart context (settings + form id).
-        let Some(mut context) = extract_action_context(&html) else {
-            log::warn!("[CHECKOUT] add-to-cart context missing from the resale page");
+        let Some(mut context) = extract_action_context(&html, Some(resale_url)) else {
+            log::warn!(
+                "[CHECKOUT] add-to-cart context missing from the resale page ({})",
+                context_diagnostic(&html)
+            );
             dump.finish("missing_context", Some(&html), None);
             return Err(CheckoutError::MissingContext);
         };
@@ -1024,7 +1057,7 @@ mod tests {
     // The fixture context carries the live values of the capture.
     #[test]
     fn action_context_from_the_fixture() {
-        let context = extract_action_context(&FIXTURE_RESALE).expect("context");
+        let context = extract_action_context(&FIXTURE_RESALE, None).expect("context");
         assert!(
             context
                 .ajax_url
@@ -1045,8 +1078,43 @@ mod tests {
     // A closed resale page carries no slider / settings: no add-to-cart.
     #[test]
     fn action_context_requires_the_page_plumbing() {
-        assert!(extract_action_context("<html><body></body></html>").is_none());
-        assert!(extract_action_context("Move to waiting queue").is_none());
+        assert!(extract_action_context("<html><body></body></html>", None).is_none());
+        assert!(extract_action_context("Move to waiting queue", None).is_none());
+    }
+
+    // On a BigPipe page the settings JSON may carry `ajaxPageState` only (the
+    // `edit-add-to-cart` entry arrives with the lazy form): the product URL
+    // rebuilds the AJAX endpoint, and the diagnostic tells which piece is
+    // missing when the form id itself is absent.
+    #[test]
+    fn action_context_falls_back_to_the_product_url() {
+        let page = r#"<html><body>
+<script data-drupal-selector="drupal-settings-json">{"ajaxPageState":{"libraries":"lib-abc","theme":"hubber_reference8"}}</script>
+<input type="hidden" name="form_build_id" value="form-bigpipe-7" />
+</body></html>"#;
+        let context =
+            extract_action_context(page, Some("https://shop.example/fr/product/42/revente_j1"))
+                .expect("fallback context");
+        assert_eq!(
+            context.ajax_url,
+            "https://shop.example/fr/product/42/revente_j1?ajax_form=1"
+        );
+        assert_eq!(context.libraries, "lib-abc");
+        assert_eq!(context.theme, "hubber_reference8");
+        assert_eq!(context.form_build_id, "form-bigpipe-7");
+        // Without the form id there is nothing to POST: no context, whatever
+        // the fallback URL.
+        let no_form = page.replace(
+            r#"<input type="hidden" name="form_build_id" value="form-bigpipe-7" />"#,
+            "",
+        );
+        assert!(extract_action_context(&no_form, Some("https://shop.example/x")).is_none());
+
+        let diagnostic = context_diagnostic(page);
+        assert!(diagnostic.contains("settings=true"), "{diagnostic}");
+        assert!(diagnostic.contains("ajax_entry=false"), "{diagnostic}");
+        assert!(diagnostic.contains("form_build_id=true"), "{diagnostic}");
+        assert!(diagnostic.contains("slider=false"), "{diagnostic}");
     }
 
     // urlencode escapes like a form: spaces to `+`, accents percent-encoded.
@@ -1061,7 +1129,7 @@ mod tests {
     // The POST body carries the pack, the fresh ids and the replayed state.
     #[test]
     fn add_to_cart_body_contains_every_required_field() {
-        let context = extract_action_context(&FIXTURE_RESALE).expect("context");
+        let context = extract_action_context(&FIXTURE_RESALE, None).expect("context");
         let body = build_add_to_cart_body(&context, 33850, &["49432".to_string()]);
         assert!(body.contains("selected_tickets_33850=49432"));
         assert!(body.contains("resale_pack_selected=33850"));
@@ -1087,7 +1155,7 @@ mod tests {
     // ids, comma-joined, exactly like the live payload captured on 2026-11-01.
     #[test]
     fn add_to_cart_body_joins_every_ticket_of_a_pack() {
-        let context = extract_action_context(&FIXTURE_RESALE).expect("context");
+        let context = extract_action_context(&FIXTURE_RESALE, None).expect("context");
         let body =
             build_add_to_cart_body(&context, 33853, &["49438".to_string(), "49435".to_string()]);
         assert!(body.contains("selected_tickets_33853=49438%2C49435"));
@@ -1316,7 +1384,7 @@ mod tests {
             page(&*FIXTURE_RESALE, 200),
             page(add_ok(33850), 200),
         ]);
-        let context = extract_action_context(&FIXTURE_RESALE).expect("context");
+        let context = extract_action_context(&FIXTURE_RESALE, None).expect("context");
         let resale_url = format!(
             "{base}{}",
             context.ajax_url.split('?').next().expect("path")
@@ -1400,7 +1468,7 @@ mod tests {
             page(&*FIXTURE_RESALE, 200),
             page(ADD_REJECTED, 200),
         ]);
-        let context = extract_action_context(&FIXTURE_RESALE).expect("context");
+        let context = extract_action_context(&FIXTURE_RESALE, None).expect("context");
         let resale_url = format!(
             "{base}{}",
             context.ajax_url.split('?').next().expect("path")
@@ -1487,7 +1555,7 @@ mod tests {
             page(&*FIXTURE_RESALE, 200),
             page(ADD_EXPIRED, 200),
         ]);
-        let context = extract_action_context(&FIXTURE_RESALE).expect("context");
+        let context = extract_action_context(&FIXTURE_RESALE, None).expect("context");
         let resale_url = format!(
             "{base}{}",
             context.ajax_url.split('?').next().expect("path")
@@ -1518,7 +1586,7 @@ mod tests {
             page(BASKET_AUTHENTICATED, 200),
             page(&*FIXTURE_RESALE, 200),
         ]);
-        let context = extract_action_context(&FIXTURE_RESALE).expect("context");
+        let context = extract_action_context(&FIXTURE_RESALE, None).expect("context");
         let resale_url = format!(
             "{base}{}",
             context.ajax_url.split('?').next().expect("path")
@@ -1544,7 +1612,7 @@ mod tests {
     #[test]
     fn add_pack_reads_a_sold_out_page_as_seat_gone() {
         assert!(
-            extract_action_context(&FIXTURE_OUT_OF_STOCK).is_some(),
+            extract_action_context(&FIXTURE_OUT_OF_STOCK, None).is_some(),
             "the sold-out page still carries the add-to-cart form and settings"
         );
         assert!(
@@ -1587,7 +1655,7 @@ mod tests {
             page(BASKET_AUTHENTICATED, 200),
             page(&*FIXTURE_RESALE, 200),
         ]);
-        let context = extract_action_context(&FIXTURE_RESALE).expect("context");
+        let context = extract_action_context(&FIXTURE_RESALE, None).expect("context");
         let resale_url = format!(
             "{base}{}",
             context.ajax_url.split('?').next().expect("path")
