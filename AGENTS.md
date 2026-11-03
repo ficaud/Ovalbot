@@ -4,6 +4,26 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-03 — Valider / relancer une demande close (accepted/failed)
+
+- Objectif: une demande `accepted` (places au panier, en attente de paiement) ou `failed` (erreur terminale) était définitivement verrouillée — impossible de confirmer l'achat, de libérer les places ou de relancer le bot sans passer par SQL. Choix utilisateur : boutons dans la **modale existante**, reset = retour à `pending`, autorisé uniquement sur `accepted`/`failed`.
+- `src/services/tickets.rs`: nouveau `StatusOutcome {Moved, Already, Refused, NotFound}` + `mark_purchased` (`accepted → purchased`, idempotent si déjà `purchased`, refusé depuis pending/failed) + `reset` (transaction : `accepted|failed → pending` **puis** libération des `ticket_offers.claimed_by` du couple `(match_id, user_id)`, sinon le matcher compterait le quota comme rempli et les places comme prises ; `pending` = no-op qui conserve les claims d'une vague partielle ; `purchased` refusé) + `inspect_status` pour classer un `UPDATE … RETURNING` vide.
+- `src/routes/tickets.rs` + `src/lib.rs`: `POST /api/requests/{match_id}/purchased` et `POST /api/requests/{match_id}/reset` (`ActiveUser`, `204` ; `409 ticket_request_locked` sur transition invalide ; `404 not_found`).
+- Frontend: `api.ts` → `markRequestPurchased` / `resetRequest` (erreurs serveur via `apiError`) ; `+page.svelte` met à jour `statuses` après succès ; `TicketRequestModal.svelte` remplace le bandeau de verrouillage par un panneau par statut (`accepted` → « I paid » + « Retry », `failed` → « Retry », `purchased` → confirmation). Après un reset la modale repasse en `pending`, les champs redeviennent éditables et un nouveau Save fonctionne. « Remove request » est masqué sur une demande close.
+- Tests: `tests/tickets.rs` 19 → 22 (`mark_purchased_upgrades_an_accepted_request`, `reset_releases_claims_and_returns_to_pending`, `reset_pending_is_a_noop_and_failed_reopens`) ; `tests/routes.rs` 45 → 48 (confirm accepted + idempotence + 401/404, refus pending, reset failed avec claim libéré + no-op pending + refus purchased + 404).
+- Docs: CHANGELOG 0.4.0, ce journal. Aucune migration, aucun changement de schéma.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps`, `cargo test --workspace --jobs 2` (21 suites), `npm run check` (0/0), `npm run build`.
+
+### 2026-11-02 — Notification panier : CTA vers la page du match
+
+- Objectif: le mail de récupération des billets doit renvoyer vers la page du match effectivement pris, et non plus la racine de la billetterie. Choix utilisateur : **CTA principal = page du match**, lien panier en secondaire (fenêtre de paiement 20 min conservée).
+- `src/services/channels/alerts.rs`: `CartAlert` gagne `match_link` (URL de la page de revente du match) ; `match_or_cart_link()` sert de repli ; le texte brut et Telegram affichent `🎟️ Voir les billets du match` (principal) puis `🛒 Accéder au panier` (secondaire), le CTA panier disparaissant si le lien est vide ; l'alerte d'échec cite les deux.
+- `src/services/channels/mailer.rs`: `{{link}}` = page du match (repli panier puis `#`), nouvelle variable `{{cart_link}}` rendue dans le template ; template par défaut aligné.
+- `templates/cart_ready.html`: bouton « Voir les billets du match → » (`{{link}}`) + lien secondaire « accéder à mon panier » (`{{cart_link}}`).
+- `src/services/bot/checkout.rs`: `wave_alert` renseigne `match_link` depuis `CheckoutTarget.resale_link` (le lien déjà présent dans le plan, aucun changement de scan/matcher).
+- Tests: `alerts` (CTA match + CTA panier, repli et échec), `tests/mailer.rs` (hrefs principal/secondaire), `tests/checkout.rs` (`match_link == target().resale_link`, `cart_link == CART_URL`).
+- Docs: CHANGELOG 0.4.0, ce journal. Aucun changement de schéma, de migration ni de frontend.
+
 ### 2026-11-01 — Contexte add-to-cart tolérant (pages BigPipe) + diagnostic
 
 - Contexte: sur le banc d'essai basket, le login réussit puis la tentative échoue systématiquement en `MissingContext` (~1 s) ; le dump (une fois le dossier correctement créé) ne servait à rien tant qu'on ne savait pas quelle pièce manquait.

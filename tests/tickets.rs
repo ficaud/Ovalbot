@@ -2,9 +2,11 @@ mod common;
 
 use common::insert_active_user;
 use ovalbot::common::error::AppError;
+use ovalbot::services::bot::purchases::{claim_seat, claimed_count};
 use ovalbot::services::tickets::{
-    accept, fail, list_for_user, pending_requesters, record_offers, remove, upsert, OfferKey,
-    RemoveOutcome, TicketKind, TicketRequestInput, TicketRequestView, TicketStatus,
+    accept, fail, list_for_user, mark_purchased, pending_requesters, record_offers, remove, reset,
+    upsert, OfferKey, RemoveOutcome, StatusOutcome, TicketKind, TicketRequestInput,
+    TicketRequestView, TicketStatus,
 };
 use parser::core::seat::{Seat, SeatComposition, SeatId, SeatInfo};
 use sqlx::SqlitePool;
@@ -493,4 +495,107 @@ async fn fail_does_not_override_a_closed_request(pool: SqlitePool) {
         TicketStatus::Failed
     );
     assert!(!accept(&pool, user, 11877).await.unwrap());
+}
+
+/// `mark_purchased` only upgrades an accepted request and tolerates repeats.
+#[sqlx::test]
+async fn mark_purchased_upgrades_an_accepted_request(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, 11877, &single(2, 5000)).await.unwrap();
+
+    // Pending: the bot has not added the seats yet, the user cannot confirm.
+    assert!(matches!(
+        mark_purchased(&pool, user, 11877).await,
+        Ok(StatusOutcome::Refused)
+    ));
+
+    accept(&pool, user, 11877).await.unwrap();
+    assert!(matches!(
+        mark_purchased(&pool, user, 11877).await,
+        Ok(StatusOutcome::Moved)
+    ));
+    assert_eq!(
+        stored(&pool, user).await.unwrap()[0].status,
+        TicketStatus::Purchased
+    );
+
+    // A double-click stays a success.
+    assert!(matches!(
+        mark_purchased(&pool, user, 11877).await,
+        Ok(StatusOutcome::Already)
+    ));
+
+    // Purchased is terminal for the retry flow.
+    assert!(matches!(
+        reset(&pool, user, 11877).await,
+        Ok(StatusOutcome::Refused)
+    ));
+
+    // Unknown request.
+    assert!(matches!(
+        mark_purchased(&pool, user, 999).await,
+        Ok(StatusOutcome::NotFound)
+    ));
+}
+
+/// `reset` reopens an accepted request and releases the seats it had claimed.
+#[sqlx::test]
+async fn reset_releases_claims_and_returns_to_pending(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, 11877, &single(1, 5000)).await.unwrap();
+    let seats = [resale_seat(100, "1")];
+    record_offers(&pool, 11877, "Stade Rochelais", "date", &seats)
+        .await
+        .unwrap();
+    assert!(claim_seat(&pool, 11877, 100, "1", user).await.unwrap());
+    accept(&pool, user, 11877).await.unwrap();
+    assert_eq!(claimed_count(&pool, 11877, user).await.unwrap(), 1);
+
+    assert!(matches!(
+        reset(&pool, user, 11877).await,
+        Ok(StatusOutcome::Moved)
+    ));
+    assert_eq!(
+        stored(&pool, user).await.unwrap()[0].status,
+        TicketStatus::Pending
+    );
+    // The claim was released: the quota is empty and the seat is free again.
+    assert_eq!(claimed_count(&pool, 11877, user).await.unwrap(), 0);
+    assert!(claim_seat(&pool, 11877, 100, "1", user).await.unwrap());
+}
+
+/// A pending request is left alone by `reset`; a failed one is reopened.
+#[sqlx::test]
+async fn reset_pending_is_a_noop_and_failed_reopens(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, 11877, &single(1, 5000)).await.unwrap();
+    let seats = [resale_seat(100, "1")];
+    record_offers(&pool, 11877, "Stade Rochelais", "date", &seats)
+        .await
+        .unwrap();
+    assert!(claim_seat(&pool, 11877, 100, "1", user).await.unwrap());
+
+    // Still pending: the partial claim belongs to the running wave.
+    assert!(matches!(
+        reset(&pool, user, 11877).await,
+        Ok(StatusOutcome::Already)
+    ));
+    assert_eq!(claimed_count(&pool, 11877, user).await.unwrap(), 1);
+
+    fail(&pool, user, 11877).await.unwrap();
+    assert!(matches!(
+        reset(&pool, user, 11877).await,
+        Ok(StatusOutcome::Moved)
+    ));
+    assert_eq!(
+        stored(&pool, user).await.unwrap()[0].status,
+        TicketStatus::Pending
+    );
+    assert_eq!(claimed_count(&pool, 11877, user).await.unwrap(), 0);
+
+    // Unknown request.
+    assert!(matches!(
+        reset(&pool, user, 999).await,
+        Ok(StatusOutcome::NotFound)
+    ));
 }

@@ -181,6 +181,18 @@ pub enum RemoveOutcome {
     Locked,
 }
 
+/// Outcome of a user-driven status move ([`mark_purchased`] / [`reset`]).
+pub enum StatusOutcome {
+    /// The row moved to the target status.
+    Moved,
+    /// The row was already in the target status: the call is a no-op.
+    Already,
+    /// The row exists but its current status does not allow the move.
+    Refused,
+    /// No request exists for this `(user_id, match_id)` pair.
+    NotFound,
+}
+
 // ============================== SERVICE ==============================
 
 /// Insert the request, or update the existing one while it is still `pending`.
@@ -343,6 +355,129 @@ pub async fn accept(pool: &SqlitePool, user_id: i64, match_id: i64) -> Result<bo
 /// `AppError::Sqlx` on query failure.
 pub async fn fail(pool: &SqlitePool, user_id: i64, match_id: i64) -> Result<bool, AppError> {
     transition(pool, user_id, match_id, TicketStatus::Failed).await
+}
+
+/// Confirms a purchase: moves an `accepted` request to `purchased`.
+///
+/// `accepted` is the bot's completion signal (every ordered seat is in the
+/// user's cart); only the user can attest that they actually paid. Repeating
+/// the call on an already `purchased` row is a successful no-op, so a
+/// double-click or a retried request never surfaces an error.
+///
+/// # Returns
+/// [`StatusOutcome::Moved`] on the transition, [`StatusOutcome::Already`] when
+/// the request is already `purchased`, [`StatusOutcome::Refused`] on any other
+/// status and [`StatusOutcome::NotFound`] when no request exists.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
+pub async fn mark_purchased(
+    pool: &SqlitePool,
+    user_id: i64,
+    match_id: i64,
+) -> Result<StatusOutcome, AppError> {
+    let now = crate::common::time::now();
+    let moved = sqlx::query_scalar::<_, i64>(
+        "UPDATE ticket_requests SET status = 'purchased', updated_at = ? \
+         WHERE user_id = ? AND match_id = ? AND status = 'accepted' \
+         RETURNING match_id",
+    )
+    .bind(&now)
+    .bind(user_id)
+    .bind(match_id)
+    .fetch_optional(pool)
+    .await?;
+
+    if moved.is_some() {
+        tracing::info!(user_id, match_id, "ticket request confirmed purchased");
+        return Ok(StatusOutcome::Moved);
+    }
+    inspect_status(pool, user_id, match_id, TicketStatus::Purchased).await
+}
+
+/// Reopens a closed request: moves `accepted`/`failed` back to `pending` so
+/// the bot can serve it again.
+///
+/// The rows claimed in `ticket_offers` for this `(match_id, user_id)` are
+/// released in the same transaction: keeping them would make the matcher
+/// count the quota as already filled and treat those seats as taken forever.
+/// An already `pending` request is left untouched (its partial claims are
+/// legitimate) and `purchased` stays terminal.
+///
+/// # Returns
+/// [`StatusOutcome::Moved`] when the request was reopened and its claims
+/// released, [`StatusOutcome::Already`] when it is already `pending`,
+/// [`StatusOutcome::Refused`] on any other status and
+/// [`StatusOutcome::NotFound`] when no request exists.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure (the transaction is rolled back then).
+pub async fn reset(
+    pool: &SqlitePool,
+    user_id: i64,
+    match_id: i64,
+) -> Result<StatusOutcome, AppError> {
+    let now = crate::common::time::now();
+    let mut tx = pool.begin().await?;
+    let moved = sqlx::query_scalar::<_, i64>(
+        "UPDATE ticket_requests SET status = 'pending', updated_at = ? \
+         WHERE user_id = ? AND match_id = ? AND status IN ('accepted', 'failed') \
+         RETURNING match_id",
+    )
+    .bind(&now)
+    .bind(user_id)
+    .bind(match_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if moved.is_none() {
+        tx.rollback().await?;
+        return inspect_status(pool, user_id, match_id, TicketStatus::Pending).await;
+    }
+
+    let released = sqlx::query(
+        "UPDATE ticket_offers SET claimed_by = NULL \
+         WHERE match_id = ? AND claimed_by = ?",
+    )
+    .bind(match_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
+
+    tracing::info!(
+        user_id,
+        match_id,
+        released,
+        "ticket request reset to pending"
+    );
+    Ok(StatusOutcome::Moved)
+}
+
+/// Classifies a failed conditional transition: missing row, already at the
+/// target status, or a status that does not allow the move.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure.
+async fn inspect_status(
+    pool: &SqlitePool,
+    user_id: i64,
+    match_id: i64,
+    already: TicketStatus,
+) -> Result<StatusOutcome, AppError> {
+    let status: Option<TicketStatus> =
+        sqlx::query_scalar("SELECT status FROM ticket_requests WHERE user_id = ? AND match_id = ?")
+            .bind(user_id)
+            .bind(match_id)
+            .fetch_optional(pool)
+            .await?;
+
+    match status {
+        None => Ok(StatusOutcome::NotFound),
+        Some(status) if status == already => Ok(StatusOutcome::Already),
+        Some(_) => Ok(StatusOutcome::Refused),
+    }
 }
 
 /// One user subscribed to a match's seats alerts, fetched by

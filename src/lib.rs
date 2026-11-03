@@ -67,6 +67,14 @@ pub fn app(state: AppState) -> Router {
             put(tickets_routes::new_ticket_request).delete(tickets_routes::delete_ticket_request),
         )
         .route(
+            "/api/requests/{match_id}/purchased",
+            post(tickets_routes::mark_request_purchased),
+        )
+        .route(
+            "/api/requests/{match_id}/reset",
+            post(tickets_routes::reset_request),
+        )
+        .route(
             "/api/telegram/link",
             post(telegram_routes::link).delete(telegram_routes::unlink),
         )

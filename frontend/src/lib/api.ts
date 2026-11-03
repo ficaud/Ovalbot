@@ -185,6 +185,24 @@ export async function deleteRequest(matchId: number): Promise<void> {
 }
 
 /**
+ * Confirms that the user paid for an accepted request (`accepted → purchased`).
+ * Idempotent on an already-purchased request.
+ */
+export async function markRequestPurchased(matchId: number): Promise<void> {
+  const res = await fetch(`/api/requests/${matchId}/purchased`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Failed to confirm the purchase');
+}
+
+/**
+ * Reopens an accepted/failed request for the bot (`→ pending`) and releases
+ * the seats it had claimed.
+ */
+export async function resetRequest(matchId: number): Promise<void> {
+  const res = await fetch(`/api/requests/${matchId}/reset`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Failed to reset the request');
+}
+
+/**
  * Saves (or replaces) the user's billetterie credentials behind the bot's
  * automatic add-to-cart. The server encrypts the password at rest and never
  * returns it.
