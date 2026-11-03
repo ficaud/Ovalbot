@@ -12,10 +12,14 @@
 
   let {
     onsave,
-    onremove
+    onremove,
+    onpaid,
+    onretry
   }: {
     onsave: (draft: TicketRequestDraft) => Promise<void>;
     onremove: (matchId: number) => Promise<void>;
+    onpaid: (matchId: number) => Promise<void>;
+    onretry: (matchId: number) => Promise<void>;
   } = $props();
 
   let dialogEl: HTMLDialogElement;
@@ -29,6 +33,8 @@
   let groupPlaces = $state<number | undefined>(4);
   let saving = $state(false);
   let removing = $state(false);
+  let confirming = $state(false);
+  let retrying = $state(false);
   let serverError = $state('');
   let status = $state<TicketRequestStatus | undefined>(undefined);
 
@@ -90,6 +96,8 @@
     status = existingStatus;
     saving = false;
     removing = false;
+    confirming = false;
+    retrying = false;
     serverError = '';
     dialogEl?.showModal();
   }
@@ -136,6 +144,35 @@
       removing = false;
     }
   }
+
+  async function confirmPaid() {
+    if (!match || confirming || retrying || status !== 'accepted') return;
+    confirming = true;
+    serverError = '';
+    try {
+      await onpaid(match.id);
+      status = 'purchased';
+    } catch (err) {
+      serverError = err instanceof Error ? err.message : 'Failed to confirm the purchase';
+    } finally {
+      confirming = false;
+    }
+  }
+
+  async function retryRequest() {
+    if (!match || confirming || retrying) return;
+    if (status !== 'accepted' && status !== 'failed') return;
+    retrying = true;
+    serverError = '';
+    try {
+      await onretry(match.id);
+      status = 'pending';
+    } catch (err) {
+      serverError = err instanceof Error ? err.message : 'Failed to retry the request';
+    } finally {
+      retrying = false;
+    }
+  }
 </script>
 
 <dialog bind:this={dialogEl} class="modal">
@@ -153,9 +190,26 @@
   {/if}
 
   {#if locked && status}
-    <div class="alert alert-error">
-      This request is now “{status.toUpperCase()}” and can no longer be modified.
-    </div>
+    {#if status === 'accepted'}
+      <div class="alert alert-info">
+        Every ordered seat is in your cart on the billetterie. Pay within the 20-minute window,
+        then confirm your purchase here.
+      </div>
+      <p class="hint">
+        Retry releases the seats the bot tracked and lets it look for seats again — do it once
+        your cart is empty or expired.
+      </p>
+    {:else if status === 'failed'}
+      <div class="alert alert-error">
+        The bot could not complete this order. Retry to let it look for seats again.
+      </div>
+    {:else if status === 'purchased'}
+      <div class="alert alert-success">Purchase confirmed — this request is complete.</div>
+    {:else}
+      <div class="alert alert-error">
+        This request is now “{status.toUpperCase()}” and can no longer be modified.
+      </div>
+    {/if}
   {/if}
 
   <fieldset class="options" disabled={locked}>
@@ -277,28 +331,62 @@
     </div>
   </fieldset>
   <div class="actions">
-    {#if hasExisting}
+    {#if hasExisting && !locked}
       <button
         class="btn btn-danger"
         type="button"
         onclick={remove}
-        disabled={saving || removing || locked}
+        disabled={saving || removing}
       >
         {removing ? 'Removing…' : 'Remove request'}
       </button>
     {/if}
     <div class="actions__end">
-      <button class="btn btn-secondary" type="button" onclick={close} disabled={saving || removing}>
-        Cancel
-      </button>
       <button
-        class="btn btn-primary"
+        class="btn btn-secondary"
         type="button"
-        onclick={save}
-        disabled={error !== '' || saving || removing || locked}
+        onclick={close}
+        disabled={saving || removing || confirming || retrying}
       >
-        {saving ? 'Saving…' : 'Save request'}
+        Close
       </button>
+      {#if !locked}
+        <button
+          class="btn btn-primary"
+          type="button"
+          onclick={save}
+          disabled={error !== '' || saving || removing}
+        >
+          {saving ? 'Saving…' : 'Save request'}
+        </button>
+      {:else if status === 'accepted'}
+        <button
+          class="btn btn-secondary"
+          type="button"
+          onclick={retryRequest}
+          disabled={confirming || retrying}
+          title="Release the seats tracked by the bot and let it try again"
+        >
+          {retrying ? 'Retrying…' : 'Retry'}
+        </button>
+        <button
+          class="btn btn-primary"
+          type="button"
+          onclick={confirmPaid}
+          disabled={confirming || retrying}
+        >
+          {confirming ? 'Confirming…' : 'I paid'}
+        </button>
+      {:else if status === 'failed'}
+        <button
+          class="btn btn-primary"
+          type="button"
+          onclick={retryRequest}
+          disabled={confirming || retrying}
+        >
+          {retrying ? 'Retrying…' : 'Retry'}
+        </button>
+      {/if}
     </div>
   </div>
 </dialog>

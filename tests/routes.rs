@@ -1069,6 +1069,165 @@ async fn ticket_request_delete_locked_returns_conflict(pool: SqlitePool) {
     assert_eq!(put_status, StatusCode::CONFLICT);
 }
 
+// ---- ticket requests: purchase confirmation and retry ----
+
+/// Inserts one `single` request for `match_id` in the given status.
+async fn seed_request(pool: &SqlitePool, user: i64, match_id: i64, status: &str) {
+    let now = ovalbot::common::time::now();
+    sqlx::query(
+        "INSERT INTO ticket_requests \
+             (user_id, match_id, kind, quantity, max_price_cents, status, created_at, updated_at) \
+         VALUES (?, ?, 'single', 1, 5000, ?, ?, ?)",
+    )
+    .bind(user)
+    .bind(match_id)
+    .bind(status)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[sqlx::test]
+async fn ticket_request_purchased_confirms_an_accepted_request(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "paid@example.com").await;
+    let session = insert_session(&pool, user, &ovalbot::common::time::in_days(1)).await;
+    let cookie = cookie_for(&session);
+    seed_request(&pool, user, 42, "accepted").await;
+
+    let (status, _, _) = call(
+        &app(pool.clone()),
+        request("POST", "/api/requests/42/purchased", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (_, _, bytes) = call(
+        &app(pool.clone()),
+        request("GET", "/api/requests", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(json(&bytes)[0]["status"], "purchased");
+
+    // A second confirmation is a success, not a conflict.
+    let (status, _, _) = call(
+        &app(pool.clone()),
+        request("POST", "/api/requests/42/purchased", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Anonymous is refused before the handler runs.
+    let (anonymous, _, _) = call(
+        &app(pool.clone()),
+        request("POST", "/api/requests/42/purchased", None, None),
+    )
+    .await;
+    assert_eq!(anonymous, StatusCode::UNAUTHORIZED);
+
+    // Unknown match.
+    let (status, _, response) = call(
+        &app(pool),
+        request("POST", "/api/requests/999/purchased", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&response)["error"], "not_found");
+}
+
+#[sqlx::test]
+async fn ticket_request_purchased_refuses_a_pending_request(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "pending@example.com").await;
+    let session = insert_session(&pool, user, &ovalbot::common::time::in_days(1)).await;
+    let cookie = cookie_for(&session);
+    seed_request(&pool, user, 42, "pending").await;
+
+    let (status, _, response) = call(
+        &app(pool),
+        request("POST", "/api/requests/42/purchased", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json(&response)["error"], "ticket_request_locked");
+}
+
+#[sqlx::test]
+async fn ticket_request_reset_reopens_a_failed_request(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "retry@example.com").await;
+    let session = insert_session(&pool, user, &ovalbot::common::time::in_days(1)).await;
+    let cookie = cookie_for(&session);
+    seed_request(&pool, user, 42, "failed").await;
+
+    let now = ovalbot::common::time::now();
+    sqlx::query(
+        "INSERT INTO ticket_offers \
+             (match_id, title, date, pack_id, ticket_id, first_seen_at, claimed_by) \
+         VALUES (42, 'Stade Rochelais', 'date', 100, '1', ?, ?)",
+    )
+    .bind(&now)
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, _, _) = call(
+        &app(pool.clone()),
+        request("POST", "/api/requests/42/reset", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (_, _, bytes) = call(
+        &app(pool.clone()),
+        request("GET", "/api/requests", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(json(&bytes)[0]["status"], "pending");
+
+    // The seat claim was released: the matcher can plan it again.
+    let claimed: Option<i64> = sqlx::query_scalar(
+        "SELECT claimed_by FROM ticket_offers WHERE match_id = 42 AND pack_id = 100 AND ticket_id = '1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(claimed, None);
+
+    // Already pending stays a success (idempotent).
+    let (status, _, _) = call(
+        &app(pool.clone()),
+        request("POST", "/api/requests/42/reset", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // A purchased request is terminal.
+    sqlx::query(
+        "UPDATE ticket_requests SET status = 'purchased' WHERE user_id = ? AND match_id = 42",
+    )
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (status, _, response) = call(
+        &app(pool.clone()),
+        request("POST", "/api/requests/42/reset", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json(&response)["error"], "ticket_request_locked");
+
+    // Unknown match.
+    let (status, _, response) = call(
+        &app(pool),
+        request("POST", "/api/requests/999/reset", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&response)["error"], "not_found");
+}
+
 // ---- ticket requests: bot coverage guard ----
 
 #[sqlx::test]

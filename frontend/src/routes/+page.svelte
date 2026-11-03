@@ -13,7 +13,9 @@
     getTeamMatches,
     getTeams,
     listRequests,
+    markRequestPurchased,
     putRequest,
+    resetRequest,
     subscribe,
     toTicketRequestDraft,
     unsubscribe
@@ -72,6 +74,16 @@
     const nextStatuses = { ...statuses };
     delete nextStatuses[matchId];
     statuses = nextStatuses;
+  }
+
+  async function confirmPurchase(matchId: number) {
+    await markRequestPurchased(matchId);
+    statuses = { ...statuses, [matchId]: 'purchased' };
+  }
+
+  async function retryRequest(matchId: number) {
+    await resetRequest(matchId);
+    statuses = { ...statuses, [matchId]: 'pending' };
   }
 
   async function refreshMatches() {
@@ -301,6 +313,8 @@
   bind:this={requestModal}
   onsave={saveRequest}
   onremove={removeRequest}
+  onpaid={confirmPurchase}
+  onretry={retryRequest}
 />
 
 <style>
