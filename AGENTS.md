@@ -4,6 +4,16 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-04 — `SECRET_KEY` : dérivation HKDF-SHA256 (au lieu d'un SHA-256 nu)
+
+- Signalement (scanner de sécurité) : `src/common/crypto.rs:45` passait le `SECRET_KEY` dans `Sha256::digest` pour fabriquer la clé AES-256 du coffre d'identifiants boutique — motif « secret/password haché avec une fonction non coûteuse » (CWE-916 malgré la nature du secret). Diagnostic : `SECRET_KEY` est du matériel de clé (`openssl rand -base64 48`), donc l'attaque par force brute n'est pas le risque ; mais rien n'impose cette entropie (un opérateur peut mettre un mot de passe) et un hash nu n'est pas une fonction de dérivation de clé. Choix utilisateur : corriger (pas de suppression de règle), et **rupture nette** (pas de double clé de lecture).
+- `Cargo.toml` : `hkdf = "0.13"` ajouté, `sha2` 0.10 → 0.11 (hkdf 0.13 est en digest 0.11 ; `sha2` n'était utilisé que par `crypto.rs`). Les deux versions étaient déjà résolues dans `Cargo.lock`/cache via `sqlx-postgres` → build hors ligne.
+- `src/common/crypto.rs` : `SecretKey::from_passphrase` dérive via `Hkdf::<Sha256>::new(Some(KDF_SALT), secret).expand(KDF_INFO, &mut key)` avec deux constantes de séparation de domaine (`…shop-credentials.salt.v1` / `…shop-credentials.aes-256-gcm.v1`) — la clé d'un futur usage du même `SECRET_KEY` ne peut pas entrer en collision. `from_env` inchangé (vide/absent → `None`, fail-closed). En-tête de module et docs de `SecretKey` réécrits (« secret de serveur », pas « passphrase »), avec la conséquence de rotation.
+- Rupture assumée : les ciphers stockés avec l'ancienne clé ne se déchiffrent plus. Chemin déjà en place et vérifié : `load_credentials` → `AppError::Crypto` (500), le dry-run logge `credentials=unreadable` et saute le plan, l'utilisateur re-saisit son mot de passe dans la modale. La base de dev locale avait 0 cipher stocké (6 utilisateurs).
+- Tests `crypto.rs` 7 → 9 : `derivation_is_not_a_bare_sha256_of_the_secret` (garde-fou de régression : la clé ≠ `Sha256::digest(secret)`) et `derivation_is_deterministic` (même secret → même clé, sinon plus aucun cipher ne se déchiffre). Les 7 existants (roundtrip, nonce frais, format hex, mauvaise clé, tag altéré, stockage malformé, secrets distincts) inchangés ; `tests/shop.rs` et `tests/checkout.rs` n'ont pas bougé (même `from_passphrase`, chiffrement/déchiffrement symétriques).
+- Docs : README (row `SECRET_KEY` → HKDF-SHA256 + « changer la clé rend les mots de passe stockés illisibles, l'utilisateur les re-saisit »), CHANGELOG 1.0.0 (`Changed`), ce journal.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo doc --no-deps`, `cargo test --workspace --jobs 2`.
+
 ### 2026-11-04 — Alertes panier : progression cumulée (`claimed`) au lieu du delta de vague
 
 - Problème (signalé par l'utilisateur) : `CartAlert.added` était le **delta d'une vague** (`0` en début d'`execute_plan`, `+= tickets.len()` par pack ajouté). Une commande de 4 places servie en plusieurs vagues affichait donc `1/4` puis `1/4`/`2/4`… au lieu du contenu réel du panier, et un login refusé annonçait « interrompu après 0 place(s) » même avec 3 places déjà au panier.
