@@ -17,9 +17,9 @@
 //! 4. a successful add is recorded with [`crate::services::bot::purchases::claim_seat`]
 //!    for every ticket of the pack (the anti-double-claim of the progressive
 //!    fill);
-//! 5. each wave ends with a notification carrying the `claims/total` progress
-//!    (email + Telegram) — the 20-minute cart window makes every wave
-//!    actionable;
+//! 5. each wave ends with a notification carrying the cumulative
+//!    `claims/total` progress (email + Telegram) — the 20-minute cart window
+//!    makes every wave actionable;
 //! 6. the request is closed `accepted` once the total is claimed, or `failed`
 //!    on a refused shop login; every other error is shop churn, retried on the
 //!    next wave.
@@ -255,9 +255,11 @@ async fn execute_plan(state: &AppState, target: &CheckoutTarget, plan: &PlanChec
         }
         Err(e) => {
             tracing::warn!(user_id, match_id, "checkout login failed: {e}");
-            // Login refused: nothing can be added, this is terminal.
+            // Login refused: nothing can be added, this is terminal. The alert
+            // still reports what earlier waves left in the cart.
             close_request(state, user_id, match_id, false).await;
-            let alert = wave_alert(target, 0, plan.total, true);
+            let claimed = claimed_total(state, match_id, user_id).await.unwrap_or(0);
+            let alert = wave_alert(target, 0, claimed, plan.total, true);
             notifications::notify_cart_ready(state, user_id, &alert).await;
             return;
         }
@@ -330,8 +332,20 @@ async fn execute_plan(state: &AppState, target: &CheckoutTarget, plan: &PlanChec
         return;
     }
 
+    // The notification reports the cart content, not the wave delta: the same
+    // cumulative count drives the completion check below, so the progress the
+    // user reads is the one that closes the request.
+    let claims = claimed_total(state, match_id, user_id).await;
+
     // Per-wave notification: the 20-minute cart window makes it actionable.
-    let alert = wave_alert(target, added, plan.total, hard_failure);
+    // An unreadable count falls back to the wave delta for the alert only.
+    let alert = wave_alert(
+        target,
+        added,
+        claims.unwrap_or(added),
+        plan.total,
+        hard_failure,
+    );
     notifications::notify_cart_ready(state, user_id, &alert).await;
 
     if hard_failure {
@@ -339,19 +353,24 @@ async fn execute_plan(state: &AppState, target: &CheckoutTarget, plan: &PlanChec
         return;
     }
 
-    // Completion: the ordered total is in the cart.
-    match purchases::claimed_count(&state.pool, match_id, user_id).await {
-        Ok(claims) if claims >= i64::from(plan.total) => {
+    // Completion: the ordered total is in the cart. Only a count that was
+    // actually read can close the request.
+    match claims {
+        Some(claimed) if claimed >= usize::try_from(plan.total).unwrap_or(usize::MAX) => {
             close_request(state, user_id, match_id, true).await;
         }
-        Ok(claims) => tracing::debug!(
+        Some(claimed) => tracing::debug!(
             user_id,
             match_id,
-            claims,
+            claimed,
             total = plan.total,
             "checkout wave done, request still pending"
         ),
-        Err(e) => tracing::warn!("checkout: failed to read claim count: {e}"),
+        None => tracing::debug!(
+            user_id,
+            match_id,
+            "checkout wave done, completion postponed (claim count unreadable)"
+        ),
     }
 }
 
@@ -429,14 +448,57 @@ fn pack_price_range(seats: &[Seat], pack_id: u64) -> (String, String) {
 }
 
 /// Builds the wave notification payload.
-fn wave_alert(target: &CheckoutTarget, added: usize, total: u32, failed: bool) -> CartAlert {
+///
+/// # Arguments
+/// * `target` — the polled encounter (titles, links of the notification)
+/// * `added` — seats this wave put into the cart
+/// * `claimed` — seats in the cart after the wave (cumulative claims)
+/// * `total` — seats ordered for the match
+/// * `failed` — the wave ended on a terminal checkout failure
+fn wave_alert(
+    target: &CheckoutTarget,
+    added: usize,
+    claimed: usize,
+    total: u32,
+    failed: bool,
+) -> CartAlert {
     CartAlert {
         opponent: target.title.clone(),
         date: target.date.clone(),
         match_link: target.resale_link.clone(),
         cart_link: CART_URL.to_string(),
         added,
+        claimed,
         total,
         failed,
+    }
+}
+
+/// Cumulative seats the user holds in the cart for this match — the number the
+/// notification and the completion check report as `claimed`.
+///
+/// Reads the same source as the completion check
+/// ([`purchases::claimed_count`]) so the `claimed/total` progress is the one
+/// that closes the request.
+///
+/// # Arguments
+/// * `state` — pool holding the claims
+/// * `match_id` — match whose seats are counted
+/// * `user_id` — cart owner
+///
+/// # Returns
+/// `Some(count)` on success, `None` when the query failed (warned here) — the
+/// caller must then not close the request on that number.
+async fn claimed_total(state: &AppState, match_id: i64, user_id: i64) -> Option<usize> {
+    match purchases::claimed_count(&state.pool, match_id, user_id).await {
+        Ok(count) => usize::try_from(count).ok(),
+        Err(e) => {
+            tracing::warn!(
+                user_id,
+                match_id,
+                "checkout: failed to read claim count: {e}"
+            );
+            None
+        }
     }
 }

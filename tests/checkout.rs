@@ -407,6 +407,7 @@ async fn completed_wave_claims_accepts_and_notifies(pool: SqlitePool) {
     assert_eq!(mails.len(), 1);
     assert_eq!(mails[0].0, "a@example.com");
     assert_eq!(mails[0].1.added, 1);
+    assert_eq!(mails[0].1.claimed, 1);
     assert_eq!(mails[0].1.total, 1);
     assert!(!mails[0].1.failed);
     assert_eq!(mails[0].1.cart_link, CART_URL);
@@ -471,7 +472,10 @@ async fn wave_adds_a_two_ticket_pack_in_one_post(pool: SqlitePool) {
     assert_eq!(status(&pool, user).await, TicketStatus::Accepted);
     let mails = mailer.cart_alerts.lock().unwrap();
     assert_eq!(mails.len(), 1);
-    assert_eq!((mails[0].1.added, mails[0].1.total), (2, 2));
+    assert_eq!(
+        (mails[0].1.added, mails[0].1.claimed, mails[0].1.total),
+        (2, 2, 2)
+    );
     assert!(!mails[0].1.failed);
 }
 
@@ -516,6 +520,7 @@ async fn partial_wave_stays_pending_with_progress(pool: SqlitePool) {
     let mails = mailer.cart_alerts.lock().unwrap();
     assert_eq!(mails.len(), 1);
     assert_eq!(mails[0].1.added, 2);
+    assert_eq!(mails[0].1.claimed, 2);
     assert_eq!(mails[0].1.total, 4);
 }
 
@@ -578,8 +583,76 @@ async fn progressive_waves_complete_the_order(pool: SqlitePool) {
     // One notification per wave.
     let mails = mailer.cart_alerts.lock().unwrap();
     assert_eq!(mails.len(), 2);
-    assert_eq!((mails[0].1.added, mails[0].1.total), (2, 4));
-    assert_eq!((mails[1].1.added, mails[1].1.total), (2, 4));
+    assert_eq!(
+        (mails[0].1.added, mails[0].1.claimed, mails[0].1.total),
+        (2, 2, 4)
+    );
+    // The completing wave still reports its own delta, but the progress is the
+    // cumulative cart content.
+    assert_eq!(
+        (mails[1].1.added, mails[1].1.claimed, mails[1].1.total),
+        (2, 4, 4)
+    );
+}
+
+// A later wave only adds one seat: the alert must show the cart content (2/4),
+// never the wave delta as the progress.
+#[sqlx::test]
+async fn second_wave_reports_the_cart_content(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, MATCH, &TicketRequestInput::Group { places: 4 })
+        .await
+        .unwrap();
+    profile(&pool, user, true, None).await;
+    let (p1, p2, p3) = (
+        seat("p1", "15.00", "Pelouse"),
+        seat("p2", "15.00", "Pelouse"),
+        seat("p3", "15.00", "Pelouse"),
+    );
+    offered(&pool, &[&p1, &p2, &p3]).await;
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let shop = Arc::new(RecordingShop::new());
+    let state = state(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        shop.clone(),
+        false,
+    );
+
+    execute_plans(
+        &state,
+        &target(),
+        vec![plan(user, TicketKind::Group, 4, vec![p1.clone()])],
+    )
+    .await;
+    execute_plans(
+        &state,
+        &target(),
+        vec![plan(
+            user,
+            TicketKind::Group,
+            4,
+            vec![p2.clone(), p3.clone()],
+        )],
+    )
+    .await;
+
+    assert_eq!(claimed(&pool, user).await, 3);
+    assert_eq!(status(&pool, user).await, TicketStatus::Pending);
+    let mails = mailer.cart_alerts.lock().unwrap();
+    assert_eq!(mails.len(), 2);
+    assert_eq!(
+        (mails[0].1.added, mails[0].1.claimed, mails[0].1.total),
+        (1, 1, 4)
+    );
+    assert_eq!(
+        (mails[1].1.added, mails[1].1.claimed, mails[1].1.total),
+        (2, 3, 4)
+    );
+    assert_eq!(mails[1].1.progress(), "3/4");
 }
 
 // ============================== FAILURES ==============================
@@ -635,6 +708,7 @@ async fn seat_gone_is_tolerated(pool: SqlitePool) {
     let mails = mailer.cart_alerts.lock().unwrap();
     assert_eq!(mails.len(), 1);
     assert_eq!(mails[0].1.added, 1);
+    assert_eq!(mails[0].1.claimed, 1);
     assert!(!mails[0].1.failed);
 }
 
@@ -690,6 +764,7 @@ async fn missing_context_keeps_request_pending(pool: SqlitePool) {
     assert_eq!(mails.len(), 1);
     assert!(!mails[0].1.failed);
     assert_eq!(mails[0].1.added, 1);
+    assert_eq!(mails[0].1.claimed, 1);
 }
 
 // An expired form mid-wave postpones the rest: what was added is reported and
@@ -743,6 +818,7 @@ async fn expired_form_keeps_request_pending(pool: SqlitePool) {
     let mails = mailer.cart_alerts.lock().unwrap();
     assert_eq!(mails.len(), 1);
     assert_eq!(mails[0].1.added, 1);
+    assert_eq!(mails[0].1.claimed, 1);
     assert!(!mails[0].1.failed);
 }
 
@@ -796,6 +872,7 @@ async fn network_error_keeps_request_pending(pool: SqlitePool) {
     let mails = mailer.cart_alerts.lock().unwrap();
     assert_eq!(mails.len(), 1);
     assert_eq!(mails[0].1.added, 1);
+    assert_eq!(mails[0].1.claimed, 1);
     assert!(!mails[0].1.failed);
 }
 
@@ -845,7 +922,74 @@ async fn login_failure_marks_failed(pool: SqlitePool) {
     assert_eq!(mails.len(), 1);
     assert!(mails[0].1.failed);
     assert_eq!(mails[0].1.added, 0);
+    assert_eq!(mails[0].1.claimed, 0);
     assert_eq!(telegram.messages.lock().unwrap().len(), 1);
+}
+
+// A refused login after a successful wave reports the cart content, not the
+// zero delta of the failed run.
+#[sqlx::test]
+async fn refused_login_reports_the_cart_content(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, MATCH, &TicketRequestInput::Group { places: 4 })
+        .await
+        .unwrap();
+    profile(&pool, user, true, None).await;
+    let (p1, p2, p3) = (
+        seat("p1", "15.00", "Pelouse"),
+        seat("p2", "15.00", "Pelouse"),
+        seat("p3", "15.00", "Pelouse"),
+    );
+    offered(&pool, &[&p1, &p2, &p3]).await;
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+
+    // First wave: two seats land in the cart.
+    let working = state(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        Arc::new(RecordingShop::new()),
+        false,
+    );
+    execute_plans(
+        &working,
+        &target(),
+        vec![plan(
+            user,
+            TicketKind::Group,
+            4,
+            vec![p1.clone(), p2.clone()],
+        )],
+    )
+    .await;
+
+    // Second wave: the shop refuses the login, the request is closed failed.
+    let refusing = state(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        Arc::new(RecordingShop::new().refusing()),
+        false,
+    );
+    execute_plans(
+        &refusing,
+        &target(),
+        vec![plan(user, TicketKind::Group, 4, vec![p3.clone()])],
+    )
+    .await;
+
+    assert_eq!(status(&pool, user).await, TicketStatus::Failed);
+    assert_eq!(claimed(&pool, user).await, 2);
+    let mails = mailer.cart_alerts.lock().unwrap();
+    assert_eq!(mails.len(), 2);
+    assert!(mails[1].1.failed);
+    assert_eq!(
+        (mails[1].1.added, mails[1].1.claimed, mails[1].1.total),
+        (0, 2, 4)
+    );
+    assert_eq!(mails[1].1.progress(), "2/4");
 }
 
 // A waiting queue at login is site churn: the wave gives up quietly, nothing is
