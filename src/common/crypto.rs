@@ -2,13 +2,32 @@
 //! (the user's shop password, needed later in clear to log into the shop).
 //!
 //! Everything here is keyed by [`SecretKey`], derived from the server's
-//! `SECRET_KEY` passphrase (SHA-256, a 32-byte AES-256 key). The storage
-//! format is `hex(nonce) || hex(ciphertext+tag)` — a fresh random 12-byte
-//! nonce per encryption, GCM's tag rides along the ciphertext.
+//! `SECRET_KEY` secret with HKDF-SHA256 (extract-then-expand, fixed salt plus
+//! a domain-separation label) into a 32-byte AES-256 key. The storage format
+//! is `hex(nonce) || hex(ciphertext+tag)` — a fresh random 12-byte nonce per
+//! encryption, GCM's tag rides along the ciphertext.
+//!
+//! `SECRET_KEY` is key material (README: `openssl rand -base64 48`), not a
+//! user password, so no stretched password hash is involved; HKDF is the KDF
+//! recommended for exactly this job. The derivation is deliberately versioned:
+//! changing the salt or label yields a different key, which makes previously
+//! stored ciphers unreadable (they must be re-saved by their owner).
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
-use sha2::{Digest, Sha256};
+use hkdf::Hkdf;
+use sha2::Sha256;
+
+// ============================== KEY DERIVATION ==============================
+
+/// Non-secret HKDF salt: extracts a pseudorandom key from the server secret
+/// before expansion. Fixed on purpose (a random salt could not be persisted
+/// alongside the ciphers without also storing it).
+const KDF_SALT: &[u8] = b"ovalbot.shop-credentials.salt.v1";
+
+/// HKDF `info` label: binds the output to the shop-credentials vault, so the
+/// same `SECRET_KEY` can safely key another feature without collision.
+const KDF_INFO: &[u8] = b"ovalbot.shop-credentials.aes-256-gcm.v1";
 
 // ============================== ERRORS ==============================
 
@@ -30,26 +49,38 @@ pub enum CryptoError {
 // ============================== KEY ==============================
 
 /// The AES-256 secret key derived once at startup from the `SECRET_KEY`
-/// passphrase. Holding no key means the shop-credentials feature is refused
+/// secret. Holding no key means the shop-credentials feature is refused
 /// (fail-closed).
 #[derive(Debug, Clone, Copy)]
 pub struct SecretKey {
-    /// The 32-byte SHA-256 of the passphrase.
+    /// The 32-byte HKDF-SHA256 output.
     key: [u8; 32],
 }
 
 impl SecretKey {
-    /// Derives the key material from the server's `SECRET_KEY` passphrase.
-    pub fn from_passphrase(passphrase: &str) -> Self {
-        Self {
-            key: Sha256::digest(passphrase.as_bytes()).into(),
-        }
+    /// Derives the AES-256 key material from the server's `SECRET_KEY` secret.
+    ///
+    /// HKDF-SHA256 (extract with `KDF_SALT`, expand with `KDF_INFO`)
+    /// rather than a bare hash: SHA-256 on its own is not a key-derivation
+    /// function, and flagging it is exactly what security scanners do for a
+    /// secret that looks like a password.
+    ///
+    /// # Arguments
+    /// * `secret` - The `SECRET_KEY` value (high-entropy key material)
+    /// # Returns
+    /// The 32-byte AES-256 key (`expand` cannot fail for this length)
+    pub fn from_passphrase(secret: &str) -> Self {
+        let hkdf = Hkdf::<Sha256>::new(Some(KDF_SALT), secret.as_bytes());
+        let mut key = [0u8; 32];
+        hkdf.expand(KDF_INFO, &mut key)
+            .expect("HKDF-SHA256 always produces 32 bytes");
+        Self { key }
     }
 
     /// Reads `SECRET_KEY` from the environment: `Some` when set to a
-    /// non-blank value. An absent or blank passphrase is treated as *no key*
-    /// (fail-closed) — an empty SHA-256 source would silently secure
-    /// everything with a publicly derivable key.
+    /// non-blank value. An absent or blank secret is treated as *no key*
+    /// (fail-closed) — an empty HKDF input would silently secure everything
+    /// with a publicly derivable key.
     pub fn from_env() -> Option<Self> {
         std::env::var("SECRET_KEY")
             .ok()
@@ -187,12 +218,34 @@ mod tests {
         }
     }
 
-    // The key derivation depends on the whole passphrase (SHA-256).
+    // The key derivation depends on the whole secret (HKDF-SHA256).
     #[test]
     fn passphrases_derive_distinct_keys() {
         let a = SecretKey::from_passphrase("one");
         let b = SecretKey::from_passphrase("two");
         assert_ne!(a.key, b.key);
         assert_eq!(a.key, SecretKey::from_passphrase("one").key);
+    }
+
+    // Regression guard: the key must not be a bare SHA-256 of the secret (the
+    // insecure derivation security scanners flag for password-like input).
+    #[test]
+    fn derivation_is_not_a_bare_sha256_of_the_secret() {
+        use sha2::Digest;
+
+        let secret = "openssl-rand-base64-48";
+        assert_ne!(
+            SecretKey::from_passphrase(secret).key,
+            <[u8; 32]>::from(sha2::Sha256::digest(secret.as_bytes()))
+        );
+    }
+
+    // HKDF is deterministic: a fixed salt/info pair always yields the same key
+    // for the same secret (otherwise stored ciphers would never decrypt).
+    #[test]
+    fn derivation_is_deterministic() {
+        let first = SecretKey::from_passphrase("stable-secret");
+        let second = SecretKey::from_passphrase("stable-secret");
+        assert_eq!(first.key, second.key);
     }
 }
