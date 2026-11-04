@@ -21,6 +21,12 @@ services:
       BOT_HOME_REFRESH_SECS: ${BOT_HOME_REFRESH_SECS:-60}
       CART_ENABLED: ${CART_ENABLED:-false}
       CART_DRY_RUN: ${CART_DRY_RUN:-true}
+      RUST_LOG: ${RUST_LOG:-ovalbot=info}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
     volumes:
       - ./data:/data
       # To override the email templates without rebuilding the image, create a
