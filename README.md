@@ -20,17 +20,6 @@ OvalBot notify you when there is a TOP14 match that gets a date or for tickets p
 - Stack: **Rust / Axum** (backend) + **SvelteKit** (frontend) + **SQLite**.
 - Hosted on a Raspberry Pi (arm64) via Docker Compose.
 
-## Structure
-
-- `src/` — Rust backend (Axum server + `create_admin` CLI)
-- `calendar/` - Rust backend responsible for parsing the Top14 calendar.
-- `bot/` - Rust bacj responsible for scanning the ticketing website.
-- `migrations/` — SQL migrations (sqlx, embedded at runtime).
-- `frontend/` — SvelteKit app (Svelte 5, `adapter-static`).
-- `doc/specs/` — specifications (`cdc.md` + per-phase specs).
-- `templates/` - HTML emails templates.
-- `tests/` - Rust tests.
-
 ## Development
 
 ### Backend
@@ -75,27 +64,6 @@ devcontainer up --workspace-folder .            # build (first time) + start
 devcontainer exec --workspace-folder . bash     # open a shell
 ```
 
-#### With the personal overlay (recommended)
-
-Open a shell with `devcontainer exec --workspace-folder . zsh` or
-`./my-env/up.sh`, then:
-
-```bash
-./my-env/up.sh                   # build images + start container + link configs
-./my-env/up.sh --no-cache        # rebuild images
-./my-env/down.sh                 # stop the container
-```
-
-To start the container without rebuilding the images (uses the existing
-`ovalbot-personal` image):
-
-```bash
-export OVALBOT_HOST_UID="$(id -u)" OVALBOT_HOST_GID="$(id -g)"
-devcontainer up --workspace-folder . --override-config my-env/devcontainer.override.json
-devcontainer exec --workspace-folder . /workspaces/OvalBot/my-env/link.sh
-devcontainer exec --workspace-folder . zsh
-```
-
 ## Configuration
 
 The backend reads these environment variables:
@@ -124,13 +92,6 @@ The backend reads these environment variables:
 With `CART_ENABLED=true`, a request is only closed as `failed` on a refused shop
 login. Seat-gone, waiting queue, network, expired-form and missing add-to-cart
 context errors all leave it `pending` for the next wave.
-
-Resale packs are **atomic**: the billetterie cannot split a 2-ticket listing, so
-the bot adds a whole pack in one request and only plans packs that fit the
-remaining quota of a request (a 2-ticket pack never serves a 1-seat request).
-An add is only claimed when the site's AJAX response confirms it (`added-to-cart`
-/ `is_already_in_cart` / `refreshCartTimeout`); anything else leaves the request
-`pending` for the next wave.
 
 See `.env.example` for a ready-to-copy template.
 
@@ -163,10 +124,10 @@ ls -l data/dumps/ovalbot_*.txt      # ovalbot_page_*.txt / ovalbot_response_*.tx
 docker compose up -d
 ```
 
-Running from source instead:
+How to run the bot with debug:
 
 ```bash
-CHECKOUT_DUMP_DIR=/tmp/ovalbot-dumps RUST_LOG=ovalbot=debug,parser=debug \
+RUST_LOG=ovalbot=debug,parser=debug \
   cargo run --bin ovalbot
 ```
 
@@ -242,9 +203,6 @@ Copy the example env file and adjust the values:
 ```bash
 cp .env.example .env
 ```
-
-- `OVALBOT_VERSION`: tag to deploy (pin it, e.g. `v1.0.0`, for reproducibility).
-- `PORT`: host port exposed by the container (default `3000`).
 
 The SQLite database is stored in `./data` next to `docker-compose.yml`. Create it
 writable by the container user (uid `10001`) before the first run:
