@@ -91,9 +91,9 @@ pub struct EmailTemplates {
     /// `{{seats_html}}` / `{{link}}` placeholders (`seats_html` carries the
     /// styled seat rows built by [`SeatAlert::seats_html`]).
     pub seats_alert_html: String,
-    /// Cart-ready alert body with `{{opponent}}` / `{{date}}` / `{{added}}` /
-    /// `{{progress}}` / `{{link}}` placeholders (the link points at the shop
-    /// basket).
+    /// Cart-ready alert body with `{{opponent}}` / `{{date}}` / `{{added}}`
+    /// (this wave's delta) / `{{progress}}` (cumulative `claimed/total`) /
+    /// `{{link}}` / `{{cart_link}}` placeholders.
     pub cart_alert_html: String,
 }
 
@@ -323,19 +323,21 @@ impl Mailer for ResendMailer {
 
     /// Notification that seats are in the user's shop cart: subject/text
     /// from the alert, the HTML template fills `{{opponent}}` / `{{date}}` /
-    /// `{{added}}` / `{{progress}}` / `{{link}}` (the match's ticketing page)
-    /// and `{{cart_link}}` (the payment page). An empty link falls back to the
+    /// `{{added}}` (this wave's delta) / `{{progress}}` (cumulative
+    /// `claimed/total`) / `{{link}}` (the match's ticketing page) and
+    /// `{{cart_link}}` (the payment page). An empty link falls back to the
     /// cart, then to `#`.
     async fn send_cart_alert(&self, email: &str, alert: &CartAlert) -> Result<(), MailError> {
         let subject = if alert.failed {
             format!(
-                "Ajout au panier interrompu : {}/{} places — Stade Rochelais vs {}",
-                alert.added, alert.total, alert.opponent
+                "Ajout au panier interrompu : {} places — Stade Rochelais vs {}",
+                alert.progress(),
+                alert.opponent
             )
         } else {
             format!(
                 "{} place(s) au panier — Stade Rochelais vs {}",
-                alert.added, alert.opponent
+                alert.claimed, alert.opponent
             )
         };
         let link = if !alert.match_link.is_empty() {

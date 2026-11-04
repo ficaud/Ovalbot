@@ -265,7 +265,8 @@ async fn send_cart_alert_posts_expected_request() {
         date: "dimanche 8 novembre à 21h05".to_string(),
         match_link: "https://billetterie.staderochelais.com/fr/product/1371/revente_j8".to_string(),
         cart_link: "https://billetterie.staderochelais.com/fr/basket".to_string(),
-        added: 2,
+        added: 1,
+        claimed: 2,
         total: 4,
         failed: false,
     };
@@ -281,6 +282,8 @@ async fn send_cart_alert_posts_expected_request() {
         "2 place(s) au panier — Stade Rochelais vs AVIRON BAYONNAIS"
     );
     let text = body["text"].as_str().unwrap();
+    // The body keeps the wave delta and the cumulative progress apart.
+    assert!(text.contains("1 place(s) ajoutée(s)"));
     assert!(text.contains("2/4"));
     assert!(text.contains(
         "Voir les billets du match : https://billetterie.staderochelais.com/fr/product/1371/revente_j8"
@@ -307,7 +310,8 @@ async fn send_cart_alert_failure_subject() {
         match_link: String::new(),
         cart_link: String::new(),
         added: 1,
-        total: 2,
+        claimed: 2,
+        total: 4,
         failed: true,
     };
     mailer(&base_url)
@@ -318,7 +322,7 @@ async fn send_cart_alert_failure_subject() {
     let body = captured_body(&captured);
     assert_eq!(
         body["subject"],
-        "Ajout au panier interrompu : 1/2 places — Stade Rochelais vs AVIRON BAYONNAIS"
+        "Ajout au panier interrompu : 2/4 places — Stade Rochelais vs AVIRON BAYONNAIS"
     );
     assert!(body["html"].as_str().unwrap().contains("href=\"#\""));
 }

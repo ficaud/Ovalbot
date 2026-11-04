@@ -4,6 +4,18 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-04 — Alertes panier : progression cumulée (`claimed`) au lieu du delta de vague
+
+- Problème (signalé par l'utilisateur) : `CartAlert.added` était le **delta d'une vague** (`0` en début d'`execute_plan`, `+= tickets.len()` par pack ajouté). Une commande de 4 places servie en plusieurs vagues affichait donc `1/4` puis `1/4`/`2/4`… au lieu du contenu réel du panier, et un login refusé annonçait « interrompu après 0 place(s) » même avec 3 places déjà au panier.
+- `src/services/channels/alerts.rs`: `CartAlert` gagne `claimed: usize` (« places détenues dans le panier après la vague », même source que la clôture) ; `added` reste le delta de la vague (doc corrigée) ; `progress()` = `claimed/total` ; `plain_text` et `telegram_text` (branche échec) rapportent `claimed`, la phrase « N place(s) ajoutée(s) » conserve le delta. Doc du champ `total` inchangée.
+- `src/services/bot/checkout.rs`: nouveau `claimed_total(state, match_id, user_id) -> Option<usize>` → `purchases::claimed_count` (`warn` + `None` si la requête échoue) ; `wave_alert(target, added, claimed, total, failed)` ; les deux sites (login refusé → `(0, claimed|0, total, true)` ; fin de vague → `(added, claimed|added, total, hard_failure)`) et la **clôture `accepted` réutilisent le même `claimed`** (une seule requête, plus de double lecture) — mais seul un compte réellement lu peut clore la demande (`None` = clôture reportée, journalisée), l'alerte retombant alors sur le delta de la vague. Le garde-fou `added == 0 && !hard_failure` reste sur le delta : une vague qui n'ajoute rien n'envoie toujours rien.
+- `src/services/channels/mailer.rs`: sujets basés sur le cumul — échec `"{progress} places"` (« 2/4 places »), succès `"{claimed} place(s) au panier"` ; documente `{{added}}` (delta) vs `{{progress}}` (cumul) dans `send_cart_alert` et `EmailTemplates`.
+- `templates/cart_ready.html` / `DEFAULT_CART_ALERT_HTML`: aucun changement de placeholder — la ligne « {{added}} place(s) ajoutée(s) au panier — {{progress}} au total » devient juste (delta + cumul).
+- `src/services/notifications.rs`: le log `cart alert processed` porte `added` et `claimed`.
+- Tests: `tests/checkout.rs` 17 → 19 — `second_wave_reports_the_cart_content` (vague 1 : 1 place → `(1,1,4)` ; vague 2 : 2 places → `(2,3,4)`, `progress() == "3/4"`) et `refused_login_reports_the_cart_content` (2 places d'une vague précédente puis login refusé → `(0,2,4)`, `2/4`) ; assertions des 7 autres tests complétées avec `claimed` (`progressive_waves_complete_the_order` : 2ᵉ mail `(2,4,4)`). `tests/mailer.rs`: `added 1 / claimed 2 / total 4` → sujet « 2 place(s) », texte « 1 place(s) ajoutée(s) » + « 2/4 », échec « 2/4 places ». Unit `alerts` : télégramme `added 2 / claimed 3` → « 3/4 » et « 3 place(s) dedans », `plain_text` échec « après 2 place(s) ».
+- Docs: CHANGELOG 1.0.0, ce journal. Aucune migration, aucun changement de schéma ni de frontend.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo doc --no-deps`, `cargo test --workspace --jobs 2` (21 suites ; lib 76, checkout 19, mailer 9, routes 48, tickets 22, parser 79).
+
 ### 2026-11-03 — Valider / relancer une demande close (accepted/failed)
 
 - Objectif: une demande `accepted` (places au panier, en attente de paiement) ou `failed` (erreur terminale) était définitivement verrouillée — impossible de confirmer l'achat, de libérer les places ou de relancer le bot sans passer par SQL. Choix utilisateur : boutons dans la **modale existante**, reset = retour à `pending`, autorisé uniquement sur `accepted`/`failed`.

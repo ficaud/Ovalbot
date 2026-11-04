@@ -180,8 +180,13 @@ pub struct CartAlert {
     pub match_link: String,
     /// The shop cart page where the added seats wait to be paid.
     pub cart_link: String,
-    /// Seats this wave actually put into the cart.
+    /// Seats this wave put into the cart (the delta of one checkout run).
     pub added: usize,
+    /// Seats the user holds in the cart for this match **after** the wave: the
+    /// cumulative claim count, i.e. what the completion check reads. This is
+    /// the number the `claimed/total` progress is built from, so a progressive
+    /// order always shows the cart content, never just the last wave.
+    pub claimed: usize,
     /// Total seats ordered for this match (`quantity` / `places`).
     pub total: u32,
     /// `true` when the wave ended on a hard checkout failure: the cart holds
@@ -190,10 +195,10 @@ pub struct CartAlert {
 }
 
 impl CartAlert {
-    /// The `added/total` progress line, shared by the channels.
+    /// The `claimed/total` progress line, shared by the channels.
     #[must_use]
     pub fn progress(&self) -> String {
-        format!("{}/{}", self.added, self.total)
+        format!("{}/{}", self.claimed, self.total)
     }
 
     /// The primary link of the notification: the match's ticketing page, with
@@ -217,7 +222,7 @@ impl CartAlert {
                  pour Stade Rochelais vs {} ({}).\n\
                  Va payer ce qui est déjà dans ton panier, ou recommence la demande : {}\n\
                  Billets du match : {}",
-                self.added,
+                self.claimed,
                 self.total,
                 self.opponent,
                 self.date,
@@ -255,7 +260,7 @@ impl CartAlert {
         if self.failed {
             text.push_str(&format!(
                 "⚠️ Ajout au panier interrompu : {} place(s) dedans ({} commandée(s)).\n",
-                self.added, self.total
+                self.claimed, self.total
             ));
         } else {
             text.push_str(&format!(
@@ -451,6 +456,7 @@ mod tests {
                 .to_string(),
             cart_link: "https://billetterie.staderochelais.com/fr/basket".to_string(),
             added: 2,
+            claimed: 3,
             total: 4,
             failed: false,
         };
@@ -461,7 +467,7 @@ mod tests {
              ━━━━━━━━━━━━━━━━\n\n\
              🆚 AVIRON BAYONNAIS\n\
              📅 dimanche 8 novembre à 21h05\n\n\
-             🛒 2 place(s) ajoutée(s) au panier — 2/4 au total.\n\
+             🛒 2 place(s) ajoutée(s) au panier — 3/4 au total.\n\
              🎟️ <a href=\"https://billetterie.staderochelais.com/fr/product/1371/revente_j8\">Voir les billets du match</a>\n\
              🛒 <a href=\"https://billetterie.staderochelais.com/fr/basket\">Accéder au panier</a>\n\n\
              ⏳ Tu as environ 20 minutes pour payer."
@@ -476,7 +482,7 @@ mod tests {
         };
         let text = failed.telegram_text();
         assert!(
-            text.contains("⚠️ Ajout au panier interrompu : 2 place(s) dedans (4 commandée(s)).")
+            text.contains("⚠️ Ajout au panier interrompu : 3 place(s) dedans (4 commandée(s)).")
         );
         assert!(text.contains("Voir les billets du match"));
         assert!(!text.contains("Accéder au panier"));
@@ -493,12 +499,13 @@ mod tests {
                 .to_string(),
             cart_link: "https://billetterie.staderochelais.com/fr/basket".to_string(),
             added: 1,
-            total: 2,
+            claimed: 2,
+            total: 4,
             failed: false,
         };
         let text = alert.plain_text();
         assert!(text.contains("1 place(s) ajoutée(s)"));
-        assert!(text.contains("1/2"));
+        assert!(text.contains("2/4"));
         assert!(text.contains(
             "Voir les billets du match : https://billetterie.staderochelais.com/fr/product/1371/revente_j8"
         ));
@@ -509,8 +516,7 @@ mod tests {
             ..alert
         };
         let text = failed.plain_text();
-        assert!(text.contains("a échoué"));
-        assert!(text.contains("1"));
+        assert!(text.contains("a échoué après 2 place(s) (4 commandée(s))"));
         assert!(text.contains("Billets du match"));
     }
 }

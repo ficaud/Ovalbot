@@ -277,7 +277,8 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
 ///
 /// # Arguments
 /// * `user_id` — owner of the request and of the cart.
-/// * `alert` — wave content (added/total progress, cart link, failure flag).
+/// * `alert` — wave content (added/claimed/total progress, cart link, failure
+///   flag).
 pub async fn notify_cart_ready(state: &AppState, user_id: i64, alert: &CartAlert) {
     let contact: Option<(String, Option<String>, bool, bool)> = match sqlx::query_as(
         "SELECT email, telegram_id, notify_email, notify_telegram FROM users WHERE id = ?",
@@ -321,6 +322,7 @@ pub async fn notify_cart_ready(state: &AppState, user_id: i64, alert: &CartAlert
     tracing::info!(
         user_id,
         added = alert.added,
+        claimed = alert.claimed,
         total = alert.total,
         failed = alert.failed,
         emailed,
