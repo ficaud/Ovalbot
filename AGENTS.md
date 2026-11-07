@@ -4,6 +4,15 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-07 — Pelouse détectée par le prix (`15.00 €`), plus par la catégorie
+
+- Problème (signalé par l'utilisateur) : le poll de 18:57 a bien loggé la place pelouse `pack_id=35596 ticket_id=51955` (Bayonne 8/11, `price=15.00`, `full_name=Tribune PELOUSE • …`), mais le matcher Group ne l'a pas prise. Diagnostic : `is_pelouse` ne regardait que `composition.category` ; la page live nomme la catégorie `CATÉGORIE 8` (catégorie tarifaire Drupal, id `8008`), pas `PELOUSE`. Le test `takes_the_live_pelouse_seat_as_a_candidate` était figé sur `category="PELOUSE"` (libellé du 29/10) → régression silencieuse. Vérifié sur la page live du 07/11 : un seul pack à `15.00` (le pelouse), tous les autres à `33.00`–`59.00`.
+- `src/services/bot/purchases.rs`: nouvelle constante `PELOUSE_PRICE_CENTS = 1_500` ; `is_pelouse` = `parse_price_cents(&seat.price) == Some(PELOUSE_PRICE_CENTS)` — le prix unitaire `15.00 €` est le seul critère, plus aucune dépendance à `category`, `bloc` ou `full_name`. Doc du module et de `plan_group` alignées. Motif de skip : `no unclaimed pack at the Pelouse rate (15.00 €; need N more)` + compteur `N pack(s) at another price`.
+- Tests : `pelouse_detection_is_case_insensitive` → `pelouse_detection_is_price_based` (`15.00`/`15`/`15,00` → true même avec `CATÉGORIE 8` ; `14.99`/`16.00`/`33.00` → false même avec `"PELOUSE"`) ; test live mis à jour sur la forme exacte du 07/11 (`pack 35596`, `CATÉGORIE 8`, `Siège 230`, `15.00`) ; nouveau `plan_group_ignores_a_pelouse_labelled_pack_at_another_price` (49,00 étiqueté PELOUSE refusé) ; fixtures `49.00/Pelouse` corrigées ; assertions de motif de skip mises à jour.
+- Choix utilisateur : **pas de refresh** et pas de changement du déclenchement — le matcher reste sur les offres fraîches ; la place `51955` déjà en base ne sera pas reprise, on attend la prochaine offre pelouse (un nouveau couple `(pack_id, ticket_id)`).
+- Docs : CHANGELOG `[Unreleased]` (`Fixed`), ce journal. Aucune migration, aucun changement de schéma ni de frontend.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo doc --no-deps`, `cargo test --workspace --jobs 2` (lib 79, checkout 19, purchases 20, routes 48, parser 79, calendar 34).
+
 ### 2026-11-04 — `SECRET_KEY` : dérivation HKDF-SHA256 (au lieu d'un SHA-256 nu)
 
 - Signalement (scanner de sécurité) : `src/common/crypto.rs:45` passait le `SECRET_KEY` dans `Sha256::digest` pour fabriquer la clé AES-256 du coffre d'identifiants boutique — motif « secret/password haché avec une fonction non coûteuse » (CWE-916 malgré la nature du secret). Diagnostic : `SECRET_KEY` est du matériel de clé (`openssl rand -base64 48`), donc l'attaque par force brute n'est pas le risque ; mais rien n'impose cette entropie (un opérateur peut mettre un mot de passe) et un hash nu n'est pas une fonction de dérivation de clé. Choix utilisateur : corriger (pas de suppression de règle), et **rupture nette** (pas de double clé de lecture).

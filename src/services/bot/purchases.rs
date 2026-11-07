@@ -12,8 +12,10 @@
 //! and the whole pack fits the remaining quota.
 //! - `single`: any category, every ticket within the per-ticket budget, quota
 //!   `quantity` spread over as many waves as needed;
-//! - `group`: exactly like single but restricted to **Pelouse** packs (the
-//!   pelouse rate applies, no price match), quota `places`.
+//! - `group`: same fill logic, restricted to packs sold at the **Pelouse
+//!   rate** (`15.00 €` per ticket), quota `places`. The price is the
+//!   discriminator: the site's category labels are price categories
+//!   (`CATÉGORIE 8` on the 2026-11-07 Bayonne resale), not the physical stand.
 //!
 //! Claimed seats live in `ticket_offers.claimed_by` (set by the orchestrator
 //! once the add-to-cart succeeded). The matcher plans only unclaimed packs —
@@ -402,10 +404,11 @@ fn plan_single(
     (Some(taken), String::new())
 }
 
-/// Serves a `group` request: **Pelouse** packs only, up to the remaining
-/// quota (`places` minus what the user already claimed). The pelouse rate
-/// applies, so no price match. A pack larger than the remaining quota is
-/// skipped (the billetterie cannot split it).
+/// Serves a `group` request: packs sold at the **Pelouse rate** only, up to
+/// the remaining quota (`places` minus what the user already claimed). A
+/// pelouse place is identified solely by its unit price (`15.00 €`), not by
+/// the category label. A pack larger than the remaining quota is skipped
+/// (the billetterie cannot split it).
 fn plan_group(
     match_id: i64,
     candidate: &PurchaseCandidate,
@@ -426,11 +429,12 @@ fn plan_group(
         return (None, "no shop credentials stored".to_string());
     }
 
-    // Whole pelouse packs only, capped at the remaining quota; eviction keeps
-    // the pool ordered for the next request.
+    // Whole pelouse-priced packs only, capped at the remaining quota;
+    // eviction keeps the pool ordered for the next request.
     let quota = remaining as usize;
     let mut take: Vec<usize> = Vec::new();
     let mut oversized_packs = 0u32;
+    let mut other_price_packs = 0u32;
     for pack in packs_of(available) {
         if take.len() >= quota {
             break;
@@ -445,14 +449,22 @@ fn plan_group(
             .all(|&index| is_pelouse(available[index]))
         {
             take.extend(pack.indices.iter().copied());
+        } else {
+            other_price_packs += 1;
         }
     }
     if take.is_empty() {
-        let mut reason = format!("no unclaimed Pelouse pack on the market (need {remaining} more)");
+        let mut reason = format!(
+            "no unclaimed pack at the Pelouse rate ({}; need {remaining} more)",
+            format_cents(PELOUSE_PRICE_CENTS)
+        );
         if oversized_packs > 0 {
             reason.push_str(&format!(
                 ", {oversized_packs} pack(s) larger than the remaining quota"
             ));
+        }
+        if other_price_packs > 0 {
+            reason.push_str(&format!(", {other_price_packs} pack(s) at another price"));
         }
         return (None, reason);
     }
@@ -597,13 +609,16 @@ async fn claimed_seats(
 
 // ============================== HELPERS ==============================
 
-/// Whether the seat is a Pelouse place (the site's category name, compared
-/// case-insensitively; the composition carries it verbatim from the page).
+/// Unit price of a Pelouse place, in cents: the site's flat pelouse rate
+/// (`15.00 €`). Group requests are matched on this exact price.
+const PELOUSE_PRICE_CENTS: u32 = 1_500;
+
+/// Whether the seat is a Pelouse place, identified **solely by its unit
+/// price** (`15.00 €`). The category/tribune labels are not used: `category`
+/// is a price category (`CATÉGORIE 8` on the live 2026-11-07 Bayonne page),
+/// and the physical "Tribune PELOUSE" text is not a stable classifier.
 fn is_pelouse(seat: &Seat) -> bool {
-    seat.seat_info
-        .composition
-        .category
-        .eq_ignore_ascii_case("pelouse")
+    parse_price_cents(&seat.price) == Some(PELOUSE_PRICE_CENTS)
 }
 
 /// Renders whole cents as a display price (`4900` → `"49.00 €"`).
@@ -779,13 +794,18 @@ mod tests {
         }
     }
 
-    // Pelouse detection is case-insensitive and exact-name based.
+    // Pelouse detection is price-based: only the 15.00 € unit price matters,
+    // whatever the category/tribune labels say.
     #[test]
-    fn pelouse_detection_is_case_insensitive() {
-        assert!(is_pelouse(&seat("49.00", "Pelouse")));
-        assert!(is_pelouse(&seat("49.00", "PELOUSE")));
-        assert!(!is_pelouse(&seat("49.00", "CATÉGORIE 3")));
-        assert!(!is_pelouse(&seat("49.00", "")));
+    fn pelouse_detection_is_price_based() {
+        // The live 2026-11-07 shape: physically PELOUSE, labelled CATÉGORIE 8.
+        assert!(is_pelouse(&seat("15.00", "CATÉGORIE 8")));
+        assert!(is_pelouse(&seat("15", "PELOUSE")));
+        assert!(is_pelouse(&seat("15,00", "")));
+        assert!(!is_pelouse(&seat("14.99", "PELOUSE")));
+        assert!(!is_pelouse(&seat("16.00", "PELOUSE")));
+        assert!(!is_pelouse(&seat("33.00", "PELOUSE")));
+        assert!(!is_pelouse(&seat("", "PELOUSE")));
     }
 
     // The log price renderer keeps two decimals.
@@ -799,7 +819,7 @@ mod tests {
     #[test]
     fn plan_single_caps_at_the_remaining_quota() {
         let s1 = seat("40.00", "CATÉGORIE 3");
-        let s2 = seat("45.00", "Pelouse");
+        let s2 = seat("45.00", "CATÉGORIE 2");
         let mut available = vec![&s1, &s2];
 
         // Quota 4, already claimed 3 → only 1 more seat is taken.
@@ -820,15 +840,15 @@ mod tests {
     fn plan_group_takes_the_pelouse_available() {
         let candidate = group_candidate(4, true, 0);
 
-        // One pelouse for a 4-place request → 1 planned (not nothing).
-        let only = seat("15.00", "Pelouse");
+        // One pelouse (live CATÉGORIE 8 label) for a 4-place request → 1 planned.
+        let only = seat("15.00", "CATÉGORIE 8");
         let mut one_pelouse = vec![&only];
         let (taken, reason) = plan_group(42, &candidate, &mut one_pelouse);
         assert!(reason.is_empty(), "{reason}");
         assert_eq!(taken.unwrap().len(), 1);
 
-        // Two pelouse (one case-variant) among a cat seat → those two planned.
-        let pelouse1 = seat("15.00", "Pelouse");
+        // Two pelouse-priced seats among a cat seat → those two planned.
+        let pelouse1 = seat("15.00", "CATÉGORIE 8");
         let pelouse2 = seat("15.00", "PELOUSE");
         let cat = seat("45.00", "CATÉGORIE 2");
         let mut listing = vec![&pelouse1, &cat, &pelouse2];
@@ -906,16 +926,37 @@ mod tests {
         );
     }
 
-    // A mixed pack (pelouse + non-pelouse) cannot serve a group: the billetterie
-    // sells it whole.
+    // A mixed-price pack cannot serve a group: the billetterie sells it whole,
+    // and not every ticket is at the pelouse rate.
     #[test]
     fn plan_group_ignores_a_mixed_pack() {
-        let pelouse = seat_in(904, "a", "15.00", "Pelouse");
+        let pelouse = seat_in(904, "a", "15.00", "CATÉGORIE 8");
         let cat = seat_in(904, "b", "45.00", "CATÉGORIE 2");
         let mut available = vec![&pelouse, &cat];
         let (taken, reason) = plan_group(42, &group_candidate(4, true, 0), &mut available);
         assert!(taken.is_none());
-        assert!(reason.contains("no unclaimed Pelouse pack"), "{reason}");
+        assert!(
+            reason.contains("no unclaimed pack at the Pelouse rate"),
+            "{reason}"
+        );
+    }
+
+    // The price is the only pelouse criterion: a seat labelled PELOUSE at
+    // another price is not a pelouse place.
+    #[test]
+    fn plan_group_ignores_a_pelouse_labelled_pack_at_another_price() {
+        let mislabelled = seat("49.00", "PELOUSE");
+        let mut available = vec![&mislabelled];
+        let (taken, reason) = plan_group(42, &group_candidate(4, true, 0), &mut available);
+        assert!(taken.is_none());
+        assert!(
+            reason.contains("no unclaimed pack at the Pelouse rate"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("1 pack(s) at another price"),
+            "the diagnostic must name the rejected pack: {reason}"
+        );
     }
 
     // A request without shop credentials is skipped, whatever the seats.
@@ -985,7 +1026,10 @@ mod tests {
         let mut available = vec![&cat];
         let (taken, reason) = plan_group(42, &group_candidate(2, true, 0), &mut available);
         assert!(taken.is_none());
-        assert!(reason.contains("no unclaimed Pelouse"), "{reason}");
+        assert!(
+            reason.contains("no unclaimed pack at the Pelouse rate"),
+            "{reason}"
+        );
         assert!(reason.contains("need 2 more"), "{reason}");
     }
 
@@ -1020,35 +1064,36 @@ mod tests {
         );
     }
 
-    // The exact live seat shape logged on the Bayonne resale (2026-10-29):
-    // upper-case category, `15.00` price, numeric ticket id. Both group and
-    // single modes must take it as a candidate (group ignores the price).
+    // The exact live seat shape logged on the Bayonne resale (2026-11-07):
+    // physically Pelouse, but the site's price category is CATÉGORIE 8. The
+    // matcher must recognize it by its 15.00 € price, not the category label.
     #[test]
     fn takes_the_live_pelouse_seat_as_a_candidate() {
         let live = Seat {
             id: SeatId {
-                pack_id: 34677,
-                ticket_id: "50583".to_string(),
+                pack_id: 35596,
+                ticket_id: "51955".to_string(),
             },
             seat_info: SeatInfo {
-                full_name: "Tribune PELOUSE • Bloc PELOUSE • Accès PELOUSE • Siège 147".to_string(),
+                full_name: "Tribune PELOUSE • Bloc PELOUSE • Accès PELOUSE • Siège 230".to_string(),
                 composition: SeatComposition {
-                    category: "PELOUSE".to_string(),
+                    category: "CATÉGORIE 8".to_string(),
                     bloc: "PELOUSE".to_string(),
                     row: String::new(),
-                    seat_number: 147,
+                    seat_number: 230,
                 },
             },
             price: "15.00".to_string(),
         };
+        assert!(is_pelouse(&live));
 
         let mut available = vec![&live];
         let (taken, reason) = plan_group(11877, &group_candidate(4, true, 0), &mut available);
         assert!(reason.is_empty(), "{reason}");
         let taken = taken.unwrap();
         assert_eq!(taken.len(), 1);
-        assert_eq!(taken[0].id.pack_id, 34677);
-        assert_eq!(taken[0].id.ticket_id, "50583");
+        assert_eq!(taken[0].id.pack_id, 35596);
+        assert_eq!(taken[0].id.ticket_id, "51955");
 
         let mut available = vec![&live];
         let (taken, reason) =
