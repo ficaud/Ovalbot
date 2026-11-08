@@ -1,79 +1,69 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# Devcontainer minimal for OvalBot (Rust/Axum backend + SvelteKit frontend).
-# Includes only what is required to build and run the project:
-#   Rust (rustup/cargo), Node.js LTS, SQLite (lib + CLI), build essentials.
+# Devcontainer image for OvalBot (Rust/Axum + SvelteKit + SQLite).
 #
-# Personal developer tools (nvim, lazygit, zsh, Oh My Zsh, ...) are
-# intentionally NOT installed here; they live in the `ovalbot-devenv` overlay
-# repository (cloned at `my-env/`) and are baked into a personal image built
-# on top of this one.
+# Derived from the published devbox image, which provides the portable terminal
+# environment (zsh, tmux, Neovim, LazyGit, OpenCode, ripgrep, fd, fzf, socat,
+# openssh-client, build-essential) and the `dev` user. This layer only adds the
+# project toolchain: Rust (+ rustfmt/clippy/rust-analyzer/llvm-tools for
+# coverage), Node 24, the SQLite CLI and the native dependencies required by
+# the parser crates (libcurl, OpenSSL).
+#
+# The base image's ENTRYPOINT (`onstart`) is inherited: it bootstraps the
+# dotfiles and the Neovim configuration at container start. The host SSH agent
+# is exposed by `devbox-agent-relay` from the devcontainer postStartCommand.
 
-FROM ubuntu:26.10
-
-LABEL description="OvalBot dev environment (Rust + SvelteKit + SQLite)"
+FROM ghcr.io/busymoood/dotfiles-docker:main
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-
 ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=UTC
+
+USER root
 
 # ------------------------------------------------------------------
 # 1. System dependencies
 # ------------------------------------------------------------------
+# sqlite3: CLI used by doc/SQL_HELPERS.md (the app links SQLite through sqlx).
+# libsqlite3-dev / libcurl / OpenSSL headers: native crates of the workspace.
 RUN apt-get update \
-    && packages="build-essential pkg-config git wget curl ca-certificates libsqlite3-dev sqlite3 libcurl4-openssl-dev sudo" \
-    && ok=0 \
-    && for i in 1 2 3 4 5; do \
-        apt-get install -y --no-install-recommends $packages \
-            && { ok=1; break; } \
-            || sleep 15; \
-    done \
-    && test "$ok" -eq 1 \
+    && apt-get install -y --no-install-recommends \
+        pkg-config \
+        sqlite3 \
+        libsqlite3-dev \
+        libcurl4-openssl-dev \
+        libssl-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------------
-# 2. Rust (rustup, stable toolchain + cargo)
+# 2. Rust (stable toolchain + components)
 # ------------------------------------------------------------------
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV CARGO_HOME=/usr/local/cargo
 ENV PATH="${CARGO_HOME}/bin:${PATH}"
 
-RUN curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-delay 5 https://sh.rustup.rs | sh -s -- \
-    -y --no-modify-path --default-toolchain stable --profile minimal \
-    && rustup component add rustfmt clippy rust-src llvm-tools-preview \
-    && cargo --version \
-    && rustc --version
+RUN curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-delay 5 https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --default-toolchain stable --profile minimal \
+    && rustup component add rustfmt clippy rust-src rust-analyzer llvm-tools-preview \
+    && rustc --version \
+    && cargo --version
 
 # ------------------------------------------------------------------
-# 2b. Pre-fetch Rust dependencies (so cargo/rust-analyzer run offline)
-# ------------------------------------------------------------------
-# The registry under CARGO_HOME is root-owned at this stage; the entrypoint
-# chowns it to the runtime user so cargo can write at runtime.
-WORKDIR /tmp/prefetch
-COPY Cargo.toml Cargo.lock ./
-COPY calendar ./calendar
-COPY bot ./bot
-RUN mkdir -p src && echo "fn main() {}" > src/main.rs \
-    && cargo fetch \
-    && rm -rf src
-
-# ------------------------------------------------------------------
-# 2c. Coverage tooling (cargo-llvm-cov, prebuilt via cargo-binstall)
+# 3. Coverage tooling (CI job `coverage`)
 # ------------------------------------------------------------------
 RUN curl -L --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-delay 5 \
         https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh \
-        | bash \
+      | bash \
     && cargo binstall -y cargo-llvm-cov \
     && cargo llvm-cov --version
 
 # ------------------------------------------------------------------
-# 3. Node.js LTS (NodeSource) for the SvelteKit frontend
+# 4. Node.js 24 (SvelteKit frontend)
 # ------------------------------------------------------------------
 ENV NODE_MAJOR=24
 
-RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
+        https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
@@ -81,27 +71,16 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://deb.nodesour
     && npm --version
 
 # ------------------------------------------------------------------
-# 4. Non-root user
+# 5. Cargo permissions for the runtime user
 # ------------------------------------------------------------------
-ARG USERNAME=devuser
-ARG USER_UID=1000
-ARG USER_GID=1000
+# The devcontainer CLI may change the `dev` UID on Linux; a dedicated group
+# with setgid keeps the toolchain and the registry writable regardless of the
+# runtime UID.
+RUN groupadd -r rustlang \
+    && usermod -aG rustlang dev \
+    && chown -R dev:rustlang "${RUSTUP_HOME}" "${CARGO_HOME}" \
+    && chmod -R g+rwX "${RUSTUP_HOME}" "${CARGO_HOME}" \
+    && chmod g+s "${RUSTUP_HOME}" "${CARGO_HOME}"
 
-# The base image (ubuntu:26.04) ships a user/group named "ubuntu" with
-# UID/GID 1000. Remove it first so "devuser" is the unique UID/GID 1000 owner.
-RUN userdel ubuntu 2>/dev/null || true; \
-    groupdel ubuntu 2>/dev/null || true; \
-    groupadd --gid "${USER_GID}" "${USERNAME}" 2>/dev/null || true; \
-    useradd --uid "${USER_UID}" --gid "${USER_GID}" -m "${USERNAME}"; \
-    echo "${USERNAME} ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/"${USERNAME}" && \
-    chmod 0440 /etc/sudoers.d/"${USERNAME}"
-
-# Entrypoint — adjusts UID/GID at runtime for volume-mounted workspaces
-# (required on macOS Docker Desktop). Drops privileges to USERNAME via
-# sudo -E before exec.
-COPY .devcontainer/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-USER root
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-WORKDIR /workspaces/OvalBot
+# The base image's onstart entrypoint must run as `dev`.
+USER dev

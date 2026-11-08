@@ -1,25 +1,49 @@
+// .devcontainer/devcontainer.json — devbox image + OvalBot toolchain.
+//
+// The base image (ghcr.io/busymoood/dotfiles-docker) provides the terminal
+// environment (zsh, tmux, Neovim/LazyVim, LazyGit, OpenCode, rg/fd/fzf) and
+// the `dev` user; `.devcontainer/Dockerfile` only adds Rust, Node, the SQLite
+// client and the native dependencies of the workspace.
+//
+// Tool state (Neovim plugins, OpenCode auth) persists in the `devbox-home`
+// volume. No private key lives in the container: the host SSH agent is
+// exposed by `devbox-agent-relay` (direct mount on native Docker, TCP relay
+// on Docker Desktop).
 {
-  "name": "OvalBot",
+  "name": "OvalBot devbox",
   "build": {
     "dockerfile": "Dockerfile",
-    "context": "..",
-    "args": {
-      "USERNAME": "devuser",
-      "USER_UID": "1000",
-      "USER_GID": "1000"
-    }
+    "context": ".."
   },
-  "overrideCommand": false,
-  "updateRemoteUserUID": false,
-  "remoteUser": "devuser",
-  "appPort": [5173, 3000],
-  "forwardPorts": [5173, 3000],
+  "remoteUser": "dev",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "workspaceFolder": "/workspace",
+  "containerEnv": {
+    // The devcontainers CLI does not read .env files: run ./scripts/devbox-up.sh.
+    "DOTFILES_REPO": "${localEnv:DOTFILES_REPO:}",
+    // NeoVim/LazyVim config (private repo -> SSH agent; "" = bare nvim).
+    // The URL lives in .env.devbox: a colon in a localEnv default would be
+    // truncated by the ${localEnv:VAR:default} syntax.
+    "NVIM_CONFIG_REPO": "${localEnv:NVIM_CONFIG_REPO:}",
+    // SSH agent relay target (empty = devbox-agent-relay default).
+    "DEVBOX_SSH_RELAY_TARGET": "${localEnv:DEVBOX_SSH_RELAY_TARGET:}",
+    "GIT_SSH_COMMAND": "ssh -o StrictHostKeyChecking=accept-new",
+    "SSH_AUTH_SOCK": "${localEnv:DEVBOX_SSH_AUTH_SOCK:/tmp/ssh-agent.sock}"
+  },
+  "mounts": [
+    // Tool state, shared with the devbox.sh sessions (keep the literal name).
+    "source=devbox-home,target=/home/dev/.local,type=volume"
+  ],
+  // Publish the dev ports on the host loopback (the devcontainers CLI ignores
+  // forwardPorts; that property only drives editor clients like VS Code).
+  // 3000: Axum backend / built SvelteKit app, 5173: Vite dev server.
+  "appPort": [3000, 5173],
+  "forwardPorts": [3000, 5173],
   "portsAttributes": {
-    "5173": {
-      "label": "SvelteKit (dev)"
-    },
-    "3000": {
-      "label": "Axum (backend)"
-    }
-  }
+    "3000": { "label": "Axum (backend)" },
+    "5173": { "label": "SvelteKit (dev)" }
+  },
+  // Each start: recreate the SSH agent socket (Docker Desktop) then re-run the
+  // image bootstrap (dotfiles + Neovim config; it waits up to 5s for the socket).
+  "postStartCommand": "devbox-agent-relay start; onstart --no-shell"
 }

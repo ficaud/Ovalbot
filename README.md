@@ -22,6 +22,9 @@ OvalBot notify you when there is a TOP14 match that gets a date or for tickets p
 
 ## Development
 
+The recommended environment is the devbox dev container described below; the backend and
+frontend commands also work on the host with the same toolchain.
+
 ### Backend
 
 ```bash
@@ -31,6 +34,10 @@ cargo run --bin create_admin -- --email <email> --password <pwd>
 cargo test --workspace          # unit + integration tests (both crates)
 cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+`cargo run` starts the resale scan loop by default (`BOT_ENABLED` defaults to `true` in the
+code). Set `BOT_ENABLED=false` for a UI-only server, and see `.env.example` for the bot and
+cart variables.
 
 The backend serves the built frontend from `frontend/build` (override with the
 `STATIC_DIR` environment variable). Email HTML is loaded from `templates/`
@@ -49,20 +56,78 @@ npm run build                    # static build into frontend/build
 npm run check                    # svelte-check (types)
 ```
 
-### Devcontainer
+### Dev container (devbox)
 
-The project ships a plain devcontainer (`.devcontainer/`) with Rust, Node.js and
-SQLite. It does **not** include personal tooling (such as neovim, zsh, gitconfig) — those
-live in a separate `ovalbot-devenv` overlay image.
+The recommended development environment is the `devbox` dev container: the published
+multi-arch image [`ghcr.io/busymoood/dotfiles-docker:v0.6.0`](https://github.com/busymoood/dotfiles-docker)
+(Ubuntu 24.04, zsh, tmux, Neovim/LazyVim, lazygit, opencode, ripgrep/fd/fzf), extended by
+`.devcontainer/Dockerfile` with the project toolchain:
 
-#### Base devcontainer (no overlay)
+- Rust stable (`rustfmt`, `clippy`, `rust-analyzer`, `llvm-tools-preview`) and `cargo-llvm-cov`;
+- Node.js 24;
+- the SQLite CLI (`sqlite3`) and the native headers of the workspace (`libsqlite3-dev`,
+  `libcurl4-openssl-dev`, `libssl-dev`, `pkg-config`).
 
-From the command line:
+The repository is mounted at `/workspace` and the container runs as the non-root user `dev`.
+Tool state (Neovim plugins, OpenCode auth) persists in the `devbox-home` volume; no private
+key lives in the container — the host SSH agent is relayed by `devbox-agent-relay`.
+
+#### Prerequisites
+
+- Docker (Docker Desktop, or Docker Engine + the Compose plugin).
+- The devcontainers CLI: `npm install -g @devcontainers/cli`.
+- An unlocked SSH agent (Bitwarden, `ssh -A`, or the WSL bridge). On Docker Desktop the
+  host agent is exposed by a small `socat` relay on port 4242, installed once as a login
+  service — not run per session.
+
+#### Start
 
 ```bash
-devcontainer up --workspace-folder .            # build (first time) + start
-devcontainer exec --workspace-folder . bash     # open a shell
+cp .env.devbox.example .env.devbox   # DOTFILES_REPO / NVIM_CONFIG_REPO
+./scripts/devbox-up.sh               # exports .env.devbox, then `devcontainer up`
+devcontainer exec --workspace-folder . zsh
 ```
+
+`devcontainer up` reuses an existing container; after a configuration or image change:
+
+```bash
+./scripts/devbox-up.sh --remove-existing-container
+```
+
+Ports `3000` (Axum / built SvelteKit app) and `5173` (Vite) are published on `127.0.0.1`
+(`appPort`). If the production Compose stack runs on the same machine, stop it first
+(`docker compose stop ovalbot`) or change the mapping.
+
+`.env` remains the production Compose file; `.env.devbox` is dev-only. The current
+`DOTFILES_REPO` placeholder points to the image repository, which has no zsh/tmux configs:
+nothing is linked until a real dotfiles repository is provided.
+
+#### SSH agent
+
+`devbox-agent-relay` exposes the host agent: a direct socket mount on native Docker, a TCP
+relay on Docker Desktop. If Bitwarden was locked at startup, or after a container restart:
+
+```bash
+devcontainer exec --workspace-folder . bash -lc \
+  'devbox-agent-relay start; onstart --no-shell'
+devcontainer exec --workspace-folder . bash -lc \
+  'devbox-agent-relay doctor'
+```
+
+`postStartCommand` is not replayed on an already running container; the commands above also
+re-run the dotfiles/Neovim bootstrap.
+
+See [`doc/devcontainer.md`](doc/devcontainer.md) for the full command reference.
+
+#### Update
+
+```bash
+docker pull ghcr.io/busymoood/dotfiles-docker:v0.6.0
+./scripts/devbox-up.sh --remove-existing-container --build-no-cache
+```
+
+The Neovim/LazyVim configuration and the dotfiles are pulled at each start; no image rebuild
+is needed for them.
 
 ## Configuration
 
@@ -164,7 +229,8 @@ Terminal 2 — frontend on `:5173` (proxies `/api` -> `:3000`):
 cd frontend && npm run dev
 ```
 
-Open http://localhost:5173 (ports 5173 and 3000 are forwarded in the devcontainer).
+Open http://localhost:5173 (ports 3000 and 5173 are published on `127.0.0.1` by the
+dev container).
 
 ### Create an admin account (to test the admin panel)
 
