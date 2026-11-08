@@ -10,6 +10,11 @@ on:
 permissions:
   contents: read
 
+# CI keeps the maintainer's devbox image for speed; the Ubuntu 24.04 default in
+# .devcontainer/Dockerfile is what a fresh clone gets without .env.devbox.
+env:
+  DEVBOX_BASE_IMAGE: ubuntu:24.04
+
 jobs:
   lint:
     name: Lint & format

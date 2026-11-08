@@ -1,6 +1,3 @@
-# Personal dev environment overlay (separate repo `ovalbot-devenv`)
-/my-env/
-
 # Rust build artifacts
 /target
 
@@ -18,6 +15,7 @@ data/
 /frontend/build/
 /frontend/.svelte-kit/
 /.env
+/.env.devbox
 /calendar/target/
 
 # Live calendar snapshots captured for manual comparison (not committed)
