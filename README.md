@@ -22,6 +22,9 @@ OvalBot notify you when there is a TOP14 match that gets a date or for tickets p
 
 ## Development
 
+The recommended environment is the devbox dev container described below; the backend and
+frontend commands also work on the host with the same toolchain.
+
 ### Backend
 
 ```bash
@@ -31,6 +34,10 @@ cargo run --bin create_admin -- --email <email> --password <pwd>
 cargo test --workspace          # unit + integration tests (both crates)
 cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+`cargo run` starts the resale scan loop by default (`BOT_ENABLED` defaults to `true` in the
+code). Set `BOT_ENABLED=false` for a UI-only server, and see `.env.example` for the bot and
+cart variables.
 
 The backend serves the built frontend from `frontend/build` (override with the
 `STATIC_DIR` environment variable). Email HTML is loaded from `templates/`
@@ -49,19 +56,61 @@ npm run build                    # static build into frontend/build
 npm run check                    # svelte-check (types)
 ```
 
-### Devcontainer
+### Dev container (devbox)
 
-The project ships a plain devcontainer (`.devcontainer/`) with Rust, Node.js and
-SQLite. It does **not** include personal tooling (such as neovim, zsh, gitconfig) — those
-live in a separate `ovalbot-devenv` overlay image.
+The recommended development environment is the `devbox` dev container. By default
+`.devcontainer/Dockerfile` starts from **Ubuntu 24.04** and adds the project toolchain:
 
-#### Base devcontainer (no overlay)
+- Rust 1.100.0 — the version pinned by `rust-toolchain.toml` and installed by the Dockerfile
+  (`rustfmt`, `clippy`, `rust-analyzer`, `llvm-tools-preview`) — and `cargo-llvm-cov`;
+- Node.js 24;
+- the SQLite CLI (`sqlite3`) and the native headers of the workspace (`libsqlite3-dev`,
+  `libcurl4-openssl-dev`, `libssl-dev`, `pkg-config`).
 
-From the command line:
+If you have a personal devbox image, point `DEVBOX_BASE_IMAGE` at it in
+`.env.devbox` — see below.
+
+#### Prerequisites
+
+- Docker (Docker Desktop, or Docker Engine + the Compose plugin).
+- The devcontainers CLI: `npm install -g @devcontainers/cli`.
+
+#### Start
 
 ```bash
-devcontainer up --workspace-folder .            # build (first time) + start
-devcontainer exec --workspace-folder . bash     # open a shell
+./scripts/devbox-up.sh
+devcontainer exec --workspace-folder . zsh
+```
+
+`./scripts/devbox-up.sh` sources `.env.devbox` (gitignored) when present, then calls
+`devcontainer up`. Without the file the pinned Ubuntu 24.04 default is used — no setup
+needed. To use your own image instead:
+
+```bash
+cp .env.devbox.example .env.devbox
+# then set DEVBOX_BASE_IMAGE=ghcr.io/<you>/<image>:<tag> in .env.devbox
+```
+
+The devcontainers CLI reads `${localEnv:…}` from the shell, not from `.env` files: calling
+`devcontainer up` directly also works, but falls back to the unpinned `ubuntu` image. Use
+the wrapper to get the pinned default and your personal image. It reuses an existing
+container; after a configuration or image change:
+
+```bash
+./scripts/devbox-up.sh --remove-existing-container
+```
+
+Ports `3000` (Axum / built SvelteKit app) and `5173` (Vite) are published on `127.0.0.1`
+by the devcontainers CLI (`appPort`).
+
+`.env` remains the production Compose file. `.env.devbox` is optional and dev-only: it
+holds the personal devbox image reference when you want one.
+
+#### Update
+
+```bash
+docker pull ghcr.io/busymoood/personal-image:main   # only with the personal image
+./scripts/devbox-up.sh --remove-existing-container --build-no-cache
 ```
 
 ## Configuration
@@ -164,7 +213,8 @@ Terminal 2 — frontend on `:5173` (proxies `/api` -> `:3000`):
 cd frontend && npm run dev
 ```
 
-Open http://localhost:5173 (ports 5173 and 3000 are forwarded in the devcontainer).
+Open http://localhost:5173 (ports 3000 and 5173 are published on `127.0.0.1` by the
+dev container).
 
 ### Create an admin account (to test the admin panel)
 

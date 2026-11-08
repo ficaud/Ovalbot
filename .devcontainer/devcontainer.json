@@ -1,25 +1,43 @@
+// .devcontainer/devcontainer.json — configurable base image + OvalBot toolchain.
+//
+// The base image defaults to Ubuntu 24.04 (see .devcontainer/Dockerfile); set
+// DEVBOX_BASE_IMAGE in .env.devbox and use ./scripts/devbox-up.sh to select a
+// personal devbox image. The Dockerfile adds Rust, Node, the SQLite client
+// and the native dependencies of the workspace in both cases.
+
 {
-  "name": "OvalBot",
+  "name": "OvalBot devbox",
   "build": {
     "dockerfile": "Dockerfile",
     "context": "..",
     "args": {
-      "USERNAME": "devuser",
-      "USER_UID": "1000",
-      "USER_GID": "1000"
+      // No tag in the default: ${localEnv:VAR:default} splits on ':' and keeps
+      // only the first segment. ./scripts/devbox-up.sh passes the pinned value.
+      "DEVBOX_BASE_IMAGE": "${localEnv:DEVBOX_BASE_IMAGE:ubuntu}"
     }
   },
-  "overrideCommand": false,
-  "updateRemoteUserUID": false,
-  "remoteUser": "devuser",
-  "appPort": [5173, 3000],
-  "forwardPorts": [5173, 3000],
+  "remoteUser": "dev",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "workspaceFolder": "/workspace",
+  "containerEnv": {
+    "SSH_AUTH_SOCK": "${localEnv:DEVBOX_SSH_AUTH_SOCK:/tmp/ssh-agent.sock}"
+  },
+  "mounts": [
+    // Tool state, shared with the devbox.sh sessions (keep the literal name).
+    "source=devbox-home,target=/home/dev/.local,type=volume"
+  ],
+  // Dev ports on the host loopback: 3000 = Axum backend / built SvelteKit app,
+  // 5173 = Vite dev server. `appPort` is what the devcontainers CLI publishes
+  // (equivalent to docker -p); `forwardPorts` is honored by editor clients
+  // such as VS Code but ignored by the CLI.
+  "appPort": [3000, 5173],
+  "forwardPorts": [3000, 5173],
   "portsAttributes": {
-    "5173": {
-      "label": "SvelteKit (dev)"
-    },
-    "3000": {
-      "label": "Axum (backend)"
-    }
-  }
+    "3000": { "label": "Axum (backend)" },
+    "5173": { "label": "SvelteKit (dev)" }
+  },
+  // Each start, when the personal image provides them: recreate the SSH agent
+  // socket (Docker Desktop) then re-run the local bootstrap (tool-state volume,
+  // agent check). Both are absent from the Ubuntu default — hence the guards.
+  "postStartCommand": "if command -v devbox-agent-relay >/dev/null 2>&1; then devbox-agent-relay start; fi; if command -v onstart >/dev/null 2>&1; then onstart --no-shell; fi"
 }
