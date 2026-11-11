@@ -18,7 +18,7 @@
 OvalBot notify you when there is a TOP14 match that gets a date or for tickets put on resale in the official team's website. Registration is open, gated by a 10-person waitlist during this early phase.
 
 - Stack: **Rust / Axum** (backend) + **SvelteKit** (frontend) + **SQLite**.
-- Hosted on a Raspberry Pi (arm64) via Docker Compose.
+- Hosted on a VPS
 
 ## Development
 
@@ -76,7 +76,7 @@ key lives in the container — the host SSH agent is relayed by `devbox-agent-re
 
 - Docker (Docker Desktop, or Docker Engine + the Compose plugin).
 - The devcontainers CLI: `npm install -g @devcontainers/cli`.
-- An unlocked SSH agent (Bitwarden, `ssh -A`, or the WSL bridge). On Docker Desktop the
+- An unlocked SSH agent (Bitwarden, `ssh -A`). On Docker Desktop the
   host agent is exposed by a small `socat` relay on port 4242, installed once as a login
   service — not run per session.
 
@@ -95,8 +95,7 @@ devcontainer exec --workspace-folder . zsh
 ```
 
 Ports `3000` (Axum / built SvelteKit app) and `5173` (Vite) are published on `127.0.0.1`
-(`appPort`). If the production Compose stack runs on the same machine, stop it first
-(`docker compose stop ovalbot`) or change the mapping.
+(`appPort`).
 
 `.env` remains the production Compose file; `.env.devbox` is dev-only. The current
 `DOTFILES_REPO` placeholder points to the image repository, which has no zsh/tmux configs:
@@ -164,33 +163,6 @@ See `.env.example` for a ready-to-copy template.
 
 ### Diagnose a checkout failure (dump mode)
 
-With `CHECKOUT_DUMP_DIR` set, **every add attempt** writes three files sharing
-one attempt id: `ovalbot_page_<id>.txt` (the page the bot really fetched),
-`ovalbot_response_<id>.txt` (the AJAX response, when a POST happened) and
-`ovalbot_attempt_<id>.txt` (pack, tickets, slider bounds and the outcome:
-`added`, `rejected`, `missing_context`, `pack_absent`, `expired_form`, …).
-Nothing is written when the variable is unset.
-
-With Docker Compose, dump into the `./data` volume so the files land on the
-host, and stop the production container first (two bots must never share the
-SQLite database):
-
-```bash
-mkdir -p data/dumps
-docker compose stop ovalbot
-docker compose run --rm --service-ports \
-  -e RUST_LOG=ovalbot=debug \
-  -e CHECKOUT_DUMP_DIR=/data/dumps \
-  ovalbot
-```
-
-Then inspect them and restore the service:
-
-```bash
-ls -l data/dumps/ovalbot_*.txt      # ovalbot_page_*.txt / ovalbot_response_*.txt
-docker compose up -d
-```
-
 How to run the bot with debug:
 
 ```bash
@@ -245,7 +217,7 @@ DATABASE_URL="sqlite:///tmp/test.db" cargo run --bin create_admin -- --email adm
 Some SQL commands that you can run on the local database for testing purposes or to get information :
 - [SQL_HELPERS.md](SQL_HELPERS.md)
 
-## Deployment (Raspberry Pi, arm64, or others)
+## Deployment
 
 Images are published for both `linux/arm64` and `linux/amd64` — Docker pulls the
 matching architecture automatically, so the same tag runs on a Raspberry Pi as
@@ -253,7 +225,7 @@ well as on x86_64 servers.
 
 ### 1. Prerequisites
 
-- 64-bit OS (Raspberry Pi OS 64-bit / any arm64 distro) or an x86_64 Linux host.
+- Any arm64 distro or an x86_64 Linux host.
 - Docker Engine + the Compose plugin.
 
 ```bash
