@@ -23,6 +23,7 @@
 pub mod checkout;
 pub mod matching;
 pub mod purchases;
+pub mod quiet_hours;
 pub mod resale;
 
 use std::time::Duration;
@@ -52,6 +53,8 @@ pub fn spawn(state: AppState) {
         return;
     }
 
+    let quiet = quiet_hours::QuietHours::from_env();
+
     let club = club_manager::stade_rochelais();
     let poll_secs = env_u64("BOT_SCAN_INTERVAL_SECS", 60);
     let home_secs = env_u64("BOT_HOME_REFRESH_SECS", 60);
@@ -67,7 +70,7 @@ pub fn spawn(state: AppState) {
         loop {
             interval.tick().await;
             discover_home(&state, &club, home_secs, &mut last_refresh).await;
-            poll_links(&state).await;
+            poll_links(&state, quiet.is_quiet_hours()).await;
         }
     });
 }
@@ -190,7 +193,7 @@ fn resolve_encounters(encounters: &[Encounter], events: &[calendar::Event]) -> V
 ///
 /// Fetch/dB failures warn and continue — one broken link cannot skip the
 /// others.
-async fn poll_links(state: &AppState) {
+async fn poll_links(state: &AppState, is_quiet_hours: bool) {
     let targets = match resale::links_to_scan(&state.pool).await {
         Ok(targets) => targets,
         Err(e) => {
@@ -203,13 +206,13 @@ async fn poll_links(state: &AppState) {
         return;
     }
     for target in &targets {
-        poll_one(state, target).await;
+        poll_one(state, target, is_quiet_hours).await;
     }
 }
 
 /// Polls one stored resale link: retirement of past-dated matches first, then
 /// the seat fetch, the durable recording and the alert.
-async fn poll_one(state: &AppState, target: &ScanTarget) {
+async fn poll_one(state: &AppState, target: &ScanTarget, is_quiet_hours: bool) {
     let encounter = target.to_encounter();
 
     // A link whose match is over is removed, not polled: the product page
@@ -341,7 +344,7 @@ async fn poll_one(state: &AppState, target: &ScanTarget) {
                     date: target.date.clone(),
                     resale_link: target.resale_link.clone(),
                 };
-                if state.cart_enabled {
+                if state.cart_enabled || is_quiet_hours {
                     checkout::execute_plans(state, &checkout_target, plans).await;
                 } else {
                     tracing::info!(

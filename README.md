@@ -153,6 +153,8 @@ The backend reads these environment variables:
 | `CART_ENABLED` | `false` | Set `true` to let the bot add matching resale seats to users' shop carts (Phase 4B checkout). Requires `SECRET_KEY` and per-user shop credentials. |
 | `CART_DRY_RUN` | `true` | When `true`, the checkout only logs what it *would* add (plus `credentials=present\|missing\|unreadable`): no login, no add-to-cart, no claim, no notification. Set `false` to buy for real. |
 | `CHECKOUT_DUMP_DIR` | *(empty)* | When set, a failed add dumps the resale page and/or the AJAX response to this directory (diagnostic only, nothing is written by default — see below). |
+| `QUIET_HOURS_START` | 23*60 | Start of the quiet hours window (when there is not purcahse attempt from the bot) |
+| `QUIET_HOURS_END` | 8*60 | End of the quiet hours window (when there is not purcahse attempt from the bot) |
 
 With `CART_ENABLED=true`, a request is only closed as `failed` on a refused shop
 login. Seat-gone, waiting queue, network, expired-form and missing add-to-cart
