@@ -4,6 +4,21 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-14 — Détection du passage en quiet hours + condition checkout corrigée
+
+- Objectif : le loop de scan calculait `quiet.is_quiet_hours()` à chaque tick (`bot/mod.rs`) sans rien détecter du **changement d'état**. Choix utilisateur validé en amont : log seulement à la transition (pas d'action), et correction dans le même passage d'une condition checkout inversée. Une variable globale (`static`/`AtomicBool`) a été écartée : la tâche `tokio::spawn` de `spawn()` est le seul consommateur, et l'état local de boucle est le pattern existant (`last_refresh: Option<Instant>`).
+- **Worktree trouvé en cours** : `quiet_hours.rs` portait un `previous_sate: bool` ajouté dans le struct `QuietHours` (avec `Ok(QuietHours { start, end, 0 })` — ne compilait pas, `DEFAULT` et tous les tests constructeurs orphelins). Écarté : le struct est `Copy`, sert de const `DEFAULT`, et l'état de transition n'est pas une propriété de la fenêtre mais du loop → `git restore` puis implémentation du plan validé.
+- `src/services/bot/quiet_hours.rs` :
+  - `QuietChange { Started, Ended }` + `phase_change(previous: Option<bool>, current: bool) -> Option<QuietChange>` — décision pure, `None` au tick de démarrage (jamais de fausse transition au cold start). Le DST est géré gratuitement (comparaison de deux ticks consécutifs, le gap/overlap étant dans la même phase).
+  - `impl Display for QuietHours` → `HH:MM–HH:MM` (en dash, zéro-paddé), pour les lignes de log.
+  - 6 tests : `phase_change` (startup silencieux, Started/Ended, pas de switch), Display (night, custom, day-window construite en littéral — `new` refuse une fenêtre 0..59 non-wrapping, première version du fixture a crahé sur `StartInferiorToEnd`).
+- `src/services/bot/mod.rs` : la boucle gagne `let mut in_quiet: Option<bool> = None;` — chaque tick calcule `quiet_now`, logge `quiet hours started (23:00–08:00): checkout suspended` / `quiet hours ended (…): checkout resumed` via `phase_change`, puis passe `quiet_now` à `poll_links` (signature inchangée).
+- Fix `bot/mod.rs:347` : `if state.cart_enabled || is_quiet_hours` lançait le checkout **pendant** la nuit même sans `CART_ENABLED` (contraire au README). Nouveau `checkout_should_run(cart_enabled, is_quiet_hours) -> bool` (`&&`), plus deux branches de log distinctes : `checkout paused (quiet hours), purchase plans logged only` (nuit) vs `checkout disabled (CART_ENABLED), purchase plans logged only` (jour, flag off). Le matching tourne toujours : plans décisions seulement, rien d'exécuté.
+- Tests : `checkout_should_run_gates_on_both_conditions` (4 cas) dans le module de tests de `bot/mod.rs`.
+- Docs : CHANGELOG `[Unreleased]` (`Added` transition + `Fixed` condition), ce journal. Aucune migration, aucune env var nouvelle, aucun changement frontend.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace --jobs 2` (toutes suites vertes, lib 118), smoke live : fenêtre 18:41–18:40 (start=1121, end=1120) + `BOT_SCAN_INTERVAL_SECS=5` → `quiet hours started (18:41–18:40): checkout suspended` au passage de la minute, aucun faux log au démarrage.
+- Reste ouvert : rien (transition log-only validée). Si un jour on veut du rattrapage au réveil (poll immédiat à la sortie), `phase_change` donne déjà le bon signal.
+
 ### 2026-11-07 — Pelouse détectée par le prix (`15.00 €`), plus par la catégorie
 
 - Problème (signalé par l'utilisateur) : le poll de 18:57 a bien loggé la place pelouse `pack_id=35596 ticket_id=51955` (Bayonne 8/11, `price=15.00`, `full_name=Tribune PELOUSE • …`), mais le matcher Group ne l'a pas prise. Diagnostic : `is_pelouse` ne regardait que `composition.category` ; la page live nomme la catégorie `CATÉGORIE 8` (catégorie tarifaire Drupal, id `8008`), pas `PELOUSE`. Le test `takes_the_live_pelouse_seat_as_a_candidate` était figé sur `category="PELOUSE"` (libellé du 29/10) → régression silencieuse. Vérifié sur la page live du 07/11 : un seul pack à `15.00` (le pelouse), tous les autres à `33.00`–`59.00`.
