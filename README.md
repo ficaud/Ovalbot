@@ -23,7 +23,9 @@ OvalBot notify you when there is a TOP14 match that gets a date or for tickets p
 ## Development
 
 The recommended environment is the devbox dev container described below; the backend and
-frontend commands also work on the host with the same toolchain.
+frontend commands also work on the host with the same toolchain. The Rust version is pinned in
+`rust-toolchain.toml` (`1.100.0`): rustup installs it on the first `cargo` command, both on the
+host and in the container.
 
 ### Backend
 
@@ -61,7 +63,7 @@ npm run check                    # svelte-check (types)
 The recommended development environment is the `devbox` dev container. By default
 `.devcontainer/Dockerfile` starts from **Ubuntu 24.04** and adds the project toolchain:
 
-- Rust 1.100.0 — the version pinned by `rust-toolchain.toml` and installed by the Dockerfile
+- Rust 1.100.0 — the version pinned by `rust-toolchain.toml` and installed by the image
   (`rustfmt`, `clippy`, `rust-analyzer`, `llvm-tools-preview`) — and `cargo-llvm-cov`;
 - Node.js 24;
 - the SQLite CLI (`sqlite3`) and the native headers of the workspace (`libsqlite3-dev`,
