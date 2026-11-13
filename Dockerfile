@@ -9,7 +9,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---------- Stage 2 : build backend (Rust, release) ----------
-FROM rust:1-slim AS builder
+FROM rust:1.100-slim AS builder
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libsqlite3-dev libcurl4-openssl-dev libssl-dev \

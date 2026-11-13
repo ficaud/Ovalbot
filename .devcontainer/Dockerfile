@@ -36,14 +36,18 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------------
-# 2. Rust (stable toolchain + components)
+# 2. Rust (pinned toolchain + components)
 # ------------------------------------------------------------------
+# The version must stay in sync with the repo's `rust-toolchain.toml`: installing
+# it here (instead of the floating `stable` channel) means a `cargo` call inside
+# the container never has to download the pinned toolchain, which matters in CI
+# where the container is recreated on every run.
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV CARGO_HOME=/usr/local/cargo
 ENV PATH="${CARGO_HOME}/bin:${PATH}"
 
 RUN curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-delay 5 https://sh.rustup.rs \
-      | sh -s -- -y --no-modify-path --default-toolchain stable --profile minimal \
+      | sh -s -- -y --no-modify-path --default-toolchain 1.100.0 --profile minimal \
     && rustup component add rustfmt clippy rust-src rust-analyzer llvm-tools-preview \
     && rustc --version \
     && cargo --version
