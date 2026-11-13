@@ -4,6 +4,19 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-13 — Toolchain Rust épinglé à 1.100.0
+
+- Constat : aucune version de Rust n'était épinglée — `.devcontainer/Dockerfile` installait `stable` via rustup, le `Dockerfile` de prod tirait `rust:1-slim`, pas de `rust-toolchain.toml`. Résultat : la CI (dans le devcontainer) suivait `stable` — déjà 1.100.0 depuis le 2026-11-09 — pendant que le poste de dev était resté en 1.94.1 (2026-03-25), soit 6 releases d'écart. Choix utilisateur : épingler la version dans le repo **et** mettre à jour le poste (l'alternative « `stable` partout » est écartée : c'est elle qui a produit la dérive).
+- `rust-toolchain.toml` (nouveau, racine) : `channel = "1.100.0"`, `components = [rustfmt, clippy, rust-src, rust-analyzer, llvm-tools-preview]`, `profile = "minimal"`. Le pin s'applique à tout `cargo` lancé dans le workspace (poste, conteneur, CI).
+- `.devcontainer/Dockerfile` : `--default-toolchain stable` → `1.100.0` + commentaire de synchro. Indispensable : sans le toolchain pré-installé, rustup téléchargerait ~200 Mo **à chaque run CI** (conteneur éphémère) malgré le pin.
+- `Dockerfile` : `FROM rust:1-slim` → `FROM rust:1.100-slim`. `rust-toolchain.toml` n'est volontairement **pas** copié dans le stage builder : le toolchain vient de l'image, aucun `rustup download` au build.
+- Cargo 1.100 introduit le lint `unused_dependencies` (warn par défaut) qui a révélé deux dettes dans `bot/parser/Cargo.toml` : `openssl` 0.10 était déclaré sans aucun usage (le lien OpenSSL vient de `curl-sys` via `openssl-sys`, qui reste dans `Cargo.lock`) → supprimé ; `flate2` n'est utilisé que par le helper `#[cfg(test)]` de `bot/parser/src/fixture.rs` → déplacé en `[dev-dependencies]`.
+- Poste local : `rustup self update` (1.29.0 → 1.29.3) puis `rustup toolchain install 1.100.0 --profile minimal -c rustfmt -c clippy -c rust-src -c rust-analyzer -c llvm-tools-preview` et `rustup default 1.100.0` (l'ancien `stable` 1.94.1 reste installé, inutilisé dans ce repo).
+- Docs : README (prérequis « Rust 1.100.0 » + phrase sur le pin et l'installation automatique), CHANGELOG `[Unreleased] / Changed`. Aucune migration, aucun changement de code métier, de frontend ni d'édition (2021 pour `ovalbot`/`calendar`, 2024 pour `parser`/`scanner`).
+- Verified (host, `rustc 1.100.0`, 21 suites) : `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings` (0 warning, sortie propre), `cargo test --workspace --jobs 2` (21 suites vertes, 387 tests, 0 échec), `cargo build --release`, `cargo doc --no-deps`. Aucun lint clippy ni retouche rustfmt nécessaire sur les 6 releases d'écart.
+- Verified (conteneurs) : `docker build -f .devcontainer/Dockerfile` vert — `rustc 1.100.0` + les 5 composants présents, et `rustup show active-toolchain` dans le workspace monte sur `1.100.0-aarch64-unknown-linux-gnu (overridden by /workspace/rust-toolchain.toml)` **sans aucun téléchargement** (le pin retombe sur le toolchain de l'image). `rust:1.100-slim` sert bien `rustc 1.100.0` et le tag est multi-arch (amd64 + arm64/v8). Note : le premier build a échoué sur un timeout réseau vers `sh.rustup.rs` (builder), sans lien avec le changement — relance immédiate verte.
+- Bump suivant : `rust-toolchain.toml` + `.devcontainer/Dockerfile` + `Dockerfile` (3 endroits à garder synchro), puis `rustup toolchain install <version>` et les gates ci-dessus.
+
 ### 2026-11-11 — CI : DNS des conteneurs de build (systemd-resolved + `docker` driver)
 
 - Problème (CI rouge depuis le 2026-11-09) : les 5 jobs `devcontainers/ci` échouent à l'étape `apt-get` de `.devcontainer/Dockerfile` avec `Could not resolve 'archive.ubuntu.com'` / `'security.ubuntu.com'`, après ~40-80 s de timeout par hôte. Le pull de `ghcr.io/busymoood/dotfiles-docker:v0.6.0` réussit pourtant dans le même build.
