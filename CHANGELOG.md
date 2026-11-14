@@ -7,10 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+### Added
+- `feedback` : the `/feedback` page (link in the site footer) lets active
+  users submit a bug report or an improvement suggestion.
+- `calendar` : `GET /api/teams/{team}/matches` now enriches each `MatchView`
+  with the bot's resale statistics — `stats.seats_seen` (distinct seats ever
+  seen on the match's resale, from `ticket_offers`; `null` when never seen)
+  and `stats.seats_claimed` (seats of that listing already taken in a user's
+  cart) — displayed in the ticket request modal.
+- `.devcontainer/devbox` : personal docker image with generic tools
 
+### Changed
+- `toolchain` : Rust pinned to `1.100.0` in `rust-toolchain.toml`, in the dev
+  container image and in the production build image (`rust:1.100-slim`).
+- `bot/parser` : drop the unused `openssl` dependency and move the test-only
+  `flate2` one to `[dev-dependencies]` (new cargo `unused_dependencies` lint).
+- `frontend/` : bump @sveltejs/adapter-static from 4.0.0 to 4.0.1 in /frontend
+- `frontend/legal-notice, frontend/privacy` : changed contact email and
+  hosting provider (from personal RPI to OVH hosted VPS).
+- `channels/alerts` : alert's type division in several files to make reading
+  and maintaining easier.
+
+### Fixed
 - `bot/purchase` : identify Pelouse seats by their unit price (`15.00 €`)
   instead of the category label.
+- `quiet_hours` : Hours windows detection to disable the purchase function
+  during the night so that the bot can perform checkout when user is asleep.
+- `ci` : setup explicit DNS so that pull ubuntu packets is working.
 
 ## [1.0.0] - 2026-11-04
 
