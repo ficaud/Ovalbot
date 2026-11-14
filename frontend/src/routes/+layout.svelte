@@ -42,10 +42,11 @@
   </main>
 
   <footer class="site-footer">
-    <nav class="footer-links" aria-label="Legal pages">
+    <nav class="footer-links" aria-label="Site pages">
       <a href="/legal-notice">Legal notice</a>
       <a href="/privacy">Privacy policy</a>
       <a href="/terms">Terms of use</a>
+      <a href="/feedback">Report a bug</a>
       {#if data.version}
         <span class="footer-version"><a href="https://github.com/ficaud/Ovalbot/releases/">v{data.version.version}</a></span>
       {/if}

@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
-use crate::services::channels::alerts::{CartAlert, MatchAlert, SeatAlert};
+use crate::services::channels::alerts::{CartAlert, MatchAlert, ReportAlert, SeatAlert};
 
 /// Failures while sending through Resend: network/serialization issues
 /// (`Http`) and non-2xx API responses (`Api`).
@@ -55,6 +55,13 @@ pub trait Mailer: Send + Sync {
     /// # Errors
     /// [`MailError`] on network or Resend API failure.
     async fn send_cart_alert(&self, email: &str, alert: &CartAlert) -> Result<(), MailError>;
+
+    /// Sends a feedback report notification to one admin (a user submitted a
+    /// bug report or a suggestion from the `/feedback` page).
+    ///
+    /// # Errors
+    /// [`MailError`] on network or Resend API failure.
+    async fn send_report_alert(&self, email: &str, alert: &ReportAlert) -> Result<(), MailError>;
 }
 
 const WELCOME_SUBJECT: &str = "Welcome to OvalBot";
@@ -79,6 +86,10 @@ panier pour Stade Rochelais vs <strong>{{opponent}}</strong> ({{date}}) — {{pr
 <p><a href=\"{{link}}\">Voir les billets du match</a></p>\
 <p><a href=\"{{cart_link}}\">Accéder à mon panier</a></p>";
 
+const DEFAULT_REPORT_ALERT_HTML: &str =
+    "<p><strong>{{kind}}</strong> de <strong>{{reporter}}</strong> :</p>\
+<p>{{message}}</p>";
+
 /// The two HTML bodies, loaded from `TEMPLATE_DIR` (see [`load_templates`]).
 #[derive(Debug, Clone)]
 pub struct EmailTemplates {
@@ -95,6 +106,10 @@ pub struct EmailTemplates {
     /// (this wave's delta) / `{{progress}}` (cumulative `claimed/total`) /
     /// `{{link}}` / `{{cart_link}}` placeholders.
     pub cart_alert_html: String,
+    /// Feedback-report alert body with `{{kind}}` / `{{reporter}}` /
+    /// `{{message}}` placeholders (`message` is pre-escaped by
+    /// [`ReportAlert::message_html`]).
+    pub report_alert_html: String,
 }
 
 impl EmailTemplates {
@@ -105,6 +120,7 @@ impl EmailTemplates {
             match_alert_html: DEFAULT_MATCH_ALERT_HTML.to_string(),
             seats_alert_html: DEFAULT_SEATS_ALERT_HTML.to_string(),
             cart_alert_html: DEFAULT_CART_ALERT_HTML.to_string(),
+            report_alert_html: DEFAULT_REPORT_ALERT_HTML.to_string(),
         }
     }
 }
@@ -148,6 +164,14 @@ pub fn load_templates(dir: &Path) -> EmailTemplates {
     } else {
         tracing::warn!(
             "cart_ready.html template not found in {}, using default",
+            dir.display()
+        );
+    }
+    if let Ok(report_alert) = std::fs::read_to_string(dir.join("report_alert.html")) {
+        templates.report_alert_html = report_alert;
+    } else {
+        tracing::warn!(
+            "report_alert.html template not found in {}, using default",
             dir.display()
         );
     }
@@ -365,6 +389,23 @@ impl Mailer for ResendMailer {
         );
         self.send(email, &subject, &html, &alert.plain_text()).await
     }
+
+    /// Admin notification of a new feedback report: subject/text from the
+    /// alert, the HTML template fills `{{kind}}` / `{{reporter}}` /
+    /// `{{message}}` (the message is pre-escaped with `<br>` newlines by
+    /// [`ReportAlert::message_html`]).
+    async fn send_report_alert(&self, email: &str, alert: &ReportAlert) -> Result<(), MailError> {
+        let html = render(
+            &self.templates.report_alert_html,
+            &[
+                ("kind", alert.kind_label()),
+                ("reporter", &alert.reporter_email),
+                ("message", &alert.message_html()),
+            ],
+        );
+        self.send(email, &alert.subject(), &html, &alert.plain_text())
+            .await
+    }
 }
 
 /// The always-succeeding [`Mailer`] used when `RESEND_ENABLED` is not `true`:
@@ -390,6 +431,11 @@ impl Mailer for NoopMailer {
 
     /// Does nothing, always `Ok(())`.
     async fn send_cart_alert(&self, _email: &str, _alert: &CartAlert) -> Result<(), MailError> {
+        Ok(())
+    }
+
+    /// Does nothing, always `Ok(())`.
+    async fn send_report_alert(&self, _email: &str, _alert: &ReportAlert) -> Result<(), MailError> {
         Ok(())
     }
 }

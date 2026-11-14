@@ -1,14 +1,19 @@
 <script lang="ts">
   import { invalidate } from '$app/navigation';
-  import { activateUser, deleteUser } from '#lib/api';
+  import { activateUser, deleteUser, listFeedback } from '#lib/api';
   import { formatDate } from '#lib/format';
-  import type { UserView } from '#lib/types';
+  import type { FeedbackReportView, UserView } from '#lib/types';
   import type { PageData } from './$types';
 
   let { data }: { data: PageData } = $props();
 
   let error = $state('');
   let busy = $state<number | null>(null);
+  let feedback = $state<FeedbackReportView[]>([]);
+
+  listFeedback()
+    .then((reports) => (feedback = reports))
+    .catch(() => (feedback = []));
 
   const activeCount = $derived(data.users.filter((u) => u.status === 'active').length);
 
@@ -95,4 +100,47 @@
       </table>
     </div>
   </div>
+
+  <div class="card">
+    <h2>Feedback</h2>
+    <p class="muted">
+      {feedback.length} report{feedback.length === 1 ? '' : 's'} submitted from the
+      “Report a bug” page (newest first).
+    </p>
+
+    {#if feedback.length === 0}
+      <p class="muted">No report yet.</p>
+    {:else}
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Kind</th>
+              <th>From</th>
+              <th>Message</th>
+              <th>Sent</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each feedback as report (report.id)}
+              <tr>
+                <td><span class="badge badge-{report.kind}">{report.kind}</span></td>
+                <td>{report.reporter_email}</td>
+                <td class="feedback-message">{report.message}</td>
+                <td>{formatDate(report.created_at)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </div>
 </section>
+
+<style>
+  .feedback-message {
+    max-width: 480px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+</style>

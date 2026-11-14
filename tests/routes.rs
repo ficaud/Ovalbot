@@ -1391,3 +1391,155 @@ async fn ticket_request_rejected_while_calendar_is_empty(pool: SqlitePool) {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json(&response)["error"], "unsupported_ticket_request");
 }
+
+// ---- feedback ----
+
+#[sqlx::test]
+async fn feedback_accepts_a_report_and_notifies_the_admins(pool: SqlitePool) {
+    // The reporting user is active but is not an admin; the admin is a second
+    // account — the report must be emailed to them and to them only.
+    let reporter = insert_user(&pool, "reporter@example.com", Status::Active, Role::User).await;
+    insert_user(&pool, "admin@example.com", Status::Active, Role::Admin).await;
+    let session = insert_session(&pool, reporter, &ovalbot::common::time::in_days(1)).await;
+    let mailer = Arc::new(common::RecordingMailer::new());
+    let app = ovalbot::app(test_state_with(
+        pool,
+        mailer.clone(),
+        Arc::new(NoopTelegram),
+        TelegramConfig::default(),
+    ));
+
+    let (status, _, body) = call(
+        &app,
+        request(
+            "POST",
+            "/api/feedback",
+            Some(&cookie_for(&session)),
+            Some(json!({ "kind": "bug", "message": "The bell icon does nothing" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    assert_eq!(created["kind"], "bug");
+    assert_eq!(created["message"], "The bell icon does nothing");
+    assert_eq!(created["reporter_email"], "reporter@example.com");
+
+    let sent = mailer.report_alerts.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, "admin@example.com");
+    assert_eq!(sent[0].1.kind, "bug");
+    assert_eq!(sent[0].1.message, "The bell icon does nothing");
+}
+
+#[sqlx::test]
+async fn feedback_requires_an_active_account(pool: SqlitePool) {
+    let app = app(pool.clone());
+    let waiting = session_cookie(&pool, Status::Waiting, Role::User).await;
+
+    let (status, _, _) = call(
+        &app,
+        request(
+            "POST",
+            "/api/feedback",
+            Some(&waiting),
+            Some(json!({ "kind": "bug", "message": "waiting" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _, _) = call(
+        &app,
+        request(
+            "POST",
+            "/api/feedback",
+            None,
+            Some(json!({ "kind": "bug", "message": "anonymous" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test]
+async fn feedback_rejects_blank_and_oversized_messages(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    let app = app(pool.clone());
+
+    for message in ["   ", &"x".repeat(4_001)] {
+        let (status, _, response) = call(
+            &app,
+            request(
+                "POST",
+                "/api/feedback",
+                Some(&cookie),
+                Some(json!({ "kind": "bug", "message": message })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&response)["error"], "invalid_feedback");
+    }
+}
+
+#[sqlx::test]
+async fn admin_feedback_is_admin_only(pool: SqlitePool) {
+    let app = app(pool.clone());
+    let user = session_cookie(&pool, Status::Active, Role::User).await;
+
+    let (status, _, _) = call(
+        &app,
+        request("GET", "/api/admin/feedback", Some(&user), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _, _) = call(&app, request("GET", "/api/admin/feedback", None, None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test]
+async fn admin_lists_feedback_reports_newest_first(pool: SqlitePool) {
+    let reporter = insert_user(&pool, "reporter@example.com", Status::Active, Role::User).await;
+    let admin_cookie = session_cookie(&pool, Status::Active, Role::Admin).await;
+    let session = insert_session(&pool, reporter, &ovalbot::common::time::in_days(1)).await;
+    let app = app(pool.clone());
+
+    call(
+        &app,
+        request(
+            "POST",
+            "/api/feedback",
+            Some(&cookie_for(&session)),
+            Some(json!({ "kind": "suggestion", "message": "older suggestion" })),
+        ),
+    )
+    .await;
+    sqlx::query("UPDATE feedback_reports SET created_at = '2000-01-01T00:00:00Z'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    call(
+        &app,
+        request(
+            "POST",
+            "/api/feedback",
+            Some(&cookie_for(&session)),
+            Some(json!({ "kind": "bug", "message": "newer bug" })),
+        ),
+    )
+    .await;
+
+    let (status, _, body) = call(
+        &app,
+        request("GET", "/api/admin/feedback", Some(&admin_cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let reports = json(&body);
+    assert_eq!(reports.as_array().unwrap().len(), 2);
+    assert_eq!(reports[0]["message"], "newer bug");
+    assert_eq!(reports[0]["reporter_email"], "reporter@example.com");
+    assert_eq!(reports[1]["message"], "older suggestion");
+}

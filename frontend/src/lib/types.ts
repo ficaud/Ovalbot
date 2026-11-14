@@ -80,3 +80,20 @@ export interface TicketRequestView {
   created_at: string;
   updated_at: string;
 }
+
+export type FeedbackKind = 'bug' | 'suggestion';
+
+export interface FeedbackInput {
+  kind: FeedbackKind;
+  message: string;
+}
+
+/** One stored feedback report, as read back on the admin page. */
+export interface FeedbackReportView {
+  id: number;
+  kind: FeedbackKind;
+  message: string;
+  /** Author account email (admins only). */
+  reporter_email: string;
+  created_at: string;
+}
