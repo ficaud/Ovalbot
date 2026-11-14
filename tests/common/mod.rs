@@ -9,7 +9,7 @@ use ovalbot::common::models::{Role, Status};
 use ovalbot::services::accounts::auth::generate_session_token;
 use ovalbot::services::bot::checkout::{CartSession, CartShop, RealCartShop};
 use ovalbot::services::calendar::CalendarService;
-use ovalbot::services::channels::alerts::{CartAlert, MatchAlert, SeatAlert};
+use ovalbot::services::channels::alerts::{CartAlert, MatchAlert, ReportAlert, SeatAlert};
 use ovalbot::services::channels::mailer::{MailError, Mailer, NoopMailer};
 use ovalbot::services::channels::telegram::{
     NoopTelegram, Telegram, TelegramConfig, TelegramError,
@@ -24,6 +24,7 @@ pub struct RecordingMailer {
     pub alerts: Mutex<Vec<(String, MatchAlert)>>,
     pub seats_alerts: Mutex<Vec<(String, SeatAlert)>>,
     pub cart_alerts: Mutex<Vec<(String, CartAlert)>>,
+    pub report_alerts: Mutex<Vec<(String, ReportAlert)>>,
 }
 
 impl RecordingMailer {
@@ -33,6 +34,7 @@ impl RecordingMailer {
             alerts: Mutex::new(Vec::new()),
             seats_alerts: Mutex::new(Vec::new()),
             cart_alerts: Mutex::new(Vec::new()),
+            report_alerts: Mutex::new(Vec::new()),
         }
     }
 }
@@ -62,6 +64,14 @@ impl Mailer for RecordingMailer {
 
     async fn send_cart_alert(&self, email: &str, alert: &CartAlert) -> Result<(), MailError> {
         self.cart_alerts
+            .lock()
+            .unwrap()
+            .push((email.to_string(), alert.clone()));
+        Ok(())
+    }
+
+    async fn send_report_alert(&self, email: &str, alert: &ReportAlert) -> Result<(), MailError> {
+        self.report_alerts
             .lock()
             .unwrap()
             .push((email.to_string(), alert.clone()));

@@ -9,7 +9,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::Router;
 use common::{insert_active_user, RecordingMailer};
-use ovalbot::services::channels::alerts::{CartAlert, MatchAlert, SeatAlert, SeatBrief};
+use ovalbot::services::channels::alerts::{
+    CartAlert, MatchAlert, ReportAlert, SeatAlert, SeatBrief,
+};
 use ovalbot::services::channels::mailer::{
     send_welcome_if_unsent, EmailTemplates, MailError, Mailer, ResendMailer,
 };
@@ -32,6 +34,10 @@ impl Mailer for FailingMailer {
     }
 
     async fn send_cart_alert(&self, _email: &str, _alert: &CartAlert) -> Result<(), MailError> {
+        Err(MailError::Api("boom".to_string()))
+    }
+
+    async fn send_report_alert(&self, _email: &str, _alert: &ReportAlert) -> Result<(), MailError> {
         Err(MailError::Api("boom".to_string()))
     }
 }
@@ -325,4 +331,56 @@ async fn send_cart_alert_failure_subject() {
         "Ajout au panier interrompu : 2/4 places — Stade Rochelais vs AVIRON BAYONNAIS"
     );
     assert!(body["html"].as_str().unwrap().contains("href=\"#\""));
+}
+
+/// POSTs the feedback-report email to the Resend API with the alert's subject,
+/// plain text and the pre-escaped HTML message.
+#[tokio::test]
+async fn send_report_alert_posts_the_admin_email() {
+    let (base_url, captured) = mock_resend(200).await;
+    let alert = ReportAlert {
+        reporter_email: "reporter@example.com".to_string(),
+        kind: "bug".to_string(),
+        message: "Line one <script>alert(1)</script>\nLine two & more".to_string(),
+    };
+
+    mailer(&base_url)
+        .send_report_alert("admin@example.com", &alert)
+        .await
+        .unwrap();
+
+    let body = captured_body(&captured);
+    assert_eq!(body["to"], "admin@example.com");
+    assert_eq!(body["subject"], "New bug report from reporter@example.com");
+    let text = body["text"].as_str().unwrap();
+    assert!(text.contains("New bug report from reporter@example.com"));
+    assert!(text.contains("Line one <script>alert(1)</script>"));
+    let html = body["html"].as_str().unwrap();
+    // The user message is escaped and its newlines become <br>.
+    assert!(html.contains("Bug report"));
+    assert!(html.contains("reporter@example.com"));
+    assert!(!html.contains("<script>alert"));
+    assert!(html.contains("&lt;script&gt;"));
+    assert!(html.contains("<br>Line two &amp; more"));
+}
+
+/// A suggestion is labelled as such in the subject.
+#[tokio::test]
+async fn send_report_alert_labels_suggestions() {
+    let (base_url, captured) = mock_resend(200).await;
+    let alert = ReportAlert {
+        reporter_email: "reporter@example.com".to_string(),
+        kind: "suggestion".to_string(),
+        message: "Add a dark mode".to_string(),
+    };
+
+    mailer(&base_url)
+        .send_report_alert("admin@example.com", &alert)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        captured_body(&captured)["subject"],
+        "New suggestion from reporter@example.com"
+    );
 }

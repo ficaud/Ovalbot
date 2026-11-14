@@ -1,4 +1,7 @@
 import type {
+  FeedbackInput,
+  FeedbackKind,
+  FeedbackReportView,
   MatchView,
   RegisterResult,
   TeamView,
@@ -220,4 +223,23 @@ export async function setShopCredentials(email: string, password: string): Promi
 export async function deleteShopCredentials(): Promise<void> {
   const res = await fetch('/api/shop/credentials', { method: 'DELETE' });
   if (!res.ok) throw await apiError(res, 'Failed to clear shop credentials');
+}
+
+/**
+ * Submits a bug report or an improvement suggestion from the /feedback page.
+ * Returns the created report (the server also emails the admins best-effort).
+ */
+export async function submitFeedback(input: FeedbackInput): Promise<FeedbackReportView> {
+  const res = await fetch('/api/feedback', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input)
+  });
+  if (!res.ok) throw await apiError(res, 'Failed to send the report');
+  return parse<FeedbackReportView>(res);
+}
+
+/** Every stored feedback report, newest first (admin only). */
+export async function listFeedback(): Promise<FeedbackReportView[]> {
+  return parse<FeedbackReportView[]>(await fetch('/api/admin/feedback'));
 }

@@ -18,8 +18,9 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::routes::{
-    admin, auth as auth_routes, calendar as calendar_routes, notifications as notifications_routes,
-    shop as shop_routes, telegram as telegram_routes, tickets as tickets_routes,
+    admin, auth as auth_routes, calendar as calendar_routes, feedback as feedback_routes,
+    notifications as notifications_routes, shop as shop_routes, telegram as telegram_routes,
+    tickets as tickets_routes,
 };
 use crate::services::state::AppState;
 
@@ -29,7 +30,8 @@ use crate::services::state::AppState;
 ///
 /// The route table mirrors the frontend's `/api` proxy — auth/account,
 /// calendar reads, match-notification subscriptions and settings, ticket
-/// requests, Telegram linking/webhook, admin user management.
+/// requests, feedback reports, Telegram linking/webhook, admin user
+/// management.
 ///
 /// # Arguments
 /// * `state` — shared dependencies (pool, mailer, telegram, calendar) handed
@@ -82,6 +84,8 @@ pub fn app(state: AppState) -> Router {
             "/api/shop/credentials",
             put(shop_routes::set_credentials).delete(shop_routes::clear_credentials),
         )
+        .route("/api/feedback", post(feedback_routes::submit_report))
+        .route("/api/admin/feedback", get(feedback_routes::list_reports))
         .route("/api/telegram/webhook", post(telegram_routes::webhook))
         .route("/api/admin/users", get(admin::list_users))
         .route("/api/admin/users/{id}/activate", post(admin::activate_user))

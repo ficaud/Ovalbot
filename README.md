@@ -15,7 +15,7 @@
 </br>
 </div>
 
-OvalBot notify you when there is a TOP14 match that gets a date or for tickets put on resale in the official team's website. Registration is open, gated by a 10-person waitlist during this early phase.
+OvalBot notify you when there is a TOP14 match that gets a date or for tickets put on resale in the official team's website. Registration is open, gated by a 10-person waitlist during this early phase. Active users can also report a bug or send an improvement suggestion from the `/feedback` page (link in the site footer); reports are stored and emailed to the admins, and listed on the admin page.
 
 - Stack: **Rust / Axum** (backend) + **SvelteKit** (frontend) + **SQLite**.
 - Hosted on a VPS
