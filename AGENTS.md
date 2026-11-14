@@ -4,6 +4,18 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-14 — Statistique `seats_seen` sur `MatchView`
+
+- Objectif : donner à l'utilisateur un contexte de revente dans la modale de demande de billets (« N tickets have been detected ») — décision plan : stats de base sans migration (`seats_seen` seulement), affichées dans la modale uniquement ; le service calendar reste DB-free, l'assemblage se fait au niveau route.
+- `src/services/calendar.rs` : nouveau `MatchViewStats { seats_seen: u32 }` ; `MatchView` gagne `stats: Option<MatchViewStats>` (toujours `None` dans `home_matches`, qui reste sync sans accès DB — le champ est rempli ailleurs).
+- `src/services/tickets.rs` : nouveau `seats_seen_counts(pool) -> HashMap<i64, u32>` — `SELECT match_id, COUNT(*) FROM ticket_offers GROUP BY match_id` ; chaque ligne compte une fois (PK `(match_id, pack_id, ticket_id)`), les matches jamais vus sont absents de la map. Placé à côté de `record_offers` (même table).
+- `src/routes/calendar.rs::team_matches` : zippe la liste du calendrier avec la map des counts par `id` LNR (les offers ne sont enregistrées que pour les encounters résolus, donc les clés s'alignent) ; match sans offre → `stats: null`.
+- Frontend : `types.ts` (`MatchStats`, `MatchView.stats: MatchStats | null`) ; `TicketRequestModal.svelte` — le stub `ticketStats = 4` est remplacé par `seatsSeen` dérivé de `match?.stats?.seats_seen ?? null`, le bloc `.statistic` est masqué quand `null` (sinon l'utilisateur croirait que le bot a tourné et n'a rien vu).
+- Tests : `tests/tickets.rs` → 23 (`seats_seen_counts_group_by_match` : map vide, groupement par match, re-scan non compté deux fois via `record_offers`) ; `tests/routes.rs` → 49 (`team_matches_reports_the_bot_seats_seen` : 2 offres sur l'UBB → `seats_seen=2`, Bayonne sans offre → `stats: null`).
+- Docs : CHANGELOG `[Unreleased] / Added`, ce journal. Aucune migration, aucun changement de schéma.
+- Reste ouvert (périmètre plan : étape suivante possible) : `seats_claimed` (`claimed_by IS NOT NULL`), statut « revente ouverte » (`resale_links.last_scan_status`), migration prix (`price_cents` sur `ticket_offers`), badge sur les cartes de match.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace --jobs 2` (21 suites vertes), `npm run check` (0 erreur/0 warning), `npm run build`.
+
 ### 2026-11-13 — Toolchain Rust épinglé à 1.100.0
 
 - Constat : aucune version de Rust n'était épinglée — `.devcontainer/Dockerfile` installait `stable` via rustup, le `Dockerfile` de prod tirait `rust:1-slim`, pas de `rust-toolchain.toml`. Résultat : la CI (dans le devcontainer) suivait `stable` — déjà 1.100.0 depuis le 2026-11-09 — pendant que le poste de dev était resté en 1.94.1 (2026-03-25), soit 6 releases d'écart. Choix utilisateur : épingler la version dans le repo **et** mettre à jour le poste (l'alternative « `stable` partout » est écartée : c'est elle qui a produit la dérive).

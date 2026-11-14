@@ -41,6 +41,9 @@
   // A request that left `pending` can no longer be modified (the backend answers 409).
   let locked = $derived(status !== undefined && status !== 'pending');
 
+  // Seats the bot has seen on this match's resale (null = resale never tracked).
+  let seatsSeen = $derived(match?.stats?.seats_seen ?? null);
+
   let error = $derived.by(() => {
     if (kind === 'notify') {
       // Notification-only: nothing to configure.
@@ -330,6 +333,11 @@
       </div>
     </div>
   </fieldset>
+  {#if seatsSeen !== null}
+    <div class="statistic">
+      <p>Already <b>{seatsSeen} ticket{seatsSeen === 1 ? '' : 's'}</b> have been detected on the resale</p>
+    </div>
+  {/if}
   <div class="actions">
     {#if hasExisting && !locked}
       <button

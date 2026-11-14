@@ -22,6 +22,14 @@ pub struct TeamView {
     pub name: String,
 }
 
+/// Bot-side statistics attached to one [`MatchView`] (assembled by the route
+/// layer from the durable scan tables).
+#[derive(Debug, Serialize)]
+pub struct MatchViewStats {
+    /// Distinct seats the bot has ever seen on this match's resale.
+    pub seats_seen: u32,
+}
+
 /// One match as served by `GET /api/teams/{team}/matches`.
 #[derive(Debug, Serialize)]
 pub struct MatchView {
@@ -39,6 +47,9 @@ pub struct MatchView {
     pub kickoff: String,
     /// `"scheduled"` / `"not scheduled"` / `"finished"` (raw `MatchStatus`).
     pub status: String,
+    /// Resale statistics for this match (`None` = never seen on resale by the
+    /// bot scan).
+    pub stats: Option<MatchViewStats>,
 }
 
 /// In-memory calendar cache: the latest successfully synced `Vec<Event>`,
@@ -146,6 +157,7 @@ impl CalendarService {
                 opponent_id: event.opponent.team_type.id().to_string(),
                 kickoff: event.kickoff,
                 status: status_str(event.status),
+                stats: None,
             })
             .collect()
     }
