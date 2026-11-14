@@ -29,6 +29,12 @@ export interface TeamView {
   name: string;
 }
 
+/** Bot resale statistics for one match (null = never seen on resale by the bot). */
+export interface MatchStats {
+  /** Distinct seats the bot has ever seen on this match's resale. */
+  seats_seen: number;
+}
+
 export interface MatchView {
   id: number;
   team: string;
@@ -37,6 +43,7 @@ export interface MatchView {
   opponent_id: string;
   kickoff: string;
   status: string;
+  stats: MatchStats | null;
 }
 
 export type TicketKind = 'single' | 'duo' | 'group' | 'notify';

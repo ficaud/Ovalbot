@@ -13,6 +13,8 @@ use common::{
 use ovalbot::common::models::{Role, Status};
 use ovalbot::services::channels::mailer::NoopMailer;
 use ovalbot::services::channels::telegram::{create_link_token, NoopTelegram, TelegramConfig};
+use ovalbot::services::tickets::record_offers;
+use parser::core::seat::{Seat, SeatComposition, SeatId, SeatInfo};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use tower::ServiceExt;
@@ -464,6 +466,80 @@ async fn team_matches_returns_empty_then_404(pool: SqlitePool) {
     )
     .await;
     assert_eq!(missing, StatusCode::NOT_FOUND);
+}
+
+/// A minimal resale seat fixture for the statistics seeding (shape mirrors the
+/// parser's output; only the ids reach the statistic).
+fn resale_seat(pack_id: u64, ticket_id: &str) -> Seat {
+    Seat {
+        id: SeatId {
+            pack_id,
+            ticket_id: ticket_id.to_string(),
+        },
+        seat_info: SeatInfo {
+            full_name: format!("Pelouse - Rangée 1, Siège {ticket_id}"),
+            composition: SeatComposition {
+                category: "Pelouse".to_string(),
+                bloc: String::new(),
+                row: "1".to_string(),
+                seat_number: pack_id,
+            },
+        },
+        price: "45.00 €".to_string(),
+    }
+}
+
+/// The matches response carries the bot's resale statistics: matches with
+/// recorded offers expose `seats_seen`, the others expose `stats: null`.
+#[sqlx::test]
+async fn team_matches_reports_the_bot_seats_seen(pool: SqlitePool) {
+    let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    let app = app_with_calendar(
+        pool.clone(),
+        vec![
+            home_event(
+                TeamType::StadeRochelais,
+                TeamType::UnionBordeauxBegles,
+                11864,
+                MatchStatus::Scheduled,
+            ),
+            home_event(
+                TeamType::StadeRochelais,
+                TeamType::AvironBayonnais,
+                11877,
+                MatchStatus::Scheduled,
+            ),
+        ],
+    );
+
+    // Two distinct seats seen on the UBB resale; the Bayonne one stays unseen.
+    record_offers(
+        &pool,
+        11864,
+        "UNION BORDEAUX BÈGLES",
+        "dimanche 25 octobre à 21h05",
+        &[resale_seat(33727, "49255"), resale_seat(33728, "49256")],
+    )
+    .await
+    .unwrap();
+
+    let (status, _, body) = call(
+        &app,
+        request(
+            "GET",
+            "/api/teams/stade-rochelais/matches",
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let matches = json(&body).as_array().unwrap().to_vec();
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0]["id"], 11864);
+    assert_eq!(matches[0]["stats"]["seats_seen"], 2);
+    assert_eq!(matches[1]["id"], 11877);
+    assert_eq!(matches[1]["stats"], serde_json::Value::Null);
 }
 
 // ---- notifications ----

@@ -5,8 +5,8 @@ use ovalbot::common::error::AppError;
 use ovalbot::services::bot::purchases::{claim_seat, claimed_count};
 use ovalbot::services::tickets::{
     accept, fail, list_for_user, mark_purchased, pending_requesters, record_offers, remove, reset,
-    upsert, OfferKey, RemoveOutcome, StatusOutcome, TicketKind, TicketRequestInput,
-    TicketRequestView, TicketStatus,
+    seats_seen_counts, upsert, OfferKey, RemoveOutcome, StatusOutcome, TicketKind,
+    TicketRequestInput, TicketRequestView, TicketStatus,
 };
 use parser::core::seat::{Seat, SeatComposition, SeatId, SeatInfo};
 use sqlx::SqlitePool;
@@ -349,6 +349,40 @@ async fn record_offers_without_seats_is_a_noop(pool: SqlitePool) {
         .await
         .unwrap();
     assert_eq!(stored, 0);
+}
+
+/// The seen-seats statistic groups by match: seats recorded once count
+/// exactly once, whatever the number of scans that re-saw them, and matches
+/// without any recorded offer are absent from the map.
+#[sqlx::test]
+async fn seats_seen_counts_group_by_match(pool: SqlitePool) {
+    let mut counts = seats_seen_counts(&pool).await.unwrap();
+    assert!(counts.is_empty());
+
+    let seats = vec![resale_seat(33727, "49255"), resale_seat(33728, "49256")];
+    record_offers(
+        &pool,
+        11864,
+        "UNION BORDEAUX BÈGLES",
+        "dimanche 25 octobre à 21h05",
+        &seats,
+    )
+    .await
+    .unwrap();
+    record_offers(
+        &pool,
+        11877,
+        "AVIRON BAYONNAIS",
+        "dimanche 8 novembre à 21h05",
+        &[resale_seat(33727, "49255")],
+    )
+    .await
+    .unwrap();
+
+    counts = seats_seen_counts(&pool).await.unwrap();
+    assert_eq!(counts.len(), 2);
+    assert_eq!(counts[&11864], 2);
+    assert_eq!(counts[&11877], 1);
 }
 
 /// A notification-only subscription upserts like the other kinds, with every
