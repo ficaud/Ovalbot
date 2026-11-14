@@ -19,7 +19,7 @@
     <dt>Publisher</dt>
     <dd>Julien Fichet (private individual)</dd>
     <dt>Email</dt>
-    <dd>julien.fichet17@proton.me</dd>
+    <dd>julien@ficaud.xyz</dd>
     <dt>Publication director</dt>
     <dd>Julien Fichet</dd>
   </dl>
@@ -27,11 +27,11 @@
   <h2>Hosting provider</h2>
   <dl>
     <dt>Provider</dt>
-    <dd>Orange SA</dd>
+    <dd>OVH SAS (France)</dd>
     <dt>Address</dt>
-    <dd>111 Quai Du President Roosevelt, Paris, Ile-de-France, 92449</dd>
+    <dd>2 rue Kellermann, 59100 Roubaix, France</dd>
     <dt>Phone number</dt>
-    <dd>33 1 44442222 - www.orange.com</dd>
+    <dd>+33 9 72 10 10 07 - www.ovhcloud.com</dd>
   </dl>
 
   <h2>Nature of the service</h2>

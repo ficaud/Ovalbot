@@ -4,6 +4,11 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-14 — Mentions légales : hébergeur OVH
+
+- La page `/legal-notice` (`frontend/src/routes/legal-notice/+page.svelte`) portait un bloc « Hosting provider » Orange SA (placeholder hérité du premier jet). Remplacé par les mentions officielles d'OVH SAS : 2 rue Kellermann, 59100 Roubaix, France, +33 9 72 10 10 07, www.ovhcloud.com. Aucun autre fichier touché (la privacy policy ne nomme pas d'hébergeur).
+- Verified: `npm run check` (0 erreur/0 warning), `npm run build` (page présente dans le bundle client).
+
 ### 2026-11-14 — Page « Report a bug » (`/feedback`) + carte admin
 
 - Objectif : donner aux utilisateurs un canal de retour (bug report ou suggestion) sans passer par un canal externe. Cadrage validé : comptes **actifs** seulement (extracteur `ActiveUser`), contenu = radio `bug`/`suggestion` + message borné, stockage SQLite + **email best-effort à l'admin**, aucun statut de suivi, pas de pièce jointe, pas de réponse admin (v1).
