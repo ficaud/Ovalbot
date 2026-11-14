@@ -363,6 +363,18 @@ p {
   color: #374151;
 }
 
+/* Feedback report kinds (admin page) */
+
+.badge-bug {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.badge-suggestion {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
 /* Modals ----------------------------------------------------------- */
 
 .modal {

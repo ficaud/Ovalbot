@@ -7,6 +7,7 @@ pub mod accounts;
 pub mod bot;
 pub mod calendar;
 pub mod channels;
+pub mod feedback;
 pub mod notifications;
 pub mod state;
 pub mod tickets;

@@ -40,6 +40,8 @@ pub enum AppError {
     TicketRequestLocked,
     #[error("invalid shop credentials")]
     InvalidShopCredentials,
+    #[error("invalid feedback report")]
+    InvalidFeedback,
     #[error("shop credentials storage unavailable")]
     ShopCredentialsUnavailable,
     #[error("crypto error")]
@@ -100,6 +102,11 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST,
                 "invalid_shop_credentials",
                 "invalid shop credentials",
+            ),
+            AppError::InvalidFeedback => (
+                StatusCode::BAD_REQUEST,
+                "invalid_feedback",
+                "invalid feedback report",
             ),
             AppError::ShopCredentialsUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,

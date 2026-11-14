@@ -4,6 +4,7 @@
 pub mod admin;
 pub mod auth;
 pub mod calendar;
+pub mod feedback;
 pub mod notifications;
 pub mod shop;
 pub mod telegram;
