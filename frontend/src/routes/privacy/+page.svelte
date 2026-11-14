@@ -19,7 +19,7 @@
     <a href="/legal-notice">legal notice</a>).
     <br />
     For any question or to exercise your rights:
-    julien.fichet17@proton.me
+    julien@ficaud.xyz
   </p>
 
   <h2>Data we collect</h2>
@@ -77,7 +77,7 @@
   <h2>Your rights</h2>
   <p>
     You can request access, rectification, erasure, restriction, data portability, or object to the
-    processing of your data by writing to julien.fichet17@proton.me. Deleting your account (by an administrator, upon your request) removes your data, including your
+    processing of your data by writing to julien@ficaud.xyz. Deleting your account (by an administrator, upon your request) removes your data, including your
     notifications and ticket requests. You may also lodge a complaint with the French supervisory
     authority, the <a href="https://www.cnil.fr" rel="noopener noreferrer">CNIL</a>.
   </p>
