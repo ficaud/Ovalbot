@@ -43,6 +43,7 @@
 
   // Seats the bot has seen on this match's resale (null = resale never tracked).
   let seatsSeen = $derived(match?.stats?.seats_seen ?? null);
+  let seatsClaimed = $derived(match?.stats?.seats_claimed ?? null);
 
   let error = $derived.by(() => {
     if (kind === 'notify') {
@@ -336,6 +337,11 @@
   {#if seatsSeen !== null}
     <div class="statistic">
       <p>Already <b>{seatsSeen} ticket{seatsSeen === 1 ? '' : 's'}</b> have been detected on the resale</p>
+      {#if seatsClaimed !== null && seatsClaimed > 0}
+        <p>
+          The bot has claimed <b>{seatsClaimed} seat{seatsClaimed === 1 ? '' : 's'}</b> for you so far
+        </p>
+      {/if}
     </div>
   {/if}
   <div class="actions">

@@ -5,7 +5,7 @@ use ovalbot::common::error::AppError;
 use ovalbot::services::bot::purchases::{claim_seat, claimed_count};
 use ovalbot::services::tickets::{
     accept, fail, list_for_user, mark_purchased, pending_requesters, record_offers, remove, reset,
-    seats_seen_counts, upsert, OfferKey, RemoveOutcome, StatusOutcome, TicketKind,
+    seats_stats_counts, upsert, OfferKey, RemoveOutcome, SeatCounts, StatusOutcome, TicketKind,
     TicketRequestInput, TicketRequestView, TicketStatus,
 };
 use parser::core::seat::{Seat, SeatComposition, SeatId, SeatInfo};
@@ -351,12 +351,14 @@ async fn record_offers_without_seats_is_a_noop(pool: SqlitePool) {
     assert_eq!(stored, 0);
 }
 
-/// The seen-seats statistic groups by match: seats recorded once count
-/// exactly once, whatever the number of scans that re-saw them, and matches
-/// without any recorded offer are absent from the map.
+/// The resale statistics group by match: seats recorded once count exactly
+/// once whatever the number of scans that re-saw them, claimed seats are
+/// counted apart, and matches without any recorded offer are absent from the
+/// map.
 #[sqlx::test]
-async fn seats_seen_counts_group_by_match(pool: SqlitePool) {
-    let mut counts = seats_seen_counts(&pool).await.unwrap();
+async fn seats_stats_counts_group_and_count_claims(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "claimer@example.com").await;
+    let mut counts = seats_stats_counts(&pool).await.unwrap();
     assert!(counts.is_empty());
 
     let seats = vec![resale_seat(33727, "49255"), resale_seat(33728, "49256")];
@@ -379,10 +381,27 @@ async fn seats_seen_counts_group_by_match(pool: SqlitePool) {
     .await
     .unwrap();
 
-    counts = seats_seen_counts(&pool).await.unwrap();
+    // One of the two UBB seats goes to a user's cart.
+    assert!(claim_seat(&pool, 11864, 33727, "49255", user)
+        .await
+        .unwrap());
+
+    counts = seats_stats_counts(&pool).await.unwrap();
     assert_eq!(counts.len(), 2);
-    assert_eq!(counts[&11864], 2);
-    assert_eq!(counts[&11877], 1);
+    assert_eq!(
+        counts[&11864],
+        SeatCounts {
+            seen: 2,
+            claimed: 1
+        }
+    );
+    assert_eq!(
+        counts[&11877],
+        SeatCounts {
+            seen: 1,
+            claimed: 0
+        }
+    );
 }
 
 /// A notification-only subscription upserts like the other kinds, with every
