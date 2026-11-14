@@ -28,6 +28,8 @@ pub struct TeamView {
 pub struct MatchViewStats {
     /// Distinct seats the bot has ever seen on this match's resale.
     pub seats_seen: u32,
+    /// Seats of that listing already taken in a user's cart (`claimed_by`).
+    pub seats_claimed: u32,
 }
 
 /// One match as served by `GET /api/teams/{team}/matches`.

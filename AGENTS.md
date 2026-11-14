@@ -4,6 +4,19 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-14 — Statistique `seats_claimed` dans la modale de demande
+
+- Objectif : compléter la stat `seats_seen` (2026-11-14) par le nombre de places déjà réclamées par le bot (`ticket_offers.claimed_by IS NOT NULL`), affiché dans la modale de demande de billets. Choix utilisateur : un seul bloc statistique en bas de la modale, et la ligne « claimed » masquée tant que le total est 0.
+- `src/services/tickets.rs` : `seats_seen_counts` → `seats_stats_counts(pool) -> HashMap<i64, SeatCounts>` ; nouveau `SeatCounts { seen, claimed }` (Debug/Clone/Copy/PartialEq/Eq) rempli par une seule requête `SELECT match_id, COUNT(*), COUNT(claimed_by) … GROUP BY match_id`. `claimed` retombe à zéro quand un `reset` libère les claims (même `claimed_by = NULL`). Doc mise à jour.
+- `src/routes/calendar.rs::team_matches` : zip de la map unique, remplit `seats_seen` **et** `seats_claimed` (le stub `// let claimed =` et le champ non rempli qui cassaient la compilation sont réglés).
+- `src/services/calendar.rs` : doc de `seats_claimed` reformulée (l'ancienne disait « sent to the user », ce n'est pas ce que compte la requête).
+- Frontend : `types.ts` → `MatchStats.seats_claimed: number` ; `TicketRequestModal.svelte` — les hints dupliqués dans les options Single et Group sont retirés (celui de Group était un `<p>` dans un `<label>`, HTML invalide + clic qui basculait le radio) au profit d'une ligne dans le bloc `.statistic` du bas (« The bot has claimed **N seats** for you so far »), affichée seulement si `seats_claimed > 0`.
+- Fix de compilation pré-existant : le WIP quiet-hours (journal 2026-11-14) laissait un test `checkout_should_run_gates_on_both_conditions` sans la fonction → ajout de `checkout_should_run(cart_enabled, is_quiet_hours)` dans `bot/mod.rs` et usage au site d'appel (condition déjà inline `cart_enabled && !is_quiet_hours`).
+- Tests : `tests/tickets.rs` 23 (`seats_stats_counts_group_and_count_claims` : map vide, `{seen: 2, claimed: 1}` après `claim_seat`, `{seen: 1, claimed: 0}` sans claim) ; `tests/routes.rs` 54 (`team_matches_reports_the_bot_seats_seen` : 1 des 2 seats UBB réclamé → `seats_claimed = 1`, Bayonne toujours `stats: null`).
+- Docs : CHANGELOG `[Unreleased] / Added`, ce journal. Aucune migration, aucune env var nouvelle.
+- Reste ouvert : rafraîchir les stats à l'ouverture de la modale (`invalidateAll`) pour éviter des nombres périmés si le bot réclame des places pendant que la page est ouverte.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --jobs 2` (23 suites vertes, lib 118, tickets 23, routes 54), `npm run check` (0/0), `npm run build`.
+
 ### 2026-11-14 — Mentions légales : hébergeur OVH
 
 - La page `/legal-notice` (`frontend/src/routes/legal-notice/+page.svelte`) portait un bloc « Hosting provider » Orange SA (placeholder hérité du premier jet). Remplacé par les mentions officielles d'OVH SAS : 2 rue Kellermann, 59100 Roubaix, France, +33 9 72 10 10 07, www.ovhcloud.com. Aucun autre fichier touché (la privacy policy ne nomme pas d'hébergeur).

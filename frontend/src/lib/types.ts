@@ -33,6 +33,8 @@ export interface TeamView {
 export interface MatchStats {
   /** Distinct seats the bot has ever seen on this match's resale. */
   seats_seen: number;
+  /** Seats of that listing already taken by a user's cart (claimed by the bot). */
+  seats_claimed: number;
 }
 
 export interface MatchView {

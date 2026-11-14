@@ -36,10 +36,13 @@ pub async fn team_matches(
 
     // Zip the calendar with the durable seat counts: the scan only records
     // offers for encounters resolved to an LNR match id, so the keys align.
-    let seen = tickets::seats_seen_counts(&state.pool).await?;
+    let counts = tickets::seats_stats_counts(&state.pool).await?;
     for view in &mut matches {
-        if let Some(count) = seen.get(&(view.id as i64)) {
-            view.stats = Some(MatchViewStats { seats_seen: *count });
+        if let Some(counts) = counts.get(&(view.id as i64)) {
+            view.stats = Some(MatchViewStats {
+                seats_seen: counts.seen,
+                seats_claimed: counts.claimed,
+            });
         }
     }
     Ok(Json(matches))

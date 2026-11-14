@@ -614,27 +614,48 @@ pub async fn record_offers(
     Ok(fresh)
 }
 
-/// Counts the resale seats ever recorded per match, keyed by LNR match id —
-/// the "N tickets have been detected" statistic served to the frontend.
+/// Resale-seat statistics of one match, served to the frontend modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeatCounts {
+    /// Distinct seats the bot has ever seen on this match's resale.
+    pub seen: u32,
+    /// Seats of that listing already taken by a user's cart (`claimed_by`).
+    pub claimed: u32,
+}
+
+/// Counts the resale seats recorded per match, keyed by LNR match id — the
+/// "N tickets have been detected" and "M claimed for you" statistics served
+/// to the frontend.
 ///
 /// Every distinct `(match_id, pack_id, ticket_id)` row counts exactly once
 /// (the `ticket_offers` primary key), whatever the number of scans that saw
-/// it. Matches never seen on resale are simply absent from the map.
+/// it. `claimed` counts the rows whose `claimed_by` is set (a `reset` clears
+/// it, so a released seat stops being claimed). Matches never seen on resale
+/// are simply absent from the map.
 ///
 /// # Returns
 /// One entry per match having at least one recorded seat offer.
 ///
 /// # Errors
 /// `AppError::Sqlx` on query failure.
-pub async fn seats_seen_counts(pool: &SqlitePool) -> Result<HashMap<i64, u32>, AppError> {
-    let rows = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT match_id, COUNT(*) FROM ticket_offers GROUP BY match_id",
+pub async fn seats_stats_counts(pool: &SqlitePool) -> Result<HashMap<i64, SeatCounts>, AppError> {
+    let rows = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT match_id, COUNT(*), COUNT(claimed_by) \
+         FROM ticket_offers GROUP BY match_id",
     )
     .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(match_id, count)| (match_id, count as u32))
+        .map(|(match_id, seen, claimed)| {
+            (
+                match_id,
+                SeatCounts {
+                    seen: seen as u32,
+                    claimed: claimed as u32,
+                },
+            )
+        })
         .collect())
 }
 

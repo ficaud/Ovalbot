@@ -11,6 +11,7 @@ use common::{
     test_state, test_state_with,
 };
 use ovalbot::common::models::{Role, Status};
+use ovalbot::services::bot::purchases::claim_seat;
 use ovalbot::services::channels::mailer::NoopMailer;
 use ovalbot::services::channels::telegram::{create_link_token, NoopTelegram, TelegramConfig};
 use ovalbot::services::tickets::record_offers;
@@ -490,10 +491,12 @@ fn resale_seat(pack_id: u64, ticket_id: &str) -> Seat {
 }
 
 /// The matches response carries the bot's resale statistics: matches with
-/// recorded offers expose `seats_seen`, the others expose `stats: null`.
+/// recorded offers expose `seats_seen` and `seats_claimed`, the others expose
+/// `stats: null`.
 #[sqlx::test]
 async fn team_matches_reports_the_bot_seats_seen(pool: SqlitePool) {
     let cookie = session_cookie(&pool, Status::Active, Role::User).await;
+    let claimer = insert_active_user(&pool, "claimer@example.com").await;
     let app = app_with_calendar(
         pool.clone(),
         vec![
@@ -512,7 +515,8 @@ async fn team_matches_reports_the_bot_seats_seen(pool: SqlitePool) {
         ],
     );
 
-    // Two distinct seats seen on the UBB resale; the Bayonne one stays unseen.
+    // Two distinct seats seen on the UBB resale, one of them claimed; the
+    // Bayonne match stays unseen.
     record_offers(
         &pool,
         11864,
@@ -522,6 +526,9 @@ async fn team_matches_reports_the_bot_seats_seen(pool: SqlitePool) {
     )
     .await
     .unwrap();
+    assert!(claim_seat(&pool, 11864, 33727, "49255", claimer)
+        .await
+        .unwrap());
 
     let (status, _, body) = call(
         &app,
@@ -538,6 +545,7 @@ async fn team_matches_reports_the_bot_seats_seen(pool: SqlitePool) {
     assert_eq!(matches.len(), 2);
     assert_eq!(matches[0]["id"], 11864);
     assert_eq!(matches[0]["stats"]["seats_seen"], 2);
+    assert_eq!(matches[0]["stats"]["seats_claimed"], 1);
     assert_eq!(matches[1]["id"], 11877);
     assert_eq!(matches[1]["stats"], serde_json::Value::Null);
 }
