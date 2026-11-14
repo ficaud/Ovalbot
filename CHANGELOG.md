@@ -5,12 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-11-22
+
+### Added
+- `tickets/bot` : the ticket requests of finished matches are expired
+- `services/rate_limit` : brute-force guard on the public auth endpoints —
+  `/api/register` is limited to 3 attempts per hour per client and
+  `/api/login` to 5 refused credentials per 15 minutes (a success resets the
+  count).
+- `feedback` : the `/feedback` page (link in the site footer) lets active
+  users submit a bug report or an improvement suggestion.
+- `calendar` : `GET /api/teams/{team}/matches` now enriches each `MatchView`
+  with the bot's resale statistics — `stats.seats_seen` (distinct seats ever
+  seen on the match's resale, from `ticket_offers`; `null` when never seen)
+  and `stats.seats_claimed` (seats of that listing already taken in a user's
+  cart) — displayed in the ticket request modal.
+- `.devcontainer/devbox` : personal docker image with generic tools
+- `bot/purchases` : the matcher now serves `duo` requests.
+- `telegram` : admin user can set a bot token and a chat id that will
+  broadcast all its notification into a telegram channel if he want to
+- `bot/checkout` : the `resale churn` log now carries the exact `SeatGone`
+
+### Changed
+- `deps` : bump `reqwest` 0.12 → 0.13.5 (`rustls-tls` → `rustls`, plus the
+  `form` feature needed by the Telegram `setWebhook` call), `jiff` 0.2 → 1.0
+  (`Timestamp::to_zoned` → `to_zoned_datetime`) and `aes-gcm` 0.10 → 0.11
+  (`Aes256Gcm::new` now takes the key from `&[u8; 32]`).
+- `frontend` : the resale statistics shown in the ticket request modal
+  (`seats_seen` / `seats_claimed`) are silently refetched when the modal
+  opens, so the numbers are no longer stale if the bot claimed seats while
+  the page was open.
+- `toolchain` : Rust pinned to `1.100.0` in `rust-toolchain.toml`, in the dev
+  container image and in the production build image (`rust:1.100-slim`).
+- `bot/parser` : drop the unused `openssl` dependency and move the test-only
+  `flate2` one to `[dev-dependencies]` (new cargo `unused_dependencies` lint).
+- `frontend/` : bump @sveltejs/adapter-static from 4.0.0 to 4.0.1 in /frontend
+- `frontend/legal-notice, frontend/privacy` : changed contact email and
+  hosting provider (from personal RPI to OVH hosted VPS).
+- `channels/alerts` : alert's type division in several files to make reading
+  and maintaining easier.
 
 ### Fixed
-
+- `bot/checkout` : a rejected add-to-cart now logs a fingerprint of the AJAX
+  response (size, pack id, success markers, short snippet) so a false negative
+  from `pack_added` can be diagnosed from the normal logs.
+- `bot/scan` : the purchase phase now runs **before** the seats alerts.
+- `telegram` : all Bot API calls are bounded by a 5 s total / 3 s connect
+  timeout and log their elapsed time when slow, instead of waiting indefinitely.
 - `bot/purchase` : identify Pelouse seats by their unit price (`15.00 €`)
   instead of the category label.
+- `quiet_hours` : Hours windows detection to disable the purchase function
+  during the night so that the bot can perform checkout when user is asleep.
+- `ci` : setup explicit DNS so that pull ubuntu packets is working.
 
 ## [1.0.0] - 2026-11-04
 
