@@ -110,6 +110,14 @@
     dialogEl?.close();
   }
 
+  // Swaps in a refetched MatchView (fresh resale statistics). Guarded on the
+  // match id so a late response cannot clobber a match opened since.
+  export function updateMatch(next: MatchView) {
+    if (match?.id === next.id) {
+      match = next;
+    }
+  }
+
   async function save() {
     if (!match || error !== '' || saving || removing || locked) return;
     saving = true;

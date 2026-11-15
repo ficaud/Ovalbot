@@ -4,6 +4,14 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-15 — Rafraîchissement des stats revente à l'ouverture de la modale
+
+- Objectif (journal 2026-11-14 « Reste ouvert ») : éviter des nombres périmés dans la modale de demande si le bot réclame des places pendant que la page est ouverte. Ajustement par rapport au plan initial : les matches sont dans un état **local** de `+page.svelte` (chargés par `getTeamMatches`, pas dans le `load` du `+page.ts`), donc `invalidateAll()` n'aurait rien rechargé — le re-fetch passe par l'API déjà en place.
+- `frontend/src/routes/+page.svelte` : nouveau `openRequest(match)` câblé sur le bouton robot — ouvre la modale immédiatement avec les données en main, puis re-fetch silencieux de `getTeamMatches(selected)` (sans passer par `loading`, pas de flash « Loading… ») et remplacement du `matches` ; le `MatchView` rafraîchi est poussé dans la modale via `updateMatch`. Échec réseau ignoré (les valeurs déjà affichées restent).
+- `frontend/src/lib/components/TicketRequestModal.svelte` : nouveau `export function updateMatch(next)` — garde sur `match?.id === next.id` pour qu'une réponse tardive ne puisse pas écraser un autre match ouvert entre-temps. `seatsSeen`/`seatsClaimed` sont des `$derived` de `match`, la mise à jour est réactive sans autre changement.
+- Tests : aucun framework de test frontend en place — `npm run check` (0/0) et `npm run build` verts.
+- Docs : CHANGELOG `[Unreleased]` (commit dédié, hors commit code), ce journal. Aucun changement backend.
+
 ### 2026-11-14 — Mode Duo : détection des paires adjacentes fraîches
 
 - Objectif : rendre le mode Duo sélectionnable dans la modale de demande et servi par le matcher d'achat. Cadrage utilisateur : une seule paire maximum, budget **par place**, détection sur des tickets **frais** du même pack, validée par la **parité** des numéros de siège (voisins = `1 & 3` ou `2 & 4`, rang et bloc identiques), tri frais d'abord puis prix par place. Aucune migration (les CHECK de `0012` autorisent déjà `kind = 'duo'`, `max_price_cents` seul).
