@@ -46,6 +46,8 @@ pub enum AppError {
     ShopCredentialsUnavailable,
     #[error("crypto error")]
     Crypto(#[from] crate::common::crypto::CryptoError),
+    #[error("too many attempts")]
+    TooManyAttempts(u64),
     #[error("telegram unavailable")]
     TelegramUnavailable,
 }
@@ -67,6 +69,11 @@ impl IntoResponse for AppError {
             ),
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden", "forbidden"),
             AppError::NotFound => (StatusCode::NOT_FOUND, "not_found", "not found"),
+            AppError::TooManyAttempts(_) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_attempts",
+                "too many attempts, try again later",
+            ),
             AppError::TelegramUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "telegram_unavailable",
@@ -123,6 +130,15 @@ impl IntoResponse for AppError {
             ),
         };
         let body = Json(json!({ "error": code, "message": message }));
-        (status, body).into_response()
+        let mut response = (status, body).into_response();
+        // The rate limiter's variant carries its own wait hint (seconds).
+        if let AppError::TooManyAttempts(retry_after) = self {
+            if let Ok(value) = retry_after.to_string().parse() {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, value);
+            }
+        }
+        response
     }
 }

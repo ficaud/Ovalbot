@@ -52,6 +52,8 @@ fn state(pool: SqlitePool, mailer: Arc<dyn Mailer>, telegram: Arc<dyn Telegram>)
         cart_enabled: false,
         cart_dry_run: true,
         cart_shop: Arc::new(ovalbot::services::bot::checkout::RealCartShop),
+        rate_limiter: Arc::new(ovalbot::services::rate_limit::RateLimiter::new()),
+        proxy_trusted: false,
     }
 }
 

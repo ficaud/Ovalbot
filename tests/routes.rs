@@ -225,6 +225,122 @@ async fn login_rejects_bad_credentials(pool: SqlitePool) {
 }
 
 #[sqlx::test]
+async fn register_is_rate_limited_per_ip(pool: SqlitePool) {
+    let router = app(pool);
+    let attempt = |email: &str| {
+        request(
+            "POST",
+            "/api/register",
+            None,
+            Some(json!({ "email": email, "password": "password123" })),
+        )
+    };
+
+    // Three attempts exhaust the register quota (outcomes do not matter).
+    for email in ["a@example.com", "b@example.com", "c@example.com"] {
+        let (status, _, _) = call(&router, attempt(email)).await;
+        assert_ne!(status, StatusCode::TOO_MANY_REQUESTS, "{email}");
+    }
+
+    let (status, headers, body) = call(&router, attempt("d@example.com")).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(json(&body)["error"], "too_many_attempts");
+    let retry_after = headers.get(header::RETRY_AFTER).unwrap().to_str().unwrap();
+    assert!(retry_after.parse::<u64>().unwrap() > 0);
+}
+
+#[sqlx::test]
+async fn login_is_rate_limited_after_five_refusals(pool: SqlitePool) {
+    insert_user_with_password(&pool, "a@example.com", "password123").await;
+    let router = app(pool);
+    let attempt = || {
+        request(
+            "POST",
+            "/api/login",
+            None,
+            Some(json!({ "email": "a@example.com", "password": "wrongpass" })),
+        )
+    };
+
+    // Five refusals are still answered 401; the sixth is answered 429 before
+    // any credential check.
+    for _ in 0..5 {
+        let (status, _, _) = call(&router, attempt()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, headers, body) = call(&router, attempt()).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(json(&body)["error"], "too_many_attempts");
+    let retry_after = headers.get(header::RETRY_AFTER).unwrap().to_str().unwrap();
+    assert!(retry_after.parse::<u64>().unwrap() > 0);
+}
+
+#[sqlx::test]
+async fn a_successful_login_resets_the_refusal_count(pool: SqlitePool) {
+    insert_user_with_password(&pool, "a@example.com", "password123").await;
+    let router = app(pool);
+    let refused = || {
+        request(
+            "POST",
+            "/api/login",
+            None,
+            Some(json!({ "email": "a@example.com", "password": "wrongpass" })),
+        )
+    };
+    let accepted = || {
+        request(
+            "POST",
+            "/api/login",
+            None,
+            Some(json!({ "email": "a@example.com", "password": "password123" })),
+        )
+    };
+
+    // Four refusals, then a success clears the count: the next four refusals
+    // stay 401 instead of tripping the 5-in-a-window lockout.
+    for _ in 0..4 {
+        let (status, _, _) = call(&router, refused()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, _, _) = call(&router, accepted()).await;
+    assert_eq!(status, StatusCode::OK);
+    for _ in 0..4 {
+        let (status, _, _) = call(&router, refused()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[sqlx::test]
+async fn trusted_proxy_keys_the_limiter_on_forwarded_for(pool: SqlitePool) {
+    // With a trusted proxy each X-Forwarded-For value keeps its own quota:
+    // exhausting one IP's register window still leaves the other free,
+    // although the socket key is the same ("unknown") for both.
+    let mut state = test_state(pool);
+    state.proxy_trusted = true;
+    let router = ovalbot::app(state);
+    let attempt = |email: &str, ip: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/api/register")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("X-Forwarded-For", ip)
+            .body(Body::from(
+                serde_json::to_vec(&json!({ "email": email, "password": "password123" })).unwrap(),
+            ))
+            .unwrap()
+    };
+
+    for email in ["a@example.com", "b@example.com", "c@example.com"] {
+        let (status, _, _) = call(&router, attempt(email, "198.51.100.7")).await;
+        assert_eq!(status, StatusCode::CREATED, "{email}");
+    }
+    let (status, _, _) = call(&router, attempt("d@example.com", "198.51.100.7")).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let (status, _, _) = call(&router, attempt("e@example.com", "198.51.100.9")).await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[sqlx::test]
 async fn me_requires_session(pool: SqlitePool) {
     let (status, _, _) = call(&app(pool), request("GET", "/api/me", None, None)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

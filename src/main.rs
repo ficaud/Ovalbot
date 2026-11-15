@@ -11,6 +11,7 @@ use ovalbot::services::calendar::CalendarService;
 use ovalbot::services::channels::mailer;
 use ovalbot::services::channels::telegram;
 use ovalbot::services::notifications;
+use ovalbot::services::rate_limit::RateLimiter;
 use ovalbot::services::state::AppState;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
@@ -123,7 +124,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cart_enabled,
         cart_dry_run,
         cart_shop: Arc::new(RealCartShop),
+        rate_limiter: Arc::new(RateLimiter::new()),
+        proxy_trusted: ovalbot::services::bot::env_flag("PROXY_TRUSTED", false),
     };
+    // Periodic cleanup of the rate limiter's stale client keys.
+    RateLimiter::spawn_sweeper(state.rate_limiter.clone());
 
     // Register the Telegram webhook (best-effort, no-op when disabled)
     telegram::register_webhook().await;
@@ -149,8 +154,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start the HTTP server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     tracing::info!("listening on {}", listener.local_addr()?);
-    // serve the app
-    axum::serve(listener, app(state)).await?;
+    // serve the app (connect info is what identifies rate-limited clients)
+    axum::serve(
+        listener,
+        app(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 

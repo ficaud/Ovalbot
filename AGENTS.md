@@ -4,6 +4,17 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-15 — Rate-limiting sur `/api/register` et `/api/login`
+
+- Objectif (cadrage utilisateur) : garde anti-force-brute / anti-abus de création de comptes avant la mise en ligne. Choix validés : **login = 5 échecs / 15 min** (échecs seulement, un succès remet le compteur), **register = 3 requêtes / h** (toutes les tentatives), IP = socket peer par défaut, `X-Forwarded-For` uniquement si `PROXY_TRUSTED=true` (proxy de confiance), réponse `429` + `Retry-After`.
+- `src/services/rate_limit.rs` (nouveau) : `RateLimiter` in-memory à fenêtre glissante — slots par policy **et** par clé client (`Kind { Login, Register }`, pas de discrimination par valeur de `limit`, piège du premier jet corrigé), horloge injectable (`with_now`) pour des tests sans sleep ; API `check` (lecture seule, retourne le `retry_after` en s), `record`, `admit` (check+record), `clear` (succès du login), `sweep` + `spawn_sweeper` (tokio, toutes les 10 min, purge des clés abandonnées — le sweep ne retire une clé que si **les deux** slots sont vides). Les requêtes refusées ne sont pas enregistrées : le martelage ne prolonge pas le blocage.
+- `src/common/error.rs` : `AppError::TooManyAttempts(u64)` → `429 too_many_attempts` avec en-tête `Retry-After`.
+- `src/routes/auth.rs` : extracteurs `HeaderMap` + `Option<Extension<ConnectInfo<SocketAddr>>>` (present en prod via `into_make_service_with_connect_info`, `None` dans les tests → clé `"unknown"`) + helper `client_key` ; `register` fait `admit` avant tout (tentative invalide comptée), `login` fait `check` puis `record` sur les échecs de credentials (email invalide → 400 non compté) et `clear` au succès. La recherche + le `verify_password` sont fusionnés en un `filter` : une seule branche d'échec enregistre.
+- `src/services/state.rs` : `rate_limiter: Arc<RateLimiter>` + `proxy_trusted: bool` ; `main.rs` les construit (`env_flag("PROXY_TRUSTED", false)`) et lance le sweeper ; `axum::serve` passe à `into_make_service_with_connect_info::<SocketAddr>` (sinon pas de connect info → tous les clients partagés).
+- Tests : `rate_limit.rs` unit 6 (admit/limite/re-lecture, fenêtre glissante, `check` sans enregistrement, `clear`, isolation clés+policy, sweep avec un cas register-only) ; `tests/routes.rs` 54 → 58 (429 register après 3, 429 login après 5 refus, succès qui remet le compteur, keying XFF avec proxy de confiance — 3 sur l'IP A puis 429, IP B toujours libre). Gotchas : `HeaderMap` vient de `axum::http::header`, pas de `axum::extract` ; `Extension<T>` implémente `OptionalFromRequestParts` (pas `ConnectInfo` lui-même) ; clippy exige un `Default` sur `RateLimiter`.
+- Docs : README (row `PROXY_TRUSTED`), `docker-compose.yml`, `.env.example`, CHANGELOG `[Unreleased] / Added` (commit dédié), ce journal. Aucune migration, aucun changement de frontend.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace --jobs 2` (lib 136, routes 58, toutes suites vertes).
+
 ### 2026-11-15 — Rafraîchissement des stats revente à l'ouverture de la modale
 
 - Objectif (journal 2026-11-14 « Reste ouvert ») : éviter des nombres périmés dans la modale de demande si le bot réclame des places pendant que la page est ouverte. Ajustement par rapport au plan initial : les matches sont dans un état **local** de `+page.svelte` (chargés par `getTeamMatches`, pas dans le `load` du `+page.ts`), donc `invalidateAll()` n'aurait rien rechargé — le re-fetch passe par l'API déjà en place.

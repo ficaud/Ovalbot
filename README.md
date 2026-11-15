@@ -157,6 +157,7 @@ The backend reads these environment variables:
 | `CHECKOUT_DUMP_DIR` | *(empty)* | When set, a failed add dumps the resale page and/or the AJAX response to this directory (diagnostic only, nothing is written by default — see below). |
 | `QUIET_HOURS_START` | 23*60 | Start of the quiet hours window (when there is not purcahse attempt from the bot) |
 | `QUIET_HOURS_END` | 8*60 | End of the quiet hours window (when there is not purcahse attempt from the bot) |
+| `PROXY_TRUSTED` | `false` | Set `true` only when the app sits behind a reverse proxy you control: the rate limiter (`/api/register`, `/api/login`) then identifies clients by the first `X-Forwarded-For` entry instead of the socket peer IP (the proxy's own address). |
 
 With `CART_ENABLED=true`, a request is only closed as `failed` on a refused shop
 login. Seat-gone, waiting queue, network, expired-form and missing add-to-cart
