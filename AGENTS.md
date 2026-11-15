@@ -4,6 +4,15 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-15 — Expiration des demandes de matchs finis
+
+- Objectif (P0) : `TicketStatus::Expired` existait dans le CHECK de `0009` mais n'était jamais posé — les demandes de matchs passés restaient `pending` à vie (modale « Pay within the 20-minute window » des mois après, pool du matcher pollué par des quotas irréalisables). Cadrage utilisateur : expiration au tick, libération des claims, purge des notifications, pas de notification utilisateur (v1). Ajustement par rapport au plan initial : les matchs finis sont identifiés par `MatchStatus::Finished` dans la snapshot calendrier (pas de parsing de date — le `kickoff` LNR n'a pas d'année), et le filet couvre aussi `accepted`/`failed` (panier jamais payé / erreur terminale : tous deux sans objet après le match).
+- `src/services/tickets.rs` : nouveau `expire_stale(pool, finished_match_ids) -> usize` — transaction : `UPDATE ticket_requests SET status='expired' WHERE status IN ('pending','accepted','failed') AND match_id IN (...) RETURNING (user_id, match_id)`, libération des `ticket_offers.claimed_by` du match, purge des `match_notifications` (un match joué ne repassera plus à `Scheduled`) ; `purchased` préservé comme trace d'achat ; idempotent par construction. Liste des ids construite avec `sqlx::QueryBuilder` (binds un à un — le `format!` initial est refusé par le garde anti-injection de sqlx 0.9 ; `QueryBuilder<Sqlite>` sans paramètre de lifetime dans cette version). Retour précoce `Ok(0)` sur liste vide (pas de `IN ()` invalide).
+- `src/services/bot/mod.rs` : nouveau passage `expire_finished_requests(state)` dans la boucle, entre discovery et poll — filtre `MatchStatus::Finished` sur la snapshot, no-op quand la liste est vide, `warn` sans bloquer la boucle en cas d'échec SQL.
+- Tests : `tests/tickets.rs` 23 → 25 — `expire_stale_expires_and_releases_claims` (4 utilisateurs sur le match fini : pending/accepted/failed → expired, purchased préservé, demande d'un autre match intacte, claim libéré + re-claim possible, abonnement `match_notifications` purgé) et `expire_stale_is_idempotent` (2ᵉ passe 0, liste vide 0). Le wrapper de boucle (filtre trivial sur la snapshot) n'est pas testé directement.
+- Docs : module header `tickets.rs` (API `expire_stale`), CHANGELOG `[Unreleased] / Added` (commit dédié), ce journal. Aucune migration (le CHECK autorise déjà `expired` avec colonnes payload), aucune env var, aucun changement frontend.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace --jobs 2` (toutes suites vertes, tickets 25).
+
 ### 2026-11-15 — Rate-limiting sur `/api/register` et `/api/login`
 
 - Objectif (cadrage utilisateur) : garde anti-force-brute / anti-abus de création de comptes avant la mise en ligne. Choix validés : **login = 5 échecs / 15 min** (échecs seulement, un succès remet le compteur), **register = 3 requêtes / h** (toutes les tentatives), IP = socket peer par défaut, `X-Forwarded-For` uniquement si `PROXY_TRUSTED=true` (proxy de confiance), réponse `429` + `Retry-After`.
