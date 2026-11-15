@@ -4,6 +4,14 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-15 — Rate limiter : `CF-Connecting-IP` prioritaire (tunnel Cloudflare)
+
+- Constat sur le commit `6e6ffed` : derrière un tunnel Cloudflare, `X-Forwarded-For` n'est **pas** fiable — l'edge CF **ajoute** la vraie IP à la fin du header sans écraser ce que le client a envoyé en tête, donc un `X-Forwarded-For: 1.2.3.4` forgé transite sous la forme `1.2.3.4, <vraie-ip>` et la 1ʳᵉ entrée (lue par `client_key`) est une valeur choisie par l'attaquant (contournement du limiter + empoisonnement du bucket d'une IP innocente). La source fiable est `CF-Connecting-IP` : écrit/écrasé par l'edge CF avec la vraie IP, inforgeable depuis l'extérieur, transmis tel quel par `cloudflared` (config réelle du site : tunnel CF déjà en place sur le VPS).
+- `src/routes/auth.rs` : `client_key` réordonné sous `proxy_trusted` — 1. `CF-Connecting-IP` (trim, non-vide), 2. première entrée `X-Forwarded-For` (Nginx/Caddy classique qui écrase le header), 3. IP socket, 4. `"unknown"` (tests sans connect info). Doc du helper et doc `AppState::proxy_trusted` alignées. Le limiter lui-même (`rate_limit.rs`) n'est pas touché — seul le choix de la clé change.
+- Tests : `tests/routes.rs` 58 → 59 — `forged_forwarded_for_loses_to_connecting_ip` : les deux requêtes portent le **même** `X-Forwarded-For: 9.9.9.9` forgé, mais les `CF-Connecting-IP` différents gardent des quotas séparés (3 OK sur CF-IP A, 429 sur A, 201 sur B) — preuve que le XFF est ignoré au profit du CF header. Le test XFF existant reste valide comme chemin de fallback (pas de `CF-Connecting-IP`).
+- Docs : README (row `PROXY_TRUSTED` reformulée), `.env.example`, CHANGELOG `[Unreleased]` (commit dédié), ce journal.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace --jobs 2` (routes 59).
+
 ### 2026-11-15 — Pages légales : plus aucun placeholder
 
 - Constat : le point P1 « remplir les placeholders légaux » était déjà traité en amont — `/legal-notice` (éditeur Julien Fichet, personne physique, email `julien@ficaud.xyz`, OVH SAS 2 rue Kellermann Roubaix), `/privacy` et `/terms` ne contiennent plus aucun `<mark class="placeholder">` ni note draft (l'alerte d'ouverture avait été retirée lors des commits `408885a` / `fec11ca`).
