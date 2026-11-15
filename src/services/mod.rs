@@ -9,5 +9,6 @@ pub mod calendar;
 pub mod channels;
 pub mod feedback;
 pub mod notifications;
+pub mod rate_limit;
 pub mod state;
 pub mod tickets;

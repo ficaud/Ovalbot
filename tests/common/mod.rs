@@ -379,6 +379,8 @@ pub fn build_state(
         cart_enabled: false,
         cart_dry_run: true,
         cart_shop: Arc::new(RealCartShop),
+        rate_limiter: Arc::new(ovalbot::services::rate_limit::RateLimiter::new()),
+        proxy_trusted: false,
     }
 }
 

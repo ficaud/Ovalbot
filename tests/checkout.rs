@@ -141,6 +141,8 @@ fn state(
         cart_enabled: true,
         cart_dry_run: dry_run,
         cart_shop: shop,
+        rate_limiter: Arc::new(ovalbot::services::rate_limit::RateLimiter::new()),
+        proxy_trusted: false,
     }
 }
 
