@@ -95,6 +95,20 @@
     }
   }
 
+  // Opens the ticket request modal, then silently refetches the match list so
+  // the modal's resale statistics (seats seen / claimed) are not stale if the
+  // bot claimed seats while the page was open.
+  async function openRequest(match: MatchView) {
+    requestModal?.open(match, requests[match.id] ?? null, statuses[match.id]);
+    try {
+      matches = await getTeamMatches(selected);
+      const updated = matches.find((m) => m.id === match.id);
+      if (updated) requestModal?.updateMatch(updated);
+    } catch {
+      // Keep the values already shown rather than blanking the modal.
+    }
+  }
+
   async function toggleNotification(match: MatchView) {
     if (pending.includes(match.id)) return;
     pending = [...pending, match.id];
@@ -198,8 +212,7 @@
                   title={isRequestable(match)
                     ? 'Ticket request'
                     : BOT_UNAVAILABLE_TITLE}
-                  onclick={() =>
-                    requestModal?.open(match, requests[match.id] ?? null, statuses[match.id])}
+                  onclick={() => openRequest(match)}
                 >
                   <svg
                     viewBox="0 0 24 24"
