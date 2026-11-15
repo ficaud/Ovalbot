@@ -4,6 +4,13 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-15 — Pages légales : plus aucun placeholder
+
+- Constat : le point P1 « remplir les placeholders légaux » était déjà traité en amont — `/legal-notice` (éditeur Julien Fichet, personne physique, email `julien@ficaud.xyz`, OVH SAS 2 rue Kellermann Roubaix), `/privacy` et `/terms` ne contiennent plus aucun `<mark class="placeholder">` ni note draft (l'alerte d'ouverture avait été retirée lors des commits `408885a` / `fec11ca`).
+- Restait une scorie : le bloc CSS `.legal :global(mark.placeholder)` (surligneur jaune des valeurs à remplir) dans `LegalPage.svelte`, orphelin — aucun `<mark>` dans tout le frontend. Supprimé.
+- Verified: `npm run check` (0/0), `npm run build` vert.
+- Docs : CHANGELOG `[Unreleased]` (commit dédié), ce journal.
+
 ### 2026-11-15 — Expiration des demandes de matchs finis
 
 - Objectif (P0) : `TicketStatus::Expired` existait dans le CHECK de `0009` mais n'était jamais posé — les demandes de matchs passés restaient `pending` à vie (modale « Pay within the 20-minute window » des mois après, pool du matcher pollué par des quotas irréalisables). Cadrage utilisateur : expiration au tick, libération des claims, purge des notifications, pas de notification utilisateur (v1). Ajustement par rapport au plan initial : les matchs finis sont identifiés par `MatchStatus::Finished` dans la snapshot calendrier (pas de parsing de date — le `kickoff` LNR n'a pas d'année), et le filet couvre aussi `accepted`/`failed` (panier jamais payé / erreur terminale : tous deux sans objet après le match).

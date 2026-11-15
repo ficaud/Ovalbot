@@ -58,12 +58,4 @@
   .legal :global(dd) {
     margin: 2px 0 0;
   }
-
-  .legal :global(mark.placeholder) {
-    background: var(--yellow, #ffd500);
-    color: var(--black, #0b0b0b);
-    padding: 1px 5px;
-    border-radius: 6px;
-    font-weight: 600;
-  }
 </style>
