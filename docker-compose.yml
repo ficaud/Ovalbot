@@ -21,6 +21,7 @@ services:
       BOT_HOME_REFRESH_SECS: ${BOT_HOME_REFRESH_SECS:-60}
       CART_ENABLED: ${CART_ENABLED:-false}
       CART_DRY_RUN: ${CART_DRY_RUN:-true}
+      PROXY_TRUSTED: ${PROXY_TRUSTED:-false}
       RUST_LOG: ${RUST_LOG:-ovalbot=info}
     logging:
       driver: "json-file"

@@ -10,6 +10,7 @@ use crate::services::bot::checkout::CartShop;
 use crate::services::calendar::CalendarService;
 use crate::services::channels::mailer::Mailer;
 use crate::services::channels::telegram::{Telegram, TelegramConfig};
+use crate::services::rate_limit::RateLimiter;
 
 /// All dependencies of the app, cheap-to-clone (pools and `Arc`s only).
 ///
@@ -41,4 +42,11 @@ pub struct AppState {
     /// Shop session factory the orchestrator drives (`RealCartShop` in
     /// production, fakes in tests).
     pub cart_shop: Arc<dyn CartShop>,
+    /// Brute-force guard for the public auth endpoints (`register` / `login`)
+    /// — in-memory sliding windows keyed by client IP.
+    pub rate_limiter: Arc<RateLimiter>,
+    /// `PROXY_TRUSTED` — when `true`, the rate limiter identifies clients by
+    /// the first `X-Forwarded-For` entry (the app runs behind a reverse
+    /// proxy); otherwise the socket peer IP is used.
+    pub proxy_trusted: bool,
 }
