@@ -22,15 +22,23 @@ use crate::services::state::AppState;
 
 const SESSION_DAYS: i64 = 30;
 
-/// Client key feeding the rate limiter: the socket peer IP by default, the
-/// first `X-Forwarded-For` entry when the app runs behind a trusted reverse
-/// proxy (`PROXY_TRUSTED=true`), and `"unknown"` when no connect info exists
-/// (tests drive the router without a listener).
+/// Client key feeding the rate limiter. Priority, behind a trusted reverse
+/// proxy (`PROXY_TRUSTED=true`):
+///
+/// 1. `CF-Connecting-IP` — Cloudflare (the site's tunnel) overwrites this
+///    header with the real visitor IP, so a forged `X-Forwarded-For` cannot
+///    win (Cloudflare only *appends* to that header);
+/// 2. first `X-Forwarded-For` entry — classic reverse proxy (Nginx/Caddy)
+///    that replaces the header with the client IP;
+/// 3. socket peer IP — direct exposure;
+/// 4. `"unknown"` — no connect info (tests drive the router without a
+///    listener).
 ///
 /// # Arguments
-/// * `headers` — request headers (`X-Forwarded-For` source).
+/// * `headers` — request headers (`CF-Connecting-IP` / `X-Forwarded-For`
+///   sources).
 /// * `connect_info` — socket peer address, when the server provides it.
-/// * `proxy_trusted` — whether `X-Forwarded-For` may be trusted.
+/// * `proxy_trusted` — whether the forwarded headers may be trusted.
 ///
 /// # Returns
 /// The key the rate limiter buckets events under.
@@ -40,6 +48,14 @@ fn client_key(
     proxy_trusted: bool,
 ) -> String {
     if proxy_trusted {
+        let cf_ip = headers
+            .get("cf-connecting-ip")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        if let Some(ip) = cf_ip {
+            return ip.to_owned();
+        }
         if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
             let first = forwarded.split(',').next().unwrap_or_default().trim();
             if !first.is_empty() {

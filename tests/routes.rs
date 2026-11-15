@@ -341,6 +341,41 @@ async fn trusted_proxy_keys_the_limiter_on_forwarded_for(pool: SqlitePool) {
 }
 
 #[sqlx::test]
+async fn forged_forwarded_for_loses_to_connecting_ip(pool: SqlitePool) {
+    // Behind Cloudflare, the edge appends the real visitor IP to the END of
+    // X-Forwarded-For (the client-supplied first entry is forgeable) but
+    // overwrites CF-Connecting-IP: the limiter must key on the latter. Both
+    // requests below carry the SAME forged X-Forwarded-For, yet the two
+    // CF-Connecting-IP values keep separate quotas.
+    let mut state = test_state(pool);
+    state.proxy_trusted = true;
+    let router = ovalbot::app(state);
+    let attempt = |email: &str, cf_ip: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/api/register")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("X-Forwarded-For", "9.9.9.9")
+            .header("CF-Connecting-IP", cf_ip)
+            .body(Body::from(
+                serde_json::to_vec(&json!({ "email": email, "password": "password123" })).unwrap(),
+            ))
+            .unwrap()
+    };
+
+    for email in ["a@example.com", "b@example.com", "c@example.com"] {
+        let (status, _, _) = call(&router, attempt(email, "198.51.100.7")).await;
+        assert_eq!(status, StatusCode::CREATED, "{email}");
+    }
+    // The forged header would have shared one bucket with everyone: instead,
+    // CF-IP 198.51.100.7 is exhausted while 198.51.100.9 is still free.
+    let (status, _, _) = call(&router, attempt("d@example.com", "198.51.100.7")).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let (status, _, _) = call(&router, attempt("e@example.com", "198.51.100.9")).await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[sqlx::test]
 async fn me_requires_session(pool: SqlitePool) {
     let (status, _, _) = call(&app(pool), request("GET", "/api/me", None, None)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

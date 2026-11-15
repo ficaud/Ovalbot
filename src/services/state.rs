@@ -46,7 +46,8 @@ pub struct AppState {
     /// — in-memory sliding windows keyed by client IP.
     pub rate_limiter: Arc<RateLimiter>,
     /// `PROXY_TRUSTED` — when `true`, the rate limiter identifies clients by
-    /// the first `X-Forwarded-For` entry (the app runs behind a reverse
-    /// proxy); otherwise the socket peer IP is used.
+    /// the `CF-Connecting-IP` header (Cloudflare tunnel, overwritten by the
+    /// edge) or the first `X-Forwarded-For` entry (classic reverse proxy);
+    /// otherwise the socket peer IP is used.
     pub proxy_trusted: bool,
 }
