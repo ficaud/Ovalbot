@@ -84,13 +84,37 @@ pub fn spawn(state: AppState) {
             }
             in_quiet = Some(quiet_now);
             discover_home(&state, &club, home_secs, &mut last_refresh).await;
+            expire_finished_requests(&state).await;
             poll_links(&state, quiet_now).await;
         }
     });
 }
 
-// ============================== ENV HELPERS ==============================
+// ============================== EXPIRATION PASS ==============================
 
+/// Expires the ticket requests of finished matches (calendar snapshot):
+/// a match the bot can no longer serve must not keep its requests open.
+/// Cheap per tick (no-op when no match is finished) and idempotent.
+///
+/// # Arguments
+/// * `state` - shared app dependencies (pool + calendar snapshot)
+async fn expire_finished_requests(state: &AppState) {
+    let finished: Vec<i64> = state
+        .calendar
+        .snapshot()
+        .iter()
+        .filter(|event| event.status == calendar::MatchStatus::Finished)
+        .map(|event| i64::from(event.id))
+        .collect();
+    if finished.is_empty() {
+        return;
+    }
+    if let Err(e) = tickets::expire_stale(&state.pool, &finished).await {
+        tracing::warn!("failed to expire ticket requests: {e}");
+    }
+}
+
+// ============================== ENV HELPERS ==============================
 /// Reads a boolean flag from the environment (`1`/`true`/`0`/`false`, case-insensitive).
 ///
 /// Public because the binary also parses the checkout flags (`CART_ENABLED`,

@@ -4,12 +4,20 @@ use common::insert_active_user;
 use ovalbot::common::error::AppError;
 use ovalbot::services::bot::purchases::{claim_seat, claimed_count};
 use ovalbot::services::tickets::{
-    accept, fail, list_for_user, mark_purchased, pending_requesters, record_offers, remove, reset,
-    seats_stats_counts, upsert, OfferKey, RemoveOutcome, SeatCounts, StatusOutcome, TicketKind,
-    TicketRequestInput, TicketRequestView, TicketStatus,
+    accept, expire_stale, fail, list_for_user, mark_purchased, pending_requesters, record_offers,
+    remove, reset, seats_stats_counts, upsert, OfferKey, RemoveOutcome, SeatCounts, StatusOutcome,
+    TicketKind, TicketRequestInput, TicketRequestView, TicketStatus,
 };
 use parser::core::seat::{Seat, SeatComposition, SeatId, SeatInfo};
 use sqlx::SqlitePool;
+
+/// The user's match-scheduling subscriptions (after `expire_stale` purges
+/// them, the list must be empty).
+async fn list_notifications(pool: &SqlitePool, user: i64) -> Vec<i64> {
+    ovalbot::services::notifications::list_for_user(pool, user)
+        .await
+        .unwrap()
+}
 
 fn duo(max_price_cents: u32) -> TicketRequestInput {
     TicketRequestInput::Duo { max_price_cents }
@@ -651,4 +659,102 @@ async fn reset_pending_is_a_noop_and_failed_reopens(pool: SqlitePool) {
         reset(&pool, user, 999).await,
         Ok(StatusOutcome::NotFound)
     ));
+}
+
+/// Expiring a finished match moves every open request to `expired`, releases
+/// the seat claims and purges the match-scheduling subscriptions; other
+/// matches and terminal `purchased` rows are untouched.
+#[sqlx::test]
+async fn expire_stale_expires_and_releases_claims(pool: SqlitePool) {
+    let finished = 11877;
+    let other = 11885;
+    let pending_user = insert_active_user(&pool, "pending@example.com").await;
+    let accepted_user = insert_active_user(&pool, "accepted@example.com").await;
+    let failed_user = insert_active_user(&pool, "failed@example.com").await;
+    let purchased_user = insert_active_user(&pool, "purchased@example.com").await;
+    let later_user = insert_active_user(&pool, "later@example.com").await;
+
+    upsert(&pool, pending_user, finished, &single(1, 5000))
+        .await
+        .unwrap();
+    // The pending user holds a claimed seat on the finished match.
+    let seats = [resale_seat(100, "1")];
+    record_offers(&pool, finished, "Stade Rochelais", "date", &seats)
+        .await
+        .unwrap();
+    assert!(claim_seat(&pool, finished, 100, "1", pending_user)
+        .await
+        .unwrap());
+
+    upsert(&pool, accepted_user, finished, &single(1, 5000))
+        .await
+        .unwrap();
+    accept(&pool, accepted_user, finished).await.unwrap();
+    upsert(&pool, failed_user, finished, &single(1, 5000))
+        .await
+        .unwrap();
+    fail(&pool, failed_user, finished).await.unwrap();
+    upsert(&pool, purchased_user, finished, &single(1, 5000))
+        .await
+        .unwrap();
+    accept(&pool, purchased_user, finished).await.unwrap();
+    mark_purchased(&pool, purchased_user, finished)
+        .await
+        .unwrap();
+
+    // A request on a match that is not finished stays open.
+    upsert(&pool, later_user, other, &single(1, 5000))
+        .await
+        .unwrap();
+    // A scheduling subscription on the finished match must be purged.
+    ovalbot::services::notifications::subscribe(&pool, pending_user, finished)
+        .await
+        .unwrap();
+
+    let expired = expire_stale(&pool, &[finished]).await.unwrap();
+    assert_eq!(expired, 3);
+
+    let views = stored(&pool, pending_user).await.unwrap();
+    assert_eq!(views[0].status, TicketStatus::Expired);
+    assert_eq!(
+        stored(&pool, accepted_user).await.unwrap()[0].status,
+        TicketStatus::Expired
+    );
+    assert_eq!(
+        stored(&pool, failed_user).await.unwrap()[0].status,
+        TicketStatus::Expired
+    );
+    // `purchased` survives as the record of a completed buy.
+    assert_eq!(
+        stored(&pool, purchased_user).await.unwrap()[0].status,
+        TicketStatus::Purchased
+    );
+    assert_eq!(
+        stored(&pool, later_user).await.unwrap()[0].status,
+        TicketStatus::Pending
+    );
+
+    // The claim of the expired request was released.
+    assert_eq!(
+        claimed_count(&pool, finished, pending_user).await.unwrap(),
+        0
+    );
+    assert!(claim_seat(&pool, finished, 100, "1", pending_user)
+        .await
+        .unwrap());
+
+    // The scheduling subscription is gone.
+    let subscriptions = list_notifications(&pool, pending_user).await;
+    assert!(subscriptions.is_empty());
+}
+
+/// A second pass over the same finished matches finds nothing left to expire.
+#[sqlx::test]
+async fn expire_stale_is_idempotent(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(&pool, user, 11877, &single(1, 5000)).await.unwrap();
+
+    assert_eq!(expire_stale(&pool, &[11877]).await.unwrap(), 1);
+    assert_eq!(expire_stale(&pool, &[11877]).await.unwrap(), 0);
+    assert_eq!(expire_stale(&pool, &[]).await.unwrap(), 0);
 }

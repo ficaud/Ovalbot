@@ -8,7 +8,8 @@
 //! APIs: `upsert` / `remove` / `list_for_user` (called by `routes::tickets`),
 //! `pending_requesters` + `record_offers` (called by the bot scan loop: who to
 //! alert, and which resale seats are genuinely new — the durable anti-spam
-//! guard over `ticket_offers`).
+//! guard over `ticket_offers`), and `expire_stale` (the bot expires the open
+//! requests of finished matches, releasing their seat claims).
 //!
 //! One stored kind is not a buying intent: `kind = "notify"` subscribes the
 //! user to the resale-seats alerts of a single match with no bot involvement
@@ -21,7 +22,7 @@ use std::collections::HashMap;
 
 use parser::core::seat::Seat;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{FromRow, QueryBuilder, Sqlite, SqlitePool};
 
 use crate::common::error::AppError;
 
@@ -459,6 +460,91 @@ pub async fn reset(
         "ticket request reset to pending"
     );
     Ok(StatusOutcome::Moved)
+}
+
+/// Expires the requests of finished matches: the bot can never serve them
+/// again, so leaving them open would keep the ticket request modal (and the
+/// matcher's candidate pool) stuck on matches that are over.
+///
+/// One transaction over the finished ids: the requests that are still open
+/// (`pending`, and the `accepted`/`failed` ones whose cart window or terminal
+/// error has become moot) move to `expired`, their seat claims are released
+/// (`ticket_offers.claimed_by`) and the match-scheduling subscriptions of
+/// those matches are purged (`match_notifications` — a played match can no
+/// longer flip to `Scheduled`). `purchased` rows are kept as the record of a
+/// completed buy.
+///
+/// Idempotent by construction: a second pass finds no open row left.
+///
+/// # Arguments
+/// * `pool` — the shared SQLite pool.
+/// * `finished_match_ids` — LNR ids of the finished matches (from the
+///   calendar snapshot; the caller filters `MatchStatus::Finished`).
+///
+/// # Returns
+/// The number of requests moved to `expired`.
+///
+/// # Errors
+/// `AppError::Sqlx` on query failure (the transaction is rolled back then).
+pub async fn expire_stale(
+    pool: &SqlitePool,
+    finished_match_ids: &[i64],
+) -> Result<usize, AppError> {
+    if finished_match_ids.is_empty() {
+        return Ok(0);
+    }
+    let now = crate::common::time::now();
+
+    let mut tx = pool.begin().await?;
+
+    // The match ids are bound one by one (no dynamic string interpolation).
+    let mut expired_stmt =
+        QueryBuilder::new("UPDATE ticket_requests SET status = 'expired', updated_at = ");
+    expired_stmt
+        .push_bind(&now)
+        .push(" WHERE status IN ('pending', 'accepted', 'failed') AND match_id IN (");
+    push_ids(&mut expired_stmt, finished_match_ids);
+    expired_stmt.push(") RETURNING user_id, match_id");
+    let expired = expired_stmt
+        .build_query_as::<(i64, i64)>()
+        .fetch_all(&mut *tx)
+        .await?;
+
+    let mut released_stmt =
+        QueryBuilder::new("UPDATE ticket_offers SET claimed_by = NULL WHERE match_id IN (");
+    push_ids(&mut released_stmt, finished_match_ids);
+    released_stmt.push(") AND claimed_by IS NOT NULL");
+    let released = released_stmt
+        .build()
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+    let mut purged_stmt = QueryBuilder::new("DELETE FROM match_notifications WHERE match_id IN (");
+    push_ids(&mut purged_stmt, finished_match_ids);
+    purged_stmt.push(")");
+    purged_stmt.build().execute(&mut *tx).await?;
+
+    tx.commit().await?;
+
+    if !expired.is_empty() {
+        tracing::info!(
+            expired = expired.len(),
+            released,
+            "ticket requests expired (matches finished)"
+        );
+    }
+    Ok(expired.len())
+}
+
+/// Binds the match ids as the content of an `IN (...)` clause: `?, ?, ?`.
+fn push_ids(builder: &mut QueryBuilder<Sqlite>, ids: &[i64]) {
+    for (index, id) in ids.iter().enumerate() {
+        if index > 0 {
+            builder.push(", ");
+        }
+        builder.push_bind(*id);
+    }
 }
 
 /// Classifies a failed conditional transition: missing row, already at the
