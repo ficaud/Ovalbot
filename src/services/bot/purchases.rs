@@ -1,7 +1,7 @@
 //! Purchase matching: pair the seats currently offered on a match's resale
-//! with the pending **buying** requests (`kind IN ('single', 'group')`) and
-//! build the checkout plans the orchestrator (Phase 4B, next step) executes
-//! with the user's stored shop credentials.
+//! with the pending **buying** requests (`kind IN ('single', 'duo', 'group')`)
+//! and build the checkout plans the orchestrator
+//! executes with the user's stored shop credentials.
 //!
 //! **Progressive fill** (user-validated design): a request is a quota, not a
 //! one-shot basket. The bot takes unclaimed **packs** as they appear — one or
@@ -12,6 +12,12 @@
 //! and the whole pack fits the remaining quota.
 //! - `single`: any category, every ticket within the per-ticket budget, quota
 //!   `quantity` spread over as many waves as needed;
+//! - `duo`: exactly one atomic 2-ticket pack, both tickets from the current
+//!   wave (freshness is a hard criterion), seated next to each other (same
+//!   block, same row, same seat-number parity — the site numbers a side of an
+//!   aisle either odd or even: `1 & 3`, `2 & 4`), priced **per seat**. The
+//!   request is a single pair (`2` seats): once claimed it is complete, a
+//!   second pair is never taken;
 //! - `group`: same fill logic, restricted to packs sold at the **Pelouse
 //!   rate** (`15.00 €` per ticket), quota `places`. The price is the
 //!   discriminator: the site's category labels are price categories
@@ -25,12 +31,14 @@
 //!
 //! Serving rules:
 //! - Only `pending` rows in a buying kind are served; `notify` subscriptions
-//!   go to the seats alerts ([`crate::services::notifications`]), `duo` is
-//!   out of the Phase 4B scope (v1).
+//!   go to the seats alerts ([`crate::services::notifications`]).
 //! - **Freshness first**: the seats `record_offers` just inserted are served
 //!   before older listing entries (an older pack may already be gone), and the
 //!   pool is ordered deterministically (fresh, then price, then ticket id) so
-//!   two identical listings always produce the same plan.
+//!   two identical listings always produce the same plan. For `duo` this is a
+//!   hard requirement, not only an ordering hint: a pair recorded by an
+//!   earlier scan is never planned (nothing re-inserts an offer, so it is
+//!   permanently out of the matcher's scope).
 //! - Requests are served **oldest first** (`created_at ASC`): a contested
 //!   seat goes to the oldest demand.
 //! - A request without stored shop credentials cannot be executed: it is
@@ -63,7 +71,8 @@ pub struct PurchaseCandidate {
     pub kind: TicketKind,
     /// `Single` only: how many individual tickets are wanted in total.
     pub quantity: Option<u8>,
-    /// `Single` only: per-ticket budget in cents.
+    /// `Single`/`Duo` only: per-ticket or per-seat budget in cents (a duo is
+    /// priced per seat, like a single ticket).
     pub max_price_cents: Option<u32>,
     /// `Group` only: how many pelouse places in total.
     pub places: Option<u8>,
@@ -135,13 +144,16 @@ pub async fn plan_checkouts_with_fresh(
     seats: &[Seat],
     fresh: &[OfferKey],
 ) -> Result<Vec<PlanCheckout>, AppError> {
+    // Get all the requests from all the users ordering the oldest to the newest.
     let candidates = candidate_requests(pool, match_id).await?;
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
 
     // A pack is atomic: one ticket already claimed takes the whole pack out of
-    // the market (the site either keeps or drops the pack as a whole).
+    // the market (the site either keeps or drops the pack as a whole)
+    // The idea here is to identify packed to avoid getting single tickets that
+    // doesn't match the whole ticket offers.
     let claimed: HashSet<(u64, String)> = claimed_seats(pool, match_id).await?;
     let mut claimed_packs: HashSet<u64> = HashSet::new();
     for seat in seats {
@@ -149,15 +161,19 @@ pub async fn plan_checkouts_with_fresh(
             claimed_packs.insert(seat.id.pack_id);
         }
     }
+
+    // All seats that are available
     let mut available: Vec<&Seat> = seats
         .iter()
         .filter(|seat| !claimed_packs.contains(&seat.id.pack_id))
         .collect();
+    // Implement an hash of the fresh seats
     let fresh_keys: HashSet<(u64, String)> = fresh
         .iter()
         .map(|key| (key.pack_id, key.ticket_id.clone()))
         .collect();
     sort_available(&mut available, &fresh_keys);
+    // initiate the plan checkout
     let mut plans = Vec::new();
 
     for candidate in candidates {
@@ -165,6 +181,10 @@ pub async fn plan_checkouts_with_fresh(
             TicketKind::Single => {
                 let (taken, reason) = plan_single(match_id, &candidate, &mut available);
                 (taken, reason, TicketKind::Single)
+            }
+            TicketKind::Duo => {
+                let (taken, reason) = plan_duo(match_id, &candidate, &mut available, &fresh_keys);
+                (taken, reason, TicketKind::Duo)
             }
             TicketKind::Group => {
                 let (taken, reason) = plan_group(match_id, &candidate, &mut available);
@@ -197,7 +217,10 @@ pub async fn plan_checkouts_with_fresh(
             );
             let total = match kind {
                 TicketKind::Single => u32::from(candidate.quantity.unwrap_or(0)),
-                _ => u32::from(candidate.places.unwrap_or(0)),
+                TicketKind::Duo => DUO_SEATS,
+                TicketKind::Group => u32::from(candidate.places.unwrap_or(0)),
+                // Unreachable: the arm above already skipped non-buying kinds.
+                TicketKind::Notify => 0,
             };
             plans.push(PlanCheckout {
                 user_id: candidate.user_id,
@@ -233,6 +256,11 @@ fn progress_suffix(candidate: &PurchaseCandidate) -> String {
                 quantity
             )
         }
+        (TicketKind::Duo, _, _) => format!(
+            "; {}/{} filled",
+            candidate.claimed.min(i64::from(DUO_SEATS)),
+            DUO_SEATS
+        ),
         (TicketKind::Group, _, Some(places)) => format!(
             "; {}/{} filled",
             candidate.claimed.min(i64::from(places)),
@@ -480,6 +508,160 @@ fn plan_group(
     (Some(taken), String::new())
 }
 
+/// Serves a `duo` request: exactly one resale pack of two tickets, both from
+/// the **current wave** (`fresh`), within the **per-seat** budget, seated next
+/// to each other (same block, same row, same seat-number parity).
+///
+/// A resale pack is atomic, so the pair is bought whole and only once: the
+/// request is complete after those two seats. Packs of another size, pairs
+/// whose tickets were recorded by an earlier scan, non-adjacent pairs and
+/// pairs above the per-seat budget are skipped with a counted diagnostic.
+///
+/// # Arguments
+/// * `available` — the unclaimed seats of the listing, in serving order
+/// * `fresh` — the `(pack_id, ticket_id)` pairs inserted by the current wave
+///
+/// # Returns
+/// The two seats of the chosen pack, or `None` with the skip reason when
+/// nothing was planned.
+fn plan_duo(
+    match_id: i64,
+    candidate: &PurchaseCandidate,
+    available: &mut Vec<&Seat>,
+    fresh: &HashSet<(u64, String)>,
+) -> (Option<Vec<Seat>>, String) {
+    let Some(max) = candidate.max_price_cents.filter(|cents| *cents > 0) else {
+        return (None, "malformed duo payload (budget missing)".to_string());
+    };
+    let total = DUO_SEATS;
+    let remaining = compute_remaining(total, candidate.claimed, match_id, candidate.user_id);
+    if remaining == 0 {
+        return (
+            None,
+            "order already complete, waiting for the orchestrator's status update".to_string(),
+        );
+    }
+    if candidate.shop_email.is_none() {
+        return (None, "no shop credentials stored".to_string());
+    }
+    if remaining < total {
+        return (
+            None,
+            format!(
+                "{}/{} seat(s) already claimed, a duo pack cannot be split",
+                candidate.claimed, total
+            ),
+        );
+    }
+
+    let mut not_a_pair = 0u32;
+    let mut not_fresh = 0u32;
+    let mut not_adjacent = 0u32;
+    let mut above_max_pairs = 0u32;
+    let mut pick: Option<Vec<usize>> = None;
+
+    for pack in packs_of(available) {
+        if pack.indices.len() != DUO_SEATS as usize {
+            not_a_pair += 1;
+            continue;
+        }
+        let pair = [available[pack.indices[0]], available[pack.indices[1]]];
+        if !pair
+            .iter()
+            .all(|seat| fresh.contains(&(seat.id.pack_id, seat.id.ticket_id.clone())))
+        {
+            not_fresh += 1;
+            continue;
+        }
+        if !is_duo_pair(pair[0], pair[1]) {
+            not_adjacent += 1;
+            continue;
+        }
+        let mut eligible = true;
+        for seat in pair {
+            match parse_price_cents(&seat.price) {
+                Some(cents) if cents <= max => {}
+                Some(_) => {
+                    eligible = false;
+                    above_max_pairs += 1;
+                    break;
+                }
+                None => {
+                    eligible = false;
+                    tracing::debug!(
+                        user_id = candidate.user_id,
+                        match_id,
+                        pack_id = pack.pack_id,
+                        price = %seat.price,
+                        "purchase matching: seat price not parsable, duo pack skipped"
+                    );
+                    break;
+                }
+            }
+        }
+        if eligible {
+            pick = Some(pack.indices.clone());
+            break;
+        }
+    }
+
+    // Evaluate the reasons where there is no pick for duo user's request
+    let Some(indices) = pick else {
+        let mut reason = format!(
+            "no valid fresh duo pack ({} pack(s) not a pair, {} pair(s) not fresh, \
+             {} pair(s) with non-adjacent seats, {} pair(s) above budget {})",
+            not_a_pair,
+            not_fresh,
+            not_adjacent,
+            above_max_pairs,
+            format_cents(max)
+        );
+        if let Some(cheapest) = available
+            .iter()
+            .filter_map(|seat| parse_price_cents(&seat.price))
+            .min()
+        {
+            reason.push_str(&format!(
+                ", cheapest seat on resale {}",
+                format_cents(cheapest)
+            ));
+        }
+        return (None, reason);
+    };
+
+    // Get the chosen candidates from what have been previously sorted out
+    // Sort it out descending.
+    //
+    let taken = indices
+        .iter()
+        .map(|&index| (*available[index]).clone())
+        .collect();
+    let mut descending = indices;
+    descending.sort_unstable_by(|a, b| b.cmp(a));
+    // remove all the seats that have been taken in this process (this is done
+    // in the shared availability so that future not operation won't take them
+    // into account).
+    for index in descending {
+        available.remove(index);
+    }
+    // Return taken without reasons
+    (Some(taken), String::new())
+}
+
+/// Whether two seats of the same pack are adjacent places: same block, same
+/// row, known seat numbers (`> 0`) and the same parity. The site numbers the
+/// two sides of an aisle separately, so neighbours share the parity
+/// (`1 & 3`, `2 & 4`); the rule deliberately does not impose a fixed gap.
+fn is_duo_pair(left: &Seat, right: &Seat) -> bool {
+    let left_seat = &left.seat_info.composition;
+    let right_seat = &right.seat_info.composition;
+    left_seat.seat_number > 0
+        && right_seat.seat_number > 0
+        && left_seat.bloc == right_seat.bloc
+        && left_seat.row == right_seat.row
+        && left_seat.seat_number % 2 == right_seat.seat_number % 2
+}
+
 /// The user's remaining quota for this pass (never negative: claims cannot
 /// exceed the ordered count, but a stale DB state stays defensive).
 fn compute_remaining(quota: u32, claimed: i64, match_id: i64, user_id: i64) -> u32 {
@@ -558,9 +740,8 @@ pub async fn claim_seat(
 /// Fetches the match's pending buying requests, oldest first, joining the
 /// owner's shop email and the per-request claim count.
 ///
-/// The kind filter is SQL-side (`kind IN ('single', 'group')`): the alert
-/// subscriptions (`notify`) and the out-of-scope `duo` mode never reach the
-/// matcher.
+/// The kind filter is SQL-side (`kind IN ('single', 'duo', 'group')`): the
+/// alert subscriptions (`notify`) never reach the matcher.
 ///
 /// # Errors
 /// `AppError::Sqlx` on query failure.
@@ -576,7 +757,7 @@ async fn candidate_requests(
          FROM ticket_requests tr \
          JOIN users u ON u.id = tr.user_id \
          WHERE tr.match_id = ? AND tr.status = 'pending' \
-               AND tr.kind IN ('single', 'group') \
+               AND tr.kind IN ('single', 'duo', 'group') \
          ORDER BY tr.created_at ASC, tr.user_id ASC",
     )
     .bind(match_id)
@@ -612,6 +793,9 @@ async fn claimed_seats(
 /// Unit price of a Pelouse place, in cents: the site's flat pelouse rate
 /// (`15.00 €`). Group requests are matched on this exact price.
 const PELOUSE_PRICE_CENTS: u32 = 1_500;
+
+/// Seats in a duo request: exactly one resale pack of two tickets.
+const DUO_SEATS: u32 = 2;
 
 /// Whether the seat is a Pelouse place, identified **solely by its unit
 /// price** (`15.00 €`). The category/tribune labels are not used: `category`
@@ -700,6 +884,42 @@ mod tests {
         }
     }
 
+    /// Builds a resale seat at an explicit position (duo adjacency tests need
+    /// the block/row/seat number).
+    fn seat_at(
+        pack_id: u64,
+        ticket_id: &str,
+        price: &str,
+        bloc: &str,
+        row: &str,
+        seat_number: u64,
+    ) -> Seat {
+        Seat {
+            id: SeatId {
+                pack_id,
+                ticket_id: ticket_id.to_string(),
+            },
+            seat_info: SeatInfo {
+                full_name: format!("{bloc} • Rang {row} • Siège {seat_number}"),
+                composition: SeatComposition {
+                    category: "CATÉGORIE 3".to_string(),
+                    bloc: bloc.to_string(),
+                    row: row.to_string(),
+                    seat_number,
+                },
+            },
+            price: price.to_string(),
+        }
+    }
+
+    /// The `(pack_id, ticket_id)` freshness set of a wave.
+    fn fresh_of(seats: &[&Seat]) -> HashSet<(u64, String)> {
+        seats
+            .iter()
+            .map(|seat| (seat.id.pack_id, seat.id.ticket_id.clone()))
+            .collect()
+    }
+
     fn single_candidate(
         quantity: u8,
         max_price_cents: u32,
@@ -726,6 +946,19 @@ mod tests {
             quantity: None,
             max_price_cents: None,
             places: Some(places),
+            created_at: String::new(),
+            claimed,
+        }
+    }
+
+    fn duo_candidate(max_price_cents: u32, credentials: bool, claimed: i64) -> PurchaseCandidate {
+        PurchaseCandidate {
+            user_id: 1,
+            shop_email: credentials.then(|| "shop@example.com".to_string()),
+            kind: TicketKind::Duo,
+            quantity: None,
+            max_price_cents: Some(max_price_cents),
+            places: None,
             created_at: String::new(),
             claimed,
         }
@@ -959,6 +1192,238 @@ mod tests {
         );
     }
 
+    // A fresh 2-ticket pack whose seats share the parity (19/21, same row) is
+    // a duo and is taken whole.
+    #[test]
+    fn plan_duo_takes_a_fresh_adjacent_pair() {
+        let a = seat_at(910, "a", "49.00", "SUD", "I", 19);
+        let b = seat_at(910, "b", "49.00", "SUD", "I", 21);
+        let fresh = fresh_of(&[&a, &b]);
+        let mut available = vec![&a, &b];
+
+        let (taken, reason) = plan_duo(42, &duo_candidate(4900, true, 0), &mut available, &fresh);
+
+        assert!(reason.is_empty(), "{reason}");
+        let taken = taken.unwrap();
+        assert_eq!(taken.len(), 2);
+        assert!(taken.iter().all(|seat| seat.id.pack_id == 910));
+        assert!(available.is_empty());
+    }
+
+    // The even side of the aisle works the same way (2/4).
+    #[test]
+    fn plan_duo_accepts_even_numbered_pairs() {
+        let a = seat_at(911, "a", "39.00", "NORD", "U", 2);
+        let b = seat_at(911, "b", "39.00", "NORD", "U", 4);
+        let fresh = fresh_of(&[&a, &b]);
+        let mut available = vec![&a, &b];
+
+        let (taken, reason) = plan_duo(42, &duo_candidate(4900, true, 0), &mut available, &fresh);
+
+        assert!(reason.is_empty(), "{reason}");
+        assert_eq!(taken.unwrap().len(), 2);
+    }
+
+    // Mixed parities (19/20) are not neighbours on the site's numbering.
+    #[test]
+    fn plan_duo_rejects_pairs_with_mixed_parity() {
+        let a = seat_at(912, "a", "49.00", "SUD", "I", 19);
+        let b = seat_at(912, "b", "49.00", "SUD", "I", 20);
+        let fresh = fresh_of(&[&a, &b]);
+        let mut available = vec![&a, &b];
+
+        let (taken, reason) = plan_duo(42, &duo_candidate(4900, true, 0), &mut available, &fresh);
+
+        assert!(taken.is_none());
+        assert!(
+            reason.contains("1 pair(s) with non-adjacent seats"),
+            "{reason}"
+        );
+        assert_eq!(available.len(), 2, "the pair stays on the market");
+    }
+
+    // Different rows or blocks are never a duo, whatever the numbers.
+    #[test]
+    fn plan_duo_rejects_pairs_across_rows_or_blocks() {
+        for (bloc, row) in [("SUD", "J"), ("EST", "I")] {
+            let a = seat_at(913, "a", "49.00", "SUD", "I", 19);
+            let b = seat_at(913, "b", "49.00", bloc, row, 21);
+            let fresh = fresh_of(&[&a, &b]);
+            let mut available = vec![&a, &b];
+
+            let (taken, reason) =
+                plan_duo(42, &duo_candidate(4900, true, 0), &mut available, &fresh);
+
+            assert!(taken.is_none(), "{bloc}/{row} must not be a duo");
+            assert!(
+                reason.contains("1 pair(s) with non-adjacent seats"),
+                "{reason}"
+            );
+        }
+    }
+
+    // Packs of 1 or 3 tickets are atomic and cannot serve a pair.
+    #[test]
+    fn plan_duo_only_takes_pair_packs() {
+        let single = seat_at(914, "a", "49.00", "SUD", "I", 19);
+        let trio = [
+            seat_at(915, "a", "49.00", "SUD", "I", 19),
+            seat_at(915, "b", "49.00", "SUD", "I", 21),
+            seat_at(915, "c", "49.00", "SUD", "I", 23),
+        ];
+        let fresh = fresh_of(&[&single, &trio[0], &trio[1], &trio[2]]);
+        let mut available = vec![&single, &trio[0], &trio[1], &trio[2]];
+
+        let (taken, reason) = plan_duo(42, &duo_candidate(4900, true, 0), &mut available, &fresh);
+
+        assert!(taken.is_none());
+        assert!(reason.contains("2 pack(s) not a pair"), "{reason}");
+        assert_eq!(available.len(), 4);
+    }
+
+    // Freshness is a hard criterion: both tickets must come from this wave.
+    #[test]
+    fn plan_duo_requires_both_tickets_fresh() {
+        let a = seat_at(916, "a", "49.00", "SUD", "I", 19);
+        let b = seat_at(916, "b", "49.00", "SUD", "I", 21);
+
+        // Nothing fresh: the pair is out of scope.
+        let mut available = vec![&a, &b];
+        let (taken, reason) = plan_duo(
+            42,
+            &duo_candidate(4900, true, 0),
+            &mut available,
+            &HashSet::new(),
+        );
+        assert!(taken.is_none());
+        assert!(reason.contains("1 pair(s) not fresh"), "{reason}");
+
+        // Only one ticket fresh: still refused.
+        let mut available = vec![&a, &b];
+        let partial = fresh_of(&[&a]);
+        let (taken, reason) = plan_duo(42, &duo_candidate(4900, true, 0), &mut available, &partial);
+        assert!(taken.is_none());
+        assert!(reason.contains("1 pair(s) not fresh"), "{reason}");
+    }
+
+    // The budget applies to the price of each seat, not to the pair total.
+    #[test]
+    fn plan_duo_respects_the_per_seat_budget() {
+        let a = seat_at(917, "a", "59.00", "SUD", "I", 19);
+        let b = seat_at(917, "b", "59.00", "SUD", "I", 21);
+        let fresh = fresh_of(&[&a, &b]);
+
+        let mut available = vec![&a, &b];
+        let (taken, reason) = plan_duo(42, &duo_candidate(4900, true, 0), &mut available, &fresh);
+        assert!(taken.is_none());
+        assert!(
+            reason.contains("1 pair(s) above budget 49.00 €"),
+            "{reason}"
+        );
+
+        // Same pair within a 59 € per-seat budget is served.
+        let mut available = vec![&a, &b];
+        let (taken, reason) = plan_duo(42, &duo_candidate(5900, true, 0), &mut available, &fresh);
+        assert!(reason.is_empty(), "{reason}");
+        assert_eq!(taken.unwrap().len(), 2);
+    }
+
+    // Among eligible fresh pairs, the cheapest per seat is taken (the global
+    // freshness-then-price order is applied before the planner walks the pool).
+    #[test]
+    fn plan_duo_picks_the_cheapest_fresh_pair() {
+        let pricey = [
+            seat_at(918, "a", "59.00", "SUD", "I", 19),
+            seat_at(918, "b", "59.00", "SUD", "I", 21),
+        ];
+        let cheap = [
+            seat_at(919, "a", "49.00", "NORD", "U", 2),
+            seat_at(919, "b", "49.00", "NORD", "U", 4),
+        ];
+        let fresh = fresh_of(&[&pricey[0], &pricey[1], &cheap[0], &cheap[1]]);
+        let mut available = vec![&pricey[0], &pricey[1], &cheap[0], &cheap[1]];
+        sort_available(&mut available, &fresh);
+
+        let (taken, reason) = plan_duo(42, &duo_candidate(6000, true, 0), &mut available, &fresh);
+
+        assert!(reason.is_empty(), "{reason}");
+        let taken = taken.unwrap();
+        assert_eq!(taken.len(), 2);
+        assert!(taken.iter().all(|seat| seat.id.pack_id == 919));
+    }
+
+    // One duo maximum: only the first eligible pair leaves the market, and the
+    // request is complete once it is claimed.
+    #[test]
+    fn plan_duo_takes_a_single_pair() {
+        let first = [
+            seat_at(920, "a", "49.00", "SUD", "I", 19),
+            seat_at(920, "b", "49.00", "SUD", "I", 21),
+        ];
+        let second = [
+            seat_at(921, "a", "49.00", "NORD", "U", 2),
+            seat_at(921, "b", "49.00", "NORD", "U", 4),
+        ];
+        let fresh = fresh_of(&[&first[0], &first[1], &second[0], &second[1]]);
+        let mut available = vec![&first[0], &first[1], &second[0], &second[1]];
+
+        let (taken, reason) = plan_duo(42, &duo_candidate(4900, true, 0), &mut available, &fresh);
+        assert!(reason.is_empty(), "{reason}");
+        assert_eq!(taken.unwrap().len(), 2);
+        assert_eq!(available.len(), 2, "the second pair stays on the market");
+
+        // 2/2 claimed: the request is complete, even with a pair available.
+        let (taken, reason) = plan_duo(42, &duo_candidate(4900, true, 2), &mut available, &fresh);
+        assert!(taken.is_none());
+        assert!(reason.contains("order already complete"), "{reason}");
+    }
+
+    // An unparsable seat number (0) cannot prove adjacency.
+    #[test]
+    fn plan_duo_rejects_unknown_seat_numbers() {
+        let a = seat_at(922, "a", "49.00", "SUD", "I", 0);
+        let b = seat_at(922, "b", "49.00", "SUD", "I", 2);
+        let fresh = fresh_of(&[&a, &b]);
+        let mut available = vec![&a, &b];
+
+        let (taken, reason) = plan_duo(42, &duo_candidate(4900, true, 0), &mut available, &fresh);
+
+        assert!(taken.is_none());
+        assert!(
+            reason.contains("1 pair(s) with non-adjacent seats"),
+            "{reason}"
+        );
+    }
+
+    // A pair with one seat already claimed cannot be split.
+    #[test]
+    fn plan_duo_reports_partial_claims() {
+        let a = seat_at(923, "a", "49.00", "SUD", "I", 19);
+        let b = seat_at(923, "b", "49.00", "SUD", "I", 21);
+        let fresh = fresh_of(&[&a, &b]);
+        let mut available = vec![&a, &b];
+
+        let (taken, reason) = plan_duo(42, &duo_candidate(4900, true, 1), &mut available, &fresh);
+        assert!(taken.is_none());
+        assert!(reason.contains("cannot be split"), "{reason}");
+        assert_eq!(available.len(), 2);
+    }
+
+    // No listing still produces the counted diagnostic.
+    #[test]
+    fn plan_duo_with_no_listing_reports_naturally() {
+        let mut available: Vec<&Seat> = Vec::new();
+        let (taken, reason) = plan_duo(
+            42,
+            &duo_candidate(4900, true, 0),
+            &mut available,
+            &HashSet::new(),
+        );
+        assert!(taken.is_none());
+        assert!(reason.contains("no valid fresh duo pack"), "{reason}");
+        assert!(reason.contains("0 pack(s) not a pair"), "{reason}");
+    }
+
     // A request without shop credentials is skipped, whatever the seats.
     #[test]
     fn candidates_without_credentials_are_skipped() {
@@ -971,6 +1436,15 @@ mod tests {
         assert_eq!(reason, "no shop credentials stored");
 
         let (taken, reason) = plan_group(42, &group_candidate(2, false, 0), &mut available);
+        assert!(taken.is_none());
+        assert_eq!(reason, "no shop credentials stored");
+
+        let (taken, reason) = plan_duo(
+            42,
+            &duo_candidate(4900, false, 0),
+            &mut available,
+            &HashSet::new(),
+        );
         assert!(taken.is_none());
         assert_eq!(reason, "no shop credentials stored");
     }

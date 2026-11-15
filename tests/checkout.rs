@@ -1164,3 +1164,57 @@ async fn muted_channels_receive_nothing(pool: SqlitePool) {
     assert!(mailer.cart_alerts.lock().unwrap().is_empty());
     assert!(telegram.messages.lock().unwrap().is_empty());
 }
+
+// A duo plan is one atomic pack: a single add-to-cart call adds both tickets,
+// the request closes as accepted (2/2) and the wave alert reports the pair.
+#[sqlx::test]
+async fn a_duo_plan_adds_the_whole_pack(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "a@example.com").await;
+    upsert(
+        &pool,
+        user,
+        MATCH,
+        &TicketRequestInput::Duo {
+            max_price_cents: 4900,
+        },
+    )
+    .await
+    .unwrap();
+    profile(&pool, user, true, None).await;
+    let a = seat_in(9100, "19", "49.00", "CATÉGORIE 3");
+    let b = seat_in(9100, "21", "49.00", "CATÉGORIE 3");
+    offered(&pool, &[&a, &b]).await;
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let shop = Arc::new(RecordingShop::new());
+    let state = state(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        shop.clone(),
+        false,
+    );
+
+    execute_plans(
+        &state,
+        &target(),
+        vec![plan(user, TicketKind::Duo, 2, vec![a.clone(), b.clone()])],
+    )
+    .await;
+
+    assert_eq!(claimed(&pool, user).await, 2);
+    assert_eq!(status(&pool, user).await, TicketStatus::Accepted);
+
+    let packs = shop.packs.lock().unwrap();
+    assert_eq!(packs.len(), 1, "one POST for the whole pack");
+    assert_eq!(packs[0].0, 9100);
+    assert_eq!(packs[0].1, vec!["19".to_string(), "21".to_string()]);
+
+    let mails = mailer.cart_alerts.lock().unwrap();
+    assert_eq!(mails.len(), 1);
+    assert_eq!(
+        (mails[0].1.added, mails[0].1.claimed, mails[0].1.total),
+        (2, 2, 2)
+    );
+}

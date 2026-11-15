@@ -57,7 +57,7 @@
       return priceError(singlePrice, 'per ticket');
     }
     if (kind === 'duo') {
-      return priceError(duoPrice, 'for the pair');
+      return priceError(duoPrice, 'per seat');
     }
     if (!inRange(groupPlaces, MIN_GROUP, MAX_GROUP)) {
       return `Number of places must be between ${MIN_GROUP} and ${MAX_GROUP}.`;
@@ -264,36 +264,36 @@
       </div>
     </div>
 
-    <!-- Duo is out of the Phase 4B (bot) scope: the option is hidden unless a
-         legacy duo request is already loaded (it stays manageable). -->
-    {#if kind === 'duo'}
-      <div class="option" class:option--active={kind === 'duo'}>
-        <label class="option__head">
-          <input type="radio" name="ticket-kind" value="duo" bind:group={kind} />
-          <span>Duo (2 seats)</span>
+    <div class="option" class:option--active={kind === 'duo'}>
+      <label class="option__head">
+        <input type="radio" name="ticket-kind" value="duo" bind:group={kind} />
+        <span>Duo (2 adjacent seats)</span>
+      </label>
+      <div class="option__fields" class:option__fields--off={kind !== 'duo'}>
+        <label class="option__field">
+          <span>Max price per seat</span>
+          <span class="price">
+            <input
+              class="input"
+              type="number"
+              min="0"
+              step="0.01"
+              inputmode="decimal"
+              bind:value={duoPrice}
+              disabled={kind !== 'duo'}
+            />
+            <span class="price__unit">€</span>
+          </span>
         </label>
-        <div class="option__fields" class:option__fields--off={kind !== 'duo'}>
-          <label class="option__field">
-            <span>Max price for the pair</span>
-            <span class="price">
-              <input
-                class="input"
-                type="number"
-                min="0"
-                step="0.01"
-                inputmode="decimal"
-                bind:value={duoPrice}
-                disabled={kind !== 'duo'}
-              />
-              <span class="price__unit">€</span>
-            </span>
-          </label>
-          {#if kind === 'duo' && error}
-            <p class="hint hint--warn">{error}</p>
-          {/if}
-        </div>
+        <p class="hint">
+          One pair, bought as a single resale listing. The bot only takes a pair seated next to each
+          other (same row, same side of the aisle) within your per-seat budget.
+        </p>
+        {#if kind === 'duo' && error}
+          <p class="hint hint--warn">{error}</p>
+        {/if}
       </div>
-    {/if}
+    </div>
 
     <div class="option" class:option--active={kind === 'group'}>
       <label class="option__head">
