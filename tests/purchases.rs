@@ -23,6 +23,10 @@ fn group(places: u8) -> TicketRequestInput {
     TicketRequestInput::Group { places }
 }
 
+fn duo(max_price_cents: u32) -> TicketRequestInput {
+    TicketRequestInput::Duo { max_price_cents }
+}
+
 /// Builds a resale seat with an explicit ticket id, price and category, in its
 /// own 1-ticket pack (resale packs are atomic: independent test seats must not
 /// share one).
@@ -57,6 +61,45 @@ fn pack_of(ticket_id: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     ticket_id.hash(&mut hasher);
     hasher.finish()
+}
+
+/// Builds a resale seat at an explicit position (duo adjacency needs the
+/// block/row/seat number).
+fn seat_at(
+    pack_id: u64,
+    ticket_id: &str,
+    price: &str,
+    bloc: &str,
+    row: &str,
+    seat_number: u64,
+) -> Seat {
+    Seat {
+        id: SeatId {
+            pack_id,
+            ticket_id: ticket_id.to_string(),
+        },
+        seat_info: SeatInfo {
+            full_name: format!("{bloc} • Rang {row} • Siège {seat_number}"),
+            composition: SeatComposition {
+                category: "CATÉGORIE 3".to_string(),
+                bloc: bloc.to_string(),
+                row: row.to_string(),
+                seat_number,
+            },
+        },
+        price: price.to_string(),
+    }
+}
+
+/// The freshness set of a wave, as `record_offers` reports it.
+fn fresh_of(seats: &[&Seat]) -> Vec<OfferKey> {
+    seats
+        .iter()
+        .map(|seat| OfferKey {
+            pack_id: seat.id.pack_id,
+            ticket_id: seat.id.ticket_id.clone(),
+        })
+        .collect()
 }
 
 /// Forces the request's `created_at` (single-digit-ordering determinism);
@@ -261,33 +304,170 @@ async fn contested_seat_goes_to_the_oldest_request(pool: SqlitePool) {
     assert_eq!(plans[0].user_id, older);
 }
 
-// Alert subscriptions (notify) and the out-of-scope duo kind never plan.
+// Alert subscriptions (notify) never plan: they are not a buying intent.
 #[sqlx::test]
-async fn notify_and_duo_are_never_planned(pool: SqlitePool) {
+async fn notify_is_never_planned(pool: SqlitePool) {
     let notifier = insert_active_user(&pool, "notify@example.com").await;
-    let duoer = insert_active_user(&pool, "duo@example.com").await;
     upsert(&pool, notifier, MATCH, &TicketRequestInput::Notify)
         .await
         .unwrap();
-    upsert(
-        &pool,
-        duoer,
-        MATCH,
-        &TicketRequestInput::Duo {
-            max_price_cents: 9000,
-        },
-    )
-    .await
-    .unwrap();
-    for user in [notifier, duoer] {
-        grant_shop(&pool, user, Some("shop@example.com")).await;
-    }
+    grant_shop(&pool, notifier, Some("shop@example.com")).await;
 
     let plans = plan_checkouts(&pool, MATCH, &[seat("s1", "45.00", "Pelouse")])
         .await
         .unwrap();
 
     assert!(plans.is_empty());
+}
+
+// A pending duo request is served by a fresh adjacent pair (same pack, same
+// row, same parity) as one atomic pack of two.
+#[sqlx::test]
+async fn plans_a_credentialed_duo_request(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "duo@example.com").await;
+    upsert(&pool, user, MATCH, &duo(4900)).await.unwrap();
+    grant_shop(&pool, user, Some("shop@example.com")).await;
+
+    let a = seat_at(9100, "a", "49.00", "SUD", "I", 19);
+    let b = seat_at(9100, "b", "49.00", "SUD", "I", 21);
+    let fresh = fresh_of(&[&a, &b]);
+
+    let plans = plan_checkouts_with_fresh(&pool, MATCH, &[a, b], &fresh)
+        .await
+        .unwrap();
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].kind, TicketKind::Duo);
+    assert_eq!(plans[0].total, 2);
+    assert_eq!(plans[0].seats.len(), 2);
+    assert!(plans[0].seats.iter().all(|seat| seat.id.pack_id == 9100));
+}
+
+// Freshness is a hard criterion for a duo: both tickets must come from the
+// current wave.
+#[sqlx::test]
+async fn duo_requires_both_tickets_fresh(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "duo@example.com").await;
+    upsert(&pool, user, MATCH, &duo(4900)).await.unwrap();
+    grant_shop(&pool, user, Some("shop@example.com")).await;
+
+    let a = seat_at(9101, "a", "49.00", "SUD", "I", 19);
+    let b = seat_at(9101, "b", "49.00", "SUD", "I", 21);
+
+    let plans = plan_checkouts(&pool, MATCH, &[a.clone(), b.clone()])
+        .await
+        .unwrap();
+    assert!(plans.is_empty(), "a pair seen earlier is out of scope");
+
+    let partial = fresh_of(&[&a]);
+    let plans = plan_checkouts_with_fresh(&pool, MATCH, &[a, b], &partial)
+        .await
+        .unwrap();
+    assert!(plans.is_empty(), "one fresh ticket is not a duo");
+}
+
+// Mixed parities and different rows are not neighbouring seats.
+#[sqlx::test]
+async fn duo_ignores_non_adjacent_pairs(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "duo@example.com").await;
+    upsert(&pool, user, MATCH, &duo(4900)).await.unwrap();
+    grant_shop(&pool, user, Some("shop@example.com")).await;
+
+    let mixed = [
+        seat_at(9102, "a", "49.00", "SUD", "I", 19),
+        seat_at(9102, "b", "49.00", "SUD", "I", 20),
+    ];
+    let fresh = fresh_of(&[&mixed[0], &mixed[1]]);
+    let plans = plan_checkouts_with_fresh(&pool, MATCH, &mixed, &fresh)
+        .await
+        .unwrap();
+    assert!(plans.is_empty(), "19/20 must not be a duo");
+
+    let across_rows = [
+        seat_at(9103, "a", "49.00", "SUD", "I", 19),
+        seat_at(9103, "b", "49.00", "SUD", "J", 21),
+    ];
+    let fresh = fresh_of(&[&across_rows[0], &across_rows[1]]);
+    let plans = plan_checkouts_with_fresh(&pool, MATCH, &across_rows, &fresh)
+        .await
+        .unwrap();
+    assert!(plans.is_empty(), "two rows must not be a duo");
+}
+
+// A trio is atomic: it cannot be split into a duo, however adjacent it is.
+#[sqlx::test]
+async fn duo_ignores_packs_that_are_not_pairs(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "duo@example.com").await;
+    upsert(&pool, user, MATCH, &duo(4900)).await.unwrap();
+    grant_shop(&pool, user, Some("shop@example.com")).await;
+
+    let trio = [
+        seat_at(9104, "a", "49.00", "SUD", "I", 19),
+        seat_at(9104, "b", "49.00", "SUD", "I", 21),
+        seat_at(9104, "c", "49.00", "SUD", "I", 23),
+    ];
+    let fresh = fresh_of(&[&trio[0], &trio[1], &trio[2]]);
+
+    let plans = plan_checkouts_with_fresh(&pool, MATCH, &trio, &fresh)
+        .await
+        .unwrap();
+
+    assert!(plans.is_empty());
+}
+
+// The duo budget applies per seat: a 59 € pair needs a 59 € per-seat budget.
+#[sqlx::test]
+async fn duo_budget_is_per_seat(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "duo@example.com").await;
+    upsert(&pool, user, MATCH, &duo(4900)).await.unwrap();
+    grant_shop(&pool, user, Some("shop@example.com")).await;
+
+    let a = seat_at(9105, "a", "59.00", "SUD", "I", 19);
+    let b = seat_at(9105, "b", "59.00", "SUD", "I", 21);
+    let fresh = fresh_of(&[&a, &b]);
+
+    let plans = plan_checkouts_with_fresh(&pool, MATCH, &[a.clone(), b.clone()], &fresh)
+        .await
+        .unwrap();
+    assert!(plans.is_empty(), "59 € per seat is over a 49 € budget");
+
+    upsert(&pool, user, MATCH, &duo(5900)).await.unwrap();
+    let plans = plan_checkouts_with_fresh(&pool, MATCH, &[a, b], &fresh)
+        .await
+        .unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].seats.len(), 2);
+}
+
+// Among eligible fresh pairs, the cheapest per seat is planned.
+#[sqlx::test]
+async fn duo_takes_the_cheapest_fresh_pair(pool: SqlitePool) {
+    let user = insert_active_user(&pool, "duo@example.com").await;
+    upsert(&pool, user, MATCH, &duo(6000)).await.unwrap();
+    grant_shop(&pool, user, Some("shop@example.com")).await;
+
+    let pricey = [
+        seat_at(9106, "a", "59.00", "SUD", "I", 19),
+        seat_at(9106, "b", "59.00", "SUD", "I", 21),
+    ];
+    let cheap = [
+        seat_at(9107, "a", "49.00", "NORD", "U", 2),
+        seat_at(9107, "b", "49.00", "NORD", "U", 4),
+    ];
+    let listing = [
+        pricey[0].clone(),
+        pricey[1].clone(),
+        cheap[0].clone(),
+        cheap[1].clone(),
+    ];
+    let fresh = fresh_of(&[&pricey[0], &pricey[1], &cheap[0], &cheap[1]]);
+
+    let plans = plan_checkouts_with_fresh(&pool, MATCH, &listing, &fresh)
+        .await
+        .unwrap();
+
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0].seats.iter().all(|seat| seat.id.pack_id == 9107));
 }
 
 // Requests that left pending (claimed / closed) are never served again.

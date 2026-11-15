@@ -40,7 +40,10 @@ pub enum TicketRequestInput {
     /// One-at-a-time buying (`quantity` in 1..=10 tickets, each ≤
     /// `max_price_cents`), bought as they become available.
     Single { quantity: u8, max_price_cents: u32 },
-    /// A single pair, priced as a whole (`max_price_cents` for the duo).
+    /// One adjacent pair (two seats): `max_price_cents` is a **per-seat**
+    /// budget. The bot only takes an atomic 2-ticket resale pack whose tickets
+    /// share the block, the row and the seat-number parity (neighbours are
+    /// `1 & 3` or `2 & 4`).
     Duo { max_price_cents: u32 },
     /// 2..=10-standing seats on a shared billing; the pelouse rate applies
     /// automatically, so no price is requested.
@@ -55,7 +58,8 @@ impl TicketRequestInput {
     // Bounds mirrored from the frontend modal.
     /// Validates the variant against the same bounds the frontend enforces
     /// (Single: quantity 1..=10 and price 1..=[`MAX_PRICE_CENTS`]; Duo:
-    /// price; Group: places 2..=10; Notify: payloadless, always valid).
+    /// per-seat price; Group: places 2..=10; Notify: payloadless, always
+    /// valid).
     ///
     /// # Returns
     /// `true` when the payload may be stored; the route answers 400 otherwise.
@@ -160,7 +164,7 @@ pub struct TicketRequestView {
     pub kind: TicketKind,
     /// `Single` only: how many individual tickets are wanted (1..=10).
     pub quantity: Option<u8>,
-    /// `Single`/`Duo` only: per-ticket / per-duo budget in cents.
+    /// `Single`/`Duo` only: per-ticket / per-seat budget in cents.
     pub max_price_cents: Option<u32>,
     /// `Group` only: how many pelouse places (2..=10, shared billing).
     pub places: Option<u8>,
@@ -502,7 +506,7 @@ pub struct PendingRequester {
     pub kind: TicketKind,
     /// `Single` only: how many individual tickets are wanted (1..=10).
     pub quantity: Option<u8>,
-    /// `Single`/`Duo` only: per-ticket / per-duo budget in cents.
+    /// `Single`/`Duo` only: per-ticket / per-seat budget in cents.
     pub max_price_cents: Option<u32>,
     /// `Group` only: how many pelouse places (2..=10).
     pub places: Option<u8>,
