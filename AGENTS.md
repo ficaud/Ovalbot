@@ -4,6 +4,22 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-14 — Mode Duo : détection des paires adjacentes fraîches
+
+- Objectif : rendre le mode Duo sélectionnable dans la modale de demande et servi par le matcher d'achat. Cadrage utilisateur : une seule paire maximum, budget **par place**, détection sur des tickets **frais** du même pack, validée par la **parité** des numéros de siège (voisins = `1 & 3` ou `2 & 4`, rang et bloc identiques), tri frais d'abord puis prix par place. Aucune migration (les CHECK de `0012` autorisent déjà `kind = 'duo'`, `max_price_cents` seul).
+- `src/services/bot/purchases.rs` :
+  - `candidate_requests` → `kind IN ('single', 'duo', 'group')` ; docs du module et du `PurchaseCandidate.max_price_cents` alignées (Duo = budget par place).
+  - `plan_duo(match_id, candidate, available, fresh)` : pack atomique de **exactement 2 billets**, les deux présents dans `fresh` (fraîcheur = critère dur, pas seulement un tri), `is_duo_pair` (même bloc, même rang, `seat_number > 0`, même parité), prix unitaire ≤ `max_price_cents` ; retient la première paire éligible (ordre partagé : frais puis prix), l'évince du pool, quota `DUO_SEATS = 2`.
+  - Motif de skip compté : `no valid fresh duo pack (N pack(s) not a pair, M pair(s) not fresh, P pair(s) with non-adjacent seats, K pair(s) above budget 49.00 €, cheapest seat on resale …)`. Cas `claimed == 1` → « a duo pack cannot be split » ; `>= 2` → « order already complete ».
+  - Bug corrigé au passage : le `total` du `PlanCheckout` était calculé par `_ => places` et aurait donné `0` pour un Duo → match explicite `Single | Duo | Group` (`Notify` inatteignable). `progress_suffix` gagne la branche Duo (`x/2 filled`).
+- Frontend : `TicketRequestModal.svelte` n'enveloppe plus l'option Duo dans `{#if kind === 'duo'}` (elle est toujours visible), libellé « Duo (2 adjacent seats) », champ « Max price per seat », erreur `per seat`, hint « pair bought as a single resale listing / same row, same side of the aisle ». `types.ts` documente le budget par place. `api.ts` inchangé (le wire `{kind:'duo', max_price_cents}` existait déjà).
+- Checkout : aucun changement (un plan duo = un pack = un POST ; `total = 2` alimente la progression et la clôture `accepted`), verrouillé par un test d'intégration.
+- Tests : `purchases.rs` unitaires 22 → 33 (11 Duo : pair 19/21, pair pair 2/4, parité mixte, rang/bloc différents, pack de 1 ou 3, non frais / un seul frais, budget par place, paire la moins chère, un seul duo max + complétion, numéros non parsés, claim partiel, liste vide, credentials) ; `tests/purchases.rs` 20 → 26 (`notify_and_duo_are_never_planned` → `notify_is_never_planned`, + 6 tests Duo : plan nominal, fraîcheur des deux billets, parité/rang, trio, budget par place, paire la moins chère) ; `tests/checkout.rs` 19 → 20 (`a_duo_plan_adds_the_whole_pack` : 1 POST, 2 claims, `accepted`, alerte `2/2`).
+- Conséquence assumée de la fraîcheur stricte (choix utilisateur) : un pack duo enregistré par un scan **antérieur** à la création de la demande, ou dont le checkout a été sauté faute de credentials, n'est **jamais** replanifié — `record_offers` n'insère une offre qu'une fois et rien ne la réinsère. Documenté dans l'en-tête du module. Le flux nominal (demande créée avant l'apparition des places) est servi dès la vague qui les insère.
+- Docs : CHANGELOG `[Unreleased] / Added`, ce journal. Aucune variable d'environnement, aucun changement de schéma.
+- Verified: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --jobs 2` (lib 129, purchases 26, checkout 20, routes 54, tickets 23), `npm run check` (0/0), `npm run build`.
+- Reste ouvert (hors périmètre) : le matcher n'est déclenché que sur une vague de sièges **frais** (`plan_checkouts_with_fresh` n'est appelé que si `fresh_seats` est non vide) ; une demande créée alors qu'un duo est déjà en vente attend donc un nouvel arrivage, comme les autres kinds.
+
 ### 2026-11-14 — Statistique `seats_claimed` dans la modale de demande
 
 - Objectif : compléter la stat `seats_seen` (2026-11-14) par le nombre de places déjà réclamées par le bot (`ticket_offers.claimed_by IS NOT NULL`), affiché dans la modale de demande de billets. Choix utilisateur : un seul bloc statistique en bas de la modale, et la ligne « claimed » masquée tant que le total est 0.
