@@ -19,7 +19,7 @@ pub fn paris() -> &'static TimeZone {
 
 /// Wall-clock minute of the day (0..1440) in Europe/Paris at `ts` — the unit [`crate::services::bot::quiet_hours::QuietHours`] compares against.
 pub fn paris_minutes_at(ts: Timestamp) -> u16 {
-    let zoned = ts.to_zoned(paris().clone());
+    let zoned = ts.to_zoned_datetime(paris().clone());
     // jiff invariants: hour is 0..=23, minute is 0..=59.
     u16::from(zoned.hour() as u8) * 60 + u16::from(zoned.minute() as u8)
 }
@@ -111,7 +111,7 @@ mod tests {
             "2026-07-15T21:00:00Z",
         ] {
             let ts = instant.parse::<Timestamp>().expect("valid instant");
-            let utc = ts.to_zoned(TimeZone::UTC);
+            let utc = ts.to_zoned_datetime(TimeZone::UTC);
             let utc_minutes = u16::from(utc.hour() as u8) * 60 + u16::from(utc.minute() as u8);
             let offset_minutes = paris().to_offset(ts).seconds() / 60;
             let expected = (i32::from(utc_minutes) + offset_minutes).rem_euclid(1_440) as u16;

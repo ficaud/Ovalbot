@@ -4,6 +4,36 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-16 — Montée de `reqwest`, `jiff` et `aes-gcm`
+
+- Constat : sur la branche `dependabot/npm_and_yarn/frontend/sveltejs/kit-3.2.0`,
+  l'arbre portait trois bumps non commités (reqwest 0.12 → 0.13.5, jiff 0.2 → 1.0,
+  aes-gcm 0.10 → 0.11.1). `cargo check` échouait d'abord à la résolution : reqwest
+  0.13 n'a plus de feature `rustls-tls` (elle devient `rustls` = aws-lc-rs +
+  `rustls-platform-verifier` ; `ca-certificates` est déjà installé dans l'image
+  runtime).
+- `Cargo.toml` : `reqwest = { version = "0.13.5", default-features = false,
+  features = ["json", "form", "rustls"] }` — `form` est nécessaire au
+  `.form(&params)` de `setWebhook` (telegram.rs). Le code d'appel reqwest n'a pas
+  bougé.
+- `src/main.rs` (`format_paris`) et `src/common/time.rs` (`paris_minutes_at` +
+  son test d'oracle) : `Timestamp::to_zoned()` supprimé en jiff 1.0 →
+  `to_zoned_datetime()` (3 sites). Les autres API utilisées (`TimeZone::get`,
+  `UTC`, `fixed`, `to_offset`, `strftime`) sont inchangées.
+- `src/common/crypto.rs` : `hybrid-array` (aes-gcm 0.11) n'implémente plus
+  `From<&[u8]>` pour `&Key` → `Aes256Gcm::new((&key.key).into())` (depuis
+  `&[u8; 32]`) aux deux sites. Le format de stockage `hex(nonce) || hex(cipher+tag)`
+  et la dérivation HKDF sont inchangés : aucune rotation de `SECRET_KEY`, aucun
+  mot de passe boutique à re-saisir.
+- Drive-by : `src/services/rate_limit.rs` — le lien rustdoc `[`spawn_sweeper`]`
+  (méthode associée, résolue nulle part) devient `[`Self::spawn_sweeper`]`. C'était
+  le seul avertissement `cargo doc --no-deps`, préexistant et sans lien avec les bumps.
+- Docs : CHANGELOG `[Unreleased] / Changed`, ce journal. Aucune migration, aucune
+  env var, aucun changement frontend.
+- Verified : `cargo check --workspace`, `cargo fmt --check`,
+  `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps`
+  (0 warning), `cargo test --workspace --jobs 2` (22 suites, 440 passed / 1 ignored).
+
 ### 2026-11-15 — Rate limiter : `CF-Connecting-IP` prioritaire (tunnel Cloudflare)
 
 - Constat sur le commit `6e6ffed` : derrière un tunnel Cloudflare, `X-Forwarded-For` n'est **pas** fiable — l'edge CF **ajoute** la vraie IP à la fin du header sans écraser ce que le client a envoyé en tête, donc un `X-Forwarded-For: 1.2.3.4` forgé transite sous la forme `1.2.3.4, <vraie-ip>` et la 1ʳᵉ entrée (lue par `client_key`) est une valeur choisie par l'attaquant (contournement du limiter + empoisonnement du bucket d'une IP innocente). La source fiable est `CF-Connecting-IP` : écrit/écrasé par l'edge CF avec la vraie IP, inforgeable depuis l'extérieur, transmis tel quel par `cloudflared` (config réelle du site : tunnel CF déjà en place sur le VPS).

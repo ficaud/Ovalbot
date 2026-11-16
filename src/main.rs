@@ -39,7 +39,7 @@ fn format_paris(ts: Timestamp, tz: &TimeZone) -> String {
     // The timestamp format is fixed and jiff-representable, so formatting
     // cannot fail; `Display` would emit an empty string on the improbable
     // internal error, which keeps the writer contract (infallible) anyway.
-    ts.to_zoned(tz.clone())
+    ts.to_zoned_datetime(tz.clone())
         .strftime(PARIS_LOG_FORMAT)
         .to_string()
 }
