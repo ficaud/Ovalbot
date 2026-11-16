@@ -102,7 +102,7 @@ impl SecretKey {
 /// Regex-free: only the cipher itself can fail (practically nothing can
 /// encrypt wrong with a valid key)
 pub fn encrypt(key: &SecretKey, plaintext: &str) -> Result<String, CryptoError> {
-    let cipher = Aes256Gcm::new(key.key.as_slice().into());
+    let cipher = Aes256Gcm::new((&key.key).into());
     let nonce_b: [u8; 12] = rand::random();
     let ciphertext = cipher
         .encrypt(&Nonce::from(nonce_b), Payload::from(plaintext.as_bytes()))
@@ -134,7 +134,7 @@ pub fn decrypt(key: &SecretKey, stored: &str) -> Result<String, CryptoError> {
         return Err(CryptoError::InvalidHex);
     };
 
-    let cipher = Aes256Gcm::new(key.key.as_slice().into());
+    let cipher = Aes256Gcm::new((&key.key).into());
     let plaintext = cipher
         .decrypt(&Nonce::from(nonce_b), Payload::from(ciphertext.as_slice()))
         .map_err(CryptoError::Cipher)?;
