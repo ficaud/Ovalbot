@@ -50,6 +50,12 @@ pub enum AppError {
     TooManyAttempts(u64),
     #[error("telegram unavailable")]
     TelegramUnavailable,
+    #[error("invalid telegram chat id")]
+    InvalidTelegramChatId,
+    #[error("invalid telegram bot token")]
+    InvalidTelegramBotToken,
+    #[error("broadcast bot token storage unavailable")]
+    BroadcastBotUnavailable,
 }
 
 impl IntoResponse for AppError {
@@ -78,6 +84,21 @@ impl IntoResponse for AppError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "telegram_unavailable",
                 "telegram notifications are not available",
+            ),
+            AppError::InvalidTelegramChatId => (
+                StatusCode::BAD_REQUEST,
+                "invalid_telegram_chat_id",
+                "invalid telegram chat id",
+            ),
+            AppError::InvalidTelegramBotToken => (
+                StatusCode::BAD_REQUEST,
+                "invalid_telegram_bot_token",
+                "invalid telegram bot token",
+            ),
+            AppError::BroadcastBotUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "broadcast_bot_unavailable",
+                "broadcast bot token cannot be stored without SECRET_KEY",
             ),
             AppError::EmailTaken => (
                 StatusCode::CONFLICT,

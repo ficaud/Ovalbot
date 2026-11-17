@@ -9,7 +9,8 @@ use axum::routing::post;
 use axum::Router;
 use common::insert_active_user;
 use ovalbot::services::channels::telegram::{
-    consume_link_token, create_link_token, unlink, Telegram, TelegramClient, TelegramError,
+    broadcast_target, consume_link_token, create_link_token, set_broadcast_target, unlink,
+    BroadcastTarget, Telegram, TelegramClient, TelegramError,
 };
 use sqlx::SqlitePool;
 
@@ -96,6 +97,64 @@ async fn unlink_clears_telegram_id(pool: SqlitePool) {
     unlink(&pool, user).await.unwrap();
 
     assert!(telegram_id(&pool, user).await.is_none());
+}
+
+// ============================== BROADCAST CHANNEL ==============================
+
+/// Setting a broadcast channel stores the chat id and its owning admin;
+/// clearing it removes the single row.
+#[sqlx::test]
+async fn broadcast_channel_can_be_set_and_cleared(pool: SqlitePool) {
+    let admin = insert_active_user(&pool, "admin@example.com").await;
+    assert_eq!(broadcast_target(&pool).await.unwrap(), None);
+
+    set_broadcast_target(&pool, Some("-1001234567890"), admin, Some("cipher-a"))
+        .await
+        .unwrap();
+    assert_eq!(
+        broadcast_target(&pool).await.unwrap(),
+        Some(BroadcastTarget {
+            chat_id: "-1001234567890".to_string(),
+            admin_user_id: admin,
+            bot_token_cipher: Some("cipher-a".to_string()),
+        })
+    );
+
+    // Replacing the chat transfers ownership but keeps the stored token.
+    let other_admin = insert_active_user(&pool, "admin2@example.com").await;
+    set_broadcast_target(&pool, Some("@ovalbot_channel"), other_admin, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        broadcast_target(&pool).await.unwrap(),
+        Some(BroadcastTarget {
+            chat_id: "@ovalbot_channel".to_string(),
+            admin_user_id: other_admin,
+            bot_token_cipher: Some("cipher-a".to_string()),
+        })
+    );
+
+    set_broadcast_target(&pool, None, admin, None)
+        .await
+        .unwrap();
+    assert_eq!(broadcast_target(&pool).await.unwrap(), None);
+}
+
+/// Deleting the owning admin removes the broadcast row through the FK.
+#[sqlx::test]
+async fn deleting_the_admin_disables_the_broadcast(pool: SqlitePool) {
+    let admin = insert_active_user(&pool, "admin@example.com").await;
+    set_broadcast_target(&pool, Some("-1001234567890"), admin, Some("cipher-a"))
+        .await
+        .unwrap();
+
+    sqlx::query("DELETE FROM users WHERE id = ?")
+        .bind(admin)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(broadcast_target(&pool).await.unwrap(), None);
 }
 
 // ============================== TRANSPORT (Bot API) ==========================

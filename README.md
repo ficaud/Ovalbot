@@ -163,6 +163,23 @@ With `CART_ENABLED=true`, a request is only closed as `failed` on a refused shop
 login. Seat-gone, waiting queue, network, expired-form and missing add-to-cart
 context errors all leave it `pending` for the next wave.
 
+### Telegram broadcast channel (admin only)
+
+An admin can configure a dedicated broadcast bot in **Notification settings →
+Broadcast channel**: paste the bot token from @BotFather and the target chat id
+(numeric `-100…` for a group/channel, or a public `@username`). Add that bot to
+the chat first, with posting rights. Every alert the admin is subscribed to —
+resale seats, match scheduling and cart notifications — is then mirrored once to
+the channel by **that bot**, **in addition** to the regular private notifications
+(which still use the app's main bot). The mirror ignores the admin's own
+`notify_telegram` toggle: their subscriptions are the trigger.
+
+The token is encrypted at rest with a `SECRET_KEY`-derived key (separate HKDF
+domain from the shop vault), is never returned by the API nor logged, and must
+be retyped if `SECRET_KEY` changes. Leaving the token blank keeps the stored
+one; clearing the chat id removes both. This bot is independent of
+`TELEGRAM_ENABLED` and is stored in the database, not in environment variables.
+
 See `.env.example` for a ready-to-copy template.
 
 ### Diagnose a checkout failure (dump mode)

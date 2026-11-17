@@ -15,6 +15,12 @@ export interface UserView {
   shop_email: string | null;
 }
 
+/** Admin-configured Telegram broadcast channel (the bot token is never returned). */
+export interface TelegramChannelView {
+  chat_id: string | null;
+  has_token: boolean;
+}
+
 export interface VersionInfo {
   version: string;
 }

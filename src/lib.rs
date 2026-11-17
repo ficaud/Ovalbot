@@ -29,9 +29,9 @@ use crate::services::state::AppState;
 /// with `index.html` as the SPA fallback.
 ///
 /// The route table mirrors the frontend's `/api` proxy — auth/account,
-/// calendar reads, match-notification subscriptions and settings, ticket
-/// requests, feedback reports, Telegram linking/webhook, admin user
-/// management.
+/// calendar reads, match-notification subscriptions and settings (including
+/// the admin-only broadcast channel), ticket requests, feedback reports,
+/// Telegram linking/webhook, admin user management.
 ///
 /// # Arguments
 /// * `state` — shared dependencies (pool, mailer, telegram, calendar) handed
@@ -86,6 +86,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/feedback", post(feedback_routes::submit_report))
         .route("/api/admin/feedback", get(feedback_routes::list_reports))
+        .route(
+            "/api/admin/notifications/channel",
+            get(notifications_routes::get_broadcast).put(notifications_routes::set_broadcast),
+        )
         .route("/api/telegram/webhook", post(telegram_routes::webhook))
         .route("/api/admin/users", get(admin::list_users))
         .route("/api/admin/users/{id}/activate", post(admin::activate_user))

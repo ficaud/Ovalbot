@@ -5,6 +5,7 @@ import type {
   MatchView,
   RegisterResult,
   TeamView,
+  TelegramChannelView,
   TicketRequestDraft,
   TicketRequestInput,
   TicketRequestView,
@@ -140,6 +141,25 @@ export async function updateNotificationSettings(
     body: JSON.stringify({ email_enabled: emailEnabled, telegram_enabled: telegramEnabled })
   });
   if (!res.ok) throw new ApiError(res.status, 'Failed to save notification settings');
+}
+
+/** Reads the admin-only Telegram broadcast channel (the token is never returned). */
+export async function getTelegramChannel(): Promise<TelegramChannelView> {
+  return parse<TelegramChannelView>(await fetch('/api/admin/notifications/channel'));
+}
+
+/** Sets or clears the admin-only channel and its dedicated bot token. */
+export async function setTelegramChannel(
+  chatId: string | null,
+  botToken?: string | null
+): Promise<TelegramChannelView> {
+  return parse<TelegramChannelView>(
+    await fetch('/api/admin/notifications/channel', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, bot_token: botToken ?? null })
+    })
+  );
 }
 
 function toTicketRequestInput(draft: TicketRequestDraft): TicketRequestInput {
