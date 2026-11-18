@@ -10,6 +10,7 @@ use common::{
     home_event, insert_active_user, insert_session, insert_user, insert_user_with_password,
     test_state, test_state_with,
 };
+use ovalbot::common::crypto::{decrypt, SecretKey};
 use ovalbot::common::models::{Role, Status};
 use ovalbot::services::bot::purchases::claim_seat;
 use ovalbot::services::channels::mailer::NoopMailer;
@@ -471,6 +472,207 @@ async fn admin_routes_reject_regular_user(pool: SqlitePool) {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// Realistic bot token used by the broadcast route tests.
+const BROADCAST_BOT_TOKEN: &str = "123456789:AAF-3xY_z9Bq2LmN4pQrS8tUvWxYz012345";
+
+#[sqlx::test]
+async fn admin_can_set_and_clear_the_broadcast_channel(pool: SqlitePool) {
+    let admin = session_cookie(&pool, Status::Active, Role::Admin).await;
+    let app = app(pool.clone());
+    let uri = "/api/admin/notifications/channel";
+
+    let (status, _, body) = call(&app, request("GET", uri, Some(&admin), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(json(&body)["chat_id"].is_null());
+    assert_eq!(json(&body)["has_token"], false);
+
+    let (status, _, body) = call(
+        &app,
+        request(
+            "PUT",
+            uri,
+            Some(&admin),
+            Some(json!({ "chat_id": "  -1001234567890  ", "bot_token": BROADCAST_BOT_TOKEN })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["chat_id"], "-1001234567890");
+    assert_eq!(json(&body)["has_token"], true);
+    let body_text = String::from_utf8(body).unwrap();
+    assert!(
+        !body_text.contains(BROADCAST_BOT_TOKEN),
+        "token leaked in the API response"
+    );
+
+    // The channel belongs to the admin who set it, and the token is encrypted.
+    let (owner, cipher): (i64, String) = sqlx::query_as(
+        "SELECT admin_user_id, bot_token_cipher FROM telegram_broadcast WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let admin_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = 'user@example.com'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(owner, admin_id);
+    assert_ne!(cipher, BROADCAST_BOT_TOKEN);
+    assert_eq!(
+        decrypt(&SecretKey::for_broadcast_bot("test-secret"), &cipher).unwrap(),
+        BROADCAST_BOT_TOKEN
+    );
+
+    let (status, _, body) = call(&app, request("GET", uri, Some(&admin), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["chat_id"], "-1001234567890");
+    assert_eq!(json(&body)["has_token"], true);
+    let body_text = String::from_utf8(body).unwrap();
+    assert!(!body_text.contains(BROADCAST_BOT_TOKEN));
+
+    // Changing only the chat keeps the stored token.
+    let (status, _, body) = call(
+        &app,
+        request(
+            "PUT",
+            uri,
+            Some(&admin),
+            Some(json!({ "chat_id": "@ovalbot_channel" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["chat_id"], "@ovalbot_channel");
+    assert_eq!(json(&body)["has_token"], true);
+    let cipher_after: String =
+        sqlx::query_scalar("SELECT bot_token_cipher FROM telegram_broadcast WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(cipher_after, cipher);
+
+    let (status, _, body) = call(
+        &app,
+        request("PUT", uri, Some(&admin), Some(json!({ "chat_id": "" }))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(json(&body)["chat_id"].is_null());
+    assert_eq!(json(&body)["has_token"], false);
+    let (_, _, body) = call(&app, request("GET", uri, Some(&admin), None)).await;
+    assert!(json(&body)["chat_id"].is_null());
+    assert_eq!(json(&body)["has_token"], false);
+}
+
+#[sqlx::test]
+async fn broadcast_channel_is_admin_only(pool: SqlitePool) {
+    let app = app(pool.clone());
+    let user = session_cookie(&pool, Status::Active, Role::User).await;
+    let uri = "/api/admin/notifications/channel";
+
+    for (method, body) in [
+        (None, None),
+        (
+            Some("PUT"),
+            Some(json!({ "chat_id": "-100123", "bot_token": BROADCAST_BOT_TOKEN })),
+        ),
+    ] {
+        let method = method.unwrap_or("GET");
+        let (status, _, _) = call(&app, request(method, uri, Some(&user), body.clone())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = call(&app, request(method, uri, None, body)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[sqlx::test]
+async fn broadcast_channel_rejects_invalid_chat_ids(pool: SqlitePool) {
+    let admin = session_cookie(&pool, Status::Active, Role::Admin).await;
+    let app = app(pool);
+
+    for bad in ["abc", "123", "@ab", "-"] {
+        let (status, _, body) = call(
+            &app,
+            request(
+                "PUT",
+                "/api/admin/notifications/channel",
+                Some(&admin),
+                Some(json!({ "chat_id": bad, "bot_token": BROADCAST_BOT_TOKEN })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&body)["error"], "invalid_telegram_chat_id");
+    }
+}
+
+#[sqlx::test]
+async fn broadcast_channel_rejects_invalid_bot_tokens(pool: SqlitePool) {
+    let admin = session_cookie(&pool, Status::Active, Role::Admin).await;
+    let app = app(pool);
+
+    for bad in [
+        "",
+        "abc",
+        "123:short",
+        "abc:AAF-3xY_z9Bq2LmN4pQrS8tUvWxYz012345",
+        "123456789:bad secret with spaces",
+    ] {
+        let (status, _, body) = call(
+            &app,
+            request(
+                "PUT",
+                "/api/admin/notifications/channel",
+                Some(&admin),
+                Some(json!({ "chat_id": "-1001234567890", "bot_token": bad })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&body)["error"], "invalid_telegram_bot_token");
+    }
+}
+
+#[sqlx::test]
+async fn broadcast_channel_needs_a_token_on_first_configuration(pool: SqlitePool) {
+    let admin = session_cookie(&pool, Status::Active, Role::Admin).await;
+    let app = app(pool);
+
+    let (status, _, body) = call(
+        &app,
+        request(
+            "PUT",
+            "/api/admin/notifications/channel",
+            Some(&admin),
+            Some(json!({ "chat_id": "-1001234567890" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["error"], "invalid_telegram_bot_token");
+}
+
+#[sqlx::test]
+async fn broadcast_channel_needs_the_secret_key(pool: SqlitePool) {
+    let admin = session_cookie(&pool, Status::Active, Role::Admin).await;
+    let mut state = test_state(pool);
+    state.broadcast_bot_key = None;
+    let app = ovalbot::app(state);
+
+    let (status, _, body) = call(
+        &app,
+        request(
+            "PUT",
+            "/api/admin/notifications/channel",
+            Some(&admin),
+            Some(json!({ "chat_id": "-1001234567890", "bot_token": BROADCAST_BOT_TOKEN })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json(&body)["error"], "broadcast_bot_unavailable");
 }
 
 #[sqlx::test]

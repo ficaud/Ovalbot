@@ -9,7 +9,7 @@ use crate::common::crypto::SecretKey;
 use crate::services::bot::checkout::CartShop;
 use crate::services::calendar::CalendarService;
 use crate::services::channels::mailer::Mailer;
-use crate::services::channels::telegram::{Telegram, TelegramConfig};
+use crate::services::channels::telegram::{BroadcastBotFactory, Telegram, TelegramConfig};
 use crate::services::rate_limit::RateLimiter;
 
 /// All dependencies of the app, cheap-to-clone (pools and `Arc`s only).
@@ -34,6 +34,12 @@ pub struct AppState {
     /// startup; `None` refuses the credentials routes (fail-closed) and later
     /// the whole checkout feature.
     pub shop_key: Option<SecretKey>,
+    /// Separate AES key (different HKDF domain) for the admin's broadcast-bot
+    /// token vault; `None` refuses storing a token (fail-closed).
+    pub broadcast_bot_key: Option<SecretKey>,
+    /// Factory for the dedicated broadcast bot, built from the admin-provided
+    /// token at send time (real client in production, fake in tests).
+    pub broadcast_bot_factory: Arc<dyn BroadcastBotFactory>,
     /// `CART_ENABLED` — runs the checkout orchestrator at all.
     pub cart_enabled: bool,
     /// `CART_DRY_RUN` — log the planned checkouts without touching the shop

@@ -5,6 +5,12 @@
 //! The raw chat id is stored only in `users.telegram_id` and exposed to the
 //! API as a boolean; link tokens are single-use, expire after
 //! [`LINK_TTL_MINUTES`], and live in `telegram_link_tokens`.
+//!
+//! The admin can also configure one broadcast channel ([`broadcast_target`],
+//! [`set_broadcast_target`]): alerts the owning admin is subscribed to are
+//! mirrored there by `services::notifications`, in addition to the private
+//! per-user sends. The channel is admin-configured from the notification
+//! settings modal and stored in the single-row `telegram_broadcast` table.
 
 use std::sync::Arc;
 
@@ -371,6 +377,155 @@ pub async fn unlink(pool: &SqlitePool, user_id: i64) -> Result<(), AppError> {
     Ok(())
 }
 
+// ============================== BROADCAST BOT ==============================
+
+/// Builds the Telegram transport used to publish the admin's broadcasts.
+///
+/// The broadcast bot is independent of the app's main bot: its token is stored
+/// by the admin and a fresh client is built for each publication. Injected in
+/// [`crate::services::state::AppState`] so tests can capture the token used
+/// without talking to the Bot API.
+pub trait BroadcastBotFactory: Send + Sync {
+    /// Builds a Telegram client authenticated with `token`.
+    fn create(&self, token: &str) -> Arc<dyn Telegram>;
+}
+
+/// Production [`BroadcastBotFactory`]: a real [`TelegramClient`] per send.
+pub struct RealBroadcastBotFactory;
+
+impl BroadcastBotFactory for RealBroadcastBotFactory {
+    /// Builds a real client from the admin-provided bot token.
+    fn create(&self, token: &str) -> Arc<dyn Telegram> {
+        Arc::new(TelegramClient::new(token.to_string()))
+    }
+}
+
+/// The admin's broadcast channel: the chat id, the admin whose alerts are
+/// mirrored there, and the encrypted token of the bot that publishes them.
+/// Stored as the single row of `telegram_broadcast`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BroadcastTarget {
+    /// Telegram chat id pasted by the admin (numeric id or `@username`).
+    pub chat_id: String,
+    /// Admin whose subscribed alerts are mirrored to the channel.
+    pub admin_user_id: i64,
+    /// Encrypted token of the dedicated broadcast bot (`None` until provided).
+    pub bot_token_cipher: Option<String>,
+}
+
+/// Validates and normalizes a broadcast chat id pasted by the admin.
+///
+/// Accepts a numeric chat id (optionally negative, e.g. `-1001234567890`) or a
+/// public `@username` (5+ alphanumerics/underscores). Whitespace is trimmed;
+/// blank or malformed values return `None` so the caller can reject them.
+#[must_use]
+pub fn normalize_chat_id(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.is_empty() || value.len() > 64 {
+        return None;
+    }
+    let digits = value.strip_prefix('-').unwrap_or(value);
+    if digits.len() >= 5 && digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(value.to_string());
+    }
+    let username = value.strip_prefix('@')?;
+    if username.len() >= 5
+        && username
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Some(value.to_string());
+    }
+    None
+}
+
+/// Validates and normalizes a Telegram bot token pasted by the admin.
+///
+/// Telegram tokens look like `<bot id>:<secret>` (e.g. `123456789:AA…`). This
+/// checks the shape only — no call to the Bot API — and trims whitespace.
+#[must_use]
+pub fn normalize_bot_token(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    let (id, secret) = value.split_once(':')?;
+    if id.len() < 5
+        || !id.bytes().all(|b| b.is_ascii_digit())
+        || secret.len() < 20
+        || !secret
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+/// Reads the admin's broadcast channel, if one is configured.
+///
+/// # Returns
+/// The chat id, its owning admin and the encrypted bot token, or `None` when
+/// no channel was set.
+///
+/// # Errors
+/// [`AppError::Sqlx`] on query failure.
+pub async fn broadcast_target(pool: &SqlitePool) -> Result<Option<BroadcastTarget>, AppError> {
+    let row = sqlx::query_as::<_, (String, i64, Option<String>)>(
+        "SELECT chat_id, admin_user_id, bot_token_cipher \
+         FROM telegram_broadcast WHERE id = 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(
+        |(chat_id, admin_user_id, bot_token_cipher)| BroadcastTarget {
+            chat_id,
+            admin_user_id,
+            bot_token_cipher,
+        },
+    ))
+}
+
+/// Sets or clears the admin's broadcast channel (single global row).
+///
+/// A `None` chat id removes the row, disabling the broadcast. Otherwise the
+/// chat id and owner are replaced; a `None` token cipher keeps the previously
+/// stored one (so changing the channel does not require retyping the token).
+///
+/// # Errors
+/// [`AppError::Sqlx`] on query failure.
+pub async fn set_broadcast_target(
+    pool: &SqlitePool,
+    chat_id: Option<&str>,
+    admin_user_id: i64,
+    bot_token_cipher: Option<&str>,
+) -> Result<(), AppError> {
+    match chat_id {
+        Some(chat_id) => {
+            let now = crate::common::time::now();
+            sqlx::query(
+                "INSERT INTO telegram_broadcast \
+                 (id, chat_id, admin_user_id, bot_token_cipher, updated_at) \
+                 VALUES (1, ?, ?, ?, ?) \
+                 ON CONFLICT(id) DO UPDATE SET chat_id = excluded.chat_id, \
+                 admin_user_id = excluded.admin_user_id, \
+                 bot_token_cipher = COALESCE(excluded.bot_token_cipher, \
+                 telegram_broadcast.bot_token_cipher), \
+                 updated_at = excluded.updated_at",
+            )
+            .bind(chat_id)
+            .bind(admin_user_id)
+            .bind(bot_token_cipher)
+            .bind(&now)
+            .execute(pool)
+            .await?;
+        }
+        None => {
+            sqlx::query("DELETE FROM telegram_broadcast WHERE id = 1")
+                .execute(pool)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 /// Returns a deep link to the bot with the given username and token.
 pub fn deep_link(bot_username: &str, token: &str) -> String {
     format!("https://t.me/{bot_username}?start={token}")
@@ -435,5 +590,58 @@ mod tests {
             deep_link("OvalBot", "tok"),
             "https://t.me/OvalBot?start=tok"
         );
+    }
+
+    /// Numeric chat ids (private and group/channel) and public usernames are
+    /// accepted, with surrounding whitespace trimmed.
+    #[test]
+    fn normalize_chat_id_accepts_ids_and_usernames() {
+        assert_eq!(
+            normalize_chat_id("  -1001234567890  ").as_deref(),
+            Some("-1001234567890")
+        );
+        assert_eq!(normalize_chat_id("1234567").as_deref(), Some("1234567"));
+        assert_eq!(
+            normalize_chat_id("@mon_canal").as_deref(),
+            Some("@mon_canal")
+        );
+    }
+
+    /// Blank, malformed or oversized ids are rejected.
+    #[test]
+    fn normalize_chat_id_rejects_garbage() {
+        assert_eq!(normalize_chat_id("   "), None);
+        assert_eq!(normalize_chat_id(""), None);
+        assert_eq!(normalize_chat_id("-"), None);
+        assert_eq!(normalize_chat_id("123"), None);
+        assert_eq!(normalize_chat_id("@ab"), None);
+        assert_eq!(normalize_chat_id("@bad-name"), None);
+        assert_eq!(normalize_chat_id(&"1".repeat(65)), None);
+    }
+
+    /// A realistic `<id>:<secret>` token is accepted, with whitespace trimmed.
+    #[test]
+    fn normalize_bot_token_accepts_a_botfather_token() {
+        let token = "123456789:AAF-3xY_z9Bq2LmN4pQrS8tUvWxYz012345";
+        assert_eq!(
+            normalize_bot_token(&format!("  {token}  ")).as_deref(),
+            Some(token)
+        );
+    }
+
+    /// Missing separator, short/invalid id or secret, and whitespace are rejected.
+    #[test]
+    fn normalize_bot_token_rejects_garbage() {
+        for bad in [
+            "",
+            "123456789",
+            "abc:AAF-3xY_z9Bq2LmN4pQrS8tUvWxYz012345",
+            "123:AAF-3xY_z9Bq2LmN4pQrS8tUvWxYz012345",
+            "123456789:short",
+            "123456789:bad secret with spaces",
+            "123456789:AAF-3xY_z9Bq2LmN4pQrS8tUvWxYz012345 extra",
+        ] {
+            assert_eq!(normalize_bot_token(bad), None, "accepted: {bad}");
+        }
     }
 }

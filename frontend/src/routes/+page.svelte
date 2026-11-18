@@ -315,6 +315,7 @@
   telegramLinked={data.user.telegram_linked}
   notifyEmail={data.user.notify_email}
   notifyTelegram={data.user.notify_telegram}
+  isAdmin={data.user.role === 'admin'}
 />
 
 <ShopCredentialsModal

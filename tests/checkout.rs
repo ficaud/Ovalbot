@@ -15,7 +15,7 @@ use ovalbot::services::accounts::shop::set_credentials;
 use ovalbot::services::bot::checkout::{execute_plans, CartShop, CheckoutTarget, CART_URL};
 use ovalbot::services::bot::purchases::PlanCheckout;
 use ovalbot::services::calendar::CalendarService;
-use ovalbot::services::channels::telegram::TelegramConfig;
+use ovalbot::services::channels::telegram::{RealBroadcastBotFactory, TelegramConfig};
 use ovalbot::services::state::AppState;
 use ovalbot::services::tickets::{
     list_for_user, upsert, TicketKind, TicketRequestInput, TicketStatus,
@@ -138,6 +138,8 @@ fn state(
         telegram_config: TelegramConfig::default(),
         calendar: Arc::new(CalendarService::new()),
         shop_key: Some(SecretKey::from_passphrase("test-secret")),
+        broadcast_bot_key: Some(SecretKey::for_broadcast_bot("test-secret")),
+        broadcast_bot_factory: Arc::new(RealBroadcastBotFactory),
         cart_enabled: true,
         cart_dry_run: dry_run,
         cart_shop: shop,
