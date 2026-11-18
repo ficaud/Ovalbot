@@ -12,7 +12,8 @@ use ovalbot::services::calendar::CalendarService;
 use ovalbot::services::channels::alerts::{CartAlert, MatchAlert, ReportAlert, SeatAlert};
 use ovalbot::services::channels::mailer::{MailError, Mailer, NoopMailer};
 use ovalbot::services::channels::telegram::{
-    NoopTelegram, Telegram, TelegramConfig, TelegramError,
+    BroadcastBotFactory, NoopTelegram, RealBroadcastBotFactory, Telegram, TelegramConfig,
+    TelegramError,
 };
 use ovalbot::services::state::AppState;
 use parser::interface::curl::checkout::CheckoutError;
@@ -107,6 +108,29 @@ impl Telegram for RecordingTelegram {
             .unwrap()
             .push((chat_id.to_string(), html.to_string()));
         Ok(())
+    }
+}
+
+/// Fake broadcast-bot factory: records the tokens used and hands out one
+/// shared [`RecordingTelegram`] so tests can see what the dedicated bot sent.
+pub struct RecordingBotFactory {
+    pub telegram: Arc<RecordingTelegram>,
+    pub tokens: Mutex<Vec<String>>,
+}
+
+impl RecordingBotFactory {
+    pub fn new() -> Self {
+        Self {
+            telegram: Arc::new(RecordingTelegram::new()),
+            tokens: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl BroadcastBotFactory for RecordingBotFactory {
+    fn create(&self, token: &str) -> Arc<dyn Telegram> {
+        self.tokens.lock().unwrap().push(token.to_string());
+        self.telegram.clone()
     }
 }
 
@@ -376,6 +400,8 @@ pub fn build_state(
         telegram_config,
         calendar: Arc::new(CalendarService::new()),
         shop_key,
+        broadcast_bot_key: Some(SecretKey::for_broadcast_bot("test-secret")),
+        broadcast_bot_factory: Arc::new(RealBroadcastBotFactory),
         cart_enabled: false,
         cart_dry_run: true,
         cart_shop: Arc::new(RealCartShop),

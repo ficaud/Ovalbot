@@ -3,14 +3,17 @@ mod common;
 use std::sync::Arc;
 
 use calendar::{Change, TeamType};
-use common::{insert_active_user, RecordingMailer, RecordingTelegram};
-use ovalbot::common::crypto::SecretKey;
+use common::{insert_active_user, RecordingBotFactory, RecordingMailer, RecordingTelegram};
+use ovalbot::common::crypto::{encrypt, SecretKey};
 use ovalbot::services::calendar::CalendarService;
-use ovalbot::services::channels::alerts::{SeatAlert, SeatBrief};
+use ovalbot::services::channels::alerts::{CartAlert, SeatAlert, SeatBrief};
 use ovalbot::services::channels::mailer::Mailer;
-use ovalbot::services::channels::telegram::{Telegram, TelegramConfig};
+use ovalbot::services::channels::telegram::{
+    set_broadcast_target, RealBroadcastBotFactory, Telegram, TelegramConfig,
+};
 use ovalbot::services::notifications::{
-    list_for_user, notify_new_seats, process, subscribe, unsubscribe, update_settings,
+    list_for_user, notify_cart_ready, notify_new_seats, process, subscribe, unsubscribe,
+    update_settings,
 };
 use ovalbot::services::state::AppState;
 use ovalbot::services::tickets::upsert;
@@ -49,12 +52,40 @@ fn state(pool: SqlitePool, mailer: Arc<dyn Mailer>, telegram: Arc<dyn Telegram>)
         telegram_config: TelegramConfig::default(),
         calendar: Arc::new(CalendarService::new()),
         shop_key: Some(SecretKey::from_passphrase("test-secret")),
+        broadcast_bot_key: Some(SecretKey::for_broadcast_bot("test-secret")),
+        broadcast_bot_factory: Arc::new(RealBroadcastBotFactory),
         cart_enabled: false,
         cart_dry_run: true,
         cart_shop: Arc::new(ovalbot::services::bot::checkout::RealCartShop),
         rate_limiter: Arc::new(ovalbot::services::rate_limit::RateLimiter::new()),
         proxy_trusted: false,
     }
+}
+
+/// Dedicated-bot token used by the broadcast tests.
+const BOT_TOKEN: &str = "123456789:AAF-3xY_z9Bq2LmN4pQrS8tUvWxYz012345";
+
+/// Stores a broadcast channel with an encrypted bot token, like the admin
+/// endpoint does, and returns the clear token expected at send time.
+async fn configure_broadcast(pool: &sqlx::SqlitePool, chat_id: &str, admin: i64) -> String {
+    let cipher = encrypt(&SecretKey::for_broadcast_bot("test-secret"), BOT_TOKEN).unwrap();
+    set_broadcast_target(pool, Some(chat_id), admin, Some(&cipher))
+        .await
+        .unwrap();
+    BOT_TOKEN.to_string()
+}
+
+/// Builds a state whose broadcast bot is a recording fake instead of a real
+/// Telegram client.
+fn state_with_bot(
+    pool: SqlitePool,
+    mailer: Arc<dyn Mailer>,
+    telegram: Arc<dyn Telegram>,
+    factory: Arc<RecordingBotFactory>,
+) -> AppState {
+    let mut state = state(pool, mailer, telegram);
+    state.broadcast_bot_factory = factory;
+    state
 }
 
 /// Subscribing twice to the same match inserts a single row (`ON CONFLICT DO
@@ -428,4 +459,211 @@ async fn notify_new_seats_sends_nothing_without_pending_requesters(pool: SqliteP
 
     assert!(mailer.seats_alerts.lock().unwrap().is_empty());
     assert!(telegram.messages.lock().unwrap().is_empty());
+}
+
+// ============================== BROADCAST CHANNEL ==============================
+
+/// A scheduled-match alert is mirrored once to the admin's channel, in
+/// addition to the admin's private message. Other subscribers stay private.
+#[sqlx::test]
+async fn process_mirrors_the_admins_alert_to_the_broadcast_channel(pool: SqlitePool) {
+    let admin = insert_active_user(&pool, "admin@example.com").await;
+    let other = insert_active_user(&pool, "other@example.com").await;
+    subscribe(&pool, admin, 7).await.unwrap();
+    subscribe(&pool, other, 7).await.unwrap();
+    sqlx::query("UPDATE users SET telegram_id = '111' WHERE id = ?")
+        .bind(admin)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let token = configure_broadcast(&pool, "-100999", admin).await;
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let factory = Arc::new(RecordingBotFactory::new());
+    let state = state_with_bot(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        factory.clone(),
+    );
+    process(
+        &state,
+        vec![Change::Scheduled {
+            id: 7,
+            team: TeamType::StadeRochelais,
+            opponent: TeamType::RcToulon,
+            kickoff: "samedi 10 octobre 14h30".to_string(),
+        }],
+    )
+    .await;
+
+    assert_eq!(mailer.alerts.lock().unwrap().len(), 2);
+    // The main bot only sent the admin's private message.
+    let messages = telegram.messages.lock().unwrap().clone();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].0, "111");
+    // The channel copy went through the dedicated bot, with the stored token.
+    let broadcast = factory.telegram.messages.lock().unwrap().clone();
+    assert_eq!(broadcast.len(), 1);
+    assert_eq!(broadcast[0].0, "-100999");
+    assert!(broadcast[0].1.contains("Stade Rochelais vs RC Toulon"));
+    assert_eq!(factory.tokens.lock().unwrap().clone(), vec![token]);
+}
+
+/// The channel is never used for alerts of other users, even when they have a
+/// linked chat and the admin is not subscribed at all.
+#[sqlx::test]
+async fn broadcast_ignores_alerts_of_other_users(pool: SqlitePool) {
+    let admin = insert_active_user(&pool, "admin@example.com").await;
+    let other = insert_active_user(&pool, "other@example.com").await;
+    subscribe(&pool, other, 7).await.unwrap();
+    sqlx::query("UPDATE users SET telegram_id = '222' WHERE id = ?")
+        .bind(other)
+        .execute(&pool)
+        .await
+        .unwrap();
+    configure_broadcast(&pool, "-100999", admin).await;
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let factory = Arc::new(RecordingBotFactory::new());
+    let state = state_with_bot(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        factory.clone(),
+    );
+    process(
+        &state,
+        vec![Change::Scheduled {
+            id: 7,
+            team: TeamType::StadeRochelais,
+            opponent: TeamType::RcToulon,
+            kickoff: "samedi 10 octobre 14h30".to_string(),
+        }],
+    )
+    .await;
+
+    let messages = telegram.messages.lock().unwrap().clone();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].0, "222");
+    assert!(factory.telegram.messages.lock().unwrap().is_empty());
+    assert!(factory.tokens.lock().unwrap().is_empty());
+}
+
+/// Seats alerts are mirrored even when the admin muted Telegram on their own
+/// account — their `notify` subscription is what triggers the publication.
+#[sqlx::test]
+async fn seats_alert_is_mirrored_even_when_the_admin_muted_telegram(pool: SqlitePool) {
+    let admin = insert_active_user(&pool, "admin@example.com").await;
+    let other = insert_active_user(&pool, "other@example.com").await;
+    for user in [admin, other] {
+        upsert(
+            &pool,
+            user,
+            11877,
+            &ovalbot::services::tickets::TicketRequestInput::Notify,
+        )
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE users SET notify_telegram = 0, telegram_id = '111' WHERE id = ?")
+        .bind(admin)
+        .execute(&pool)
+        .await
+        .unwrap();
+    configure_broadcast(&pool, "-100999", admin).await;
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let factory = Arc::new(RecordingBotFactory::new());
+    let state = state_with_bot(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        factory.clone(),
+    );
+    notify_new_seats(&state, 11877, &seats_alert()).await;
+
+    assert_eq!(mailer.seats_alerts.lock().unwrap().len(), 2);
+    // The admin muted Telegram, so the main bot sent nothing.
+    assert!(telegram.messages.lock().unwrap().is_empty());
+    let broadcast = factory.telegram.messages.lock().unwrap().clone();
+    assert_eq!(broadcast.len(), 1);
+    assert_eq!(broadcast[0].0, "-100999");
+    assert!(broadcast[0].1.contains("🟢 Nouvelles places :"));
+    assert_eq!(factory.tokens.lock().unwrap().clone(), vec![BOT_TOKEN]);
+}
+
+/// Cart alerts are mirrored too when the cart belongs to the owning admin.
+#[sqlx::test]
+async fn cart_alert_of_the_admin_is_mirrored(pool: SqlitePool) {
+    let admin = insert_active_user(&pool, "admin@example.com").await;
+    let other = insert_active_user(&pool, "other@example.com").await;
+    configure_broadcast(&pool, "-100999", admin).await;
+
+    let mailer = Arc::new(RecordingMailer::new());
+    let telegram = Arc::new(RecordingTelegram::new());
+    let factory = Arc::new(RecordingBotFactory::new());
+    let state = state_with_bot(
+        pool.clone(),
+        mailer.clone(),
+        telegram.clone(),
+        factory.clone(),
+    );
+    let alert = || CartAlert {
+        opponent: "Aviron Bayonnais".to_string(),
+        date: "dimanche 8 novembre à 21h05".to_string(),
+        match_link: "https://billetterie.staderochelais.com/fr/product/1357/revente".to_string(),
+        cart_link: "https://billetterie.staderochelais.com/fr/basket".to_string(),
+        added: 2,
+        claimed: 2,
+        total: 2,
+        failed: false,
+    };
+
+    notify_cart_ready(&state, admin, &alert()).await;
+    let broadcast = factory.telegram.messages.lock().unwrap().clone();
+    assert_eq!(broadcast.len(), 1);
+    assert_eq!(broadcast[0].0, "-100999");
+    assert!(broadcast[0].1.contains("2/2"));
+    assert_eq!(factory.tokens.lock().unwrap().clone(), vec![BOT_TOKEN]);
+
+    // The cart of another user is never published.
+    factory.telegram.messages.lock().unwrap().clear();
+    notify_cart_ready(&state, other, &alert()).await;
+    assert!(factory.telegram.messages.lock().unwrap().is_empty());
+}
+
+/// A channel configured before the token feature (or without a token) never
+/// publishes anything: the dedicated bot is mandatory.
+#[sqlx::test]
+async fn broadcast_without_a_token_sends_nothing(pool: SqlitePool) {
+    let admin = insert_active_user(&pool, "admin@example.com").await;
+    subscribe(&pool, admin, 7).await.unwrap();
+    set_broadcast_target(&pool, Some("-100999"), admin, None)
+        .await
+        .unwrap();
+
+    let factory = Arc::new(RecordingBotFactory::new());
+    let state = state_with_bot(
+        pool.clone(),
+        Arc::new(RecordingMailer::new()),
+        Arc::new(RecordingTelegram::new()),
+        factory.clone(),
+    );
+    process(
+        &state,
+        vec![Change::Scheduled {
+            id: 7,
+            team: TeamType::StadeRochelais,
+            opponent: TeamType::RcToulon,
+            kickoff: "samedi 10 octobre 14h30".to_string(),
+        }],
+    )
+    .await;
+
+    assert!(factory.telegram.messages.lock().unwrap().is_empty());
+    assert!(factory.tokens.lock().unwrap().is_empty());
 }

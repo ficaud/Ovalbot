@@ -91,9 +91,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize the state
     let shop_key = SecretKey::from_env();
+    let broadcast_bot_key = SecretKey::from_env_for_broadcast();
     if shop_key.is_none() {
         tracing::warn!(
-            "SECRET_KEY not set: the shop-credentials vault is refused (set SECRET_KEY to enable)"
+            "SECRET_KEY not set: the shop-credentials vault and the broadcast-bot token are \
+             refused (set SECRET_KEY to enable)"
         );
     }
     // Phase 4B checkout flags: disabled by default, and dry-run by default even
@@ -121,6 +123,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         telegram_config: telegram::config_from_env(),
         calendar,
         shop_key,
+        broadcast_bot_key,
+        broadcast_bot_factory: Arc::new(telegram::RealBroadcastBotFactory),
         cart_enabled,
         cart_dry_run,
         cart_shop: Arc::new(RealCartShop),

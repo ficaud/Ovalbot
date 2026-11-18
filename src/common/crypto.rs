@@ -1,5 +1,6 @@
 //! Symmetric encryption helpers for data at rest that must stay reversible
-//! (the user's shop password, needed later in clear to log into the shop).
+//! (the user's shop password, needed later in clear to log into the shop, and
+//! the admin's broadcast-bot token, needed in clear to send Telegram messages).
 //!
 //! Everything here is keyed by [`SecretKey`], derived from the server's
 //! `SECRET_KEY` secret with HKDF-SHA256 (extract-then-expand, fixed salt plus
@@ -29,6 +30,14 @@ const KDF_SALT: &[u8] = b"ovalbot.shop-credentials.salt.v1";
 /// same `SECRET_KEY` can safely key another feature without collision.
 const KDF_INFO: &[u8] = b"ovalbot.shop-credentials.aes-256-gcm.v1";
 
+/// HKDF salt for the admin's Telegram broadcast-bot token vault. A different
+/// salt *and* info than the shop vault: a cipher from one feature cannot be
+/// decrypted with the key of the other.
+const BROADCAST_KDF_SALT: &[u8] = b"ovalbot.broadcast-bot-token.salt.v1";
+
+/// HKDF `info` label for the broadcast-bot token vault.
+const BROADCAST_KDF_INFO: &[u8] = b"ovalbot.broadcast-bot-token.aes-256-gcm.v1";
+
 // ============================== ERRORS ==============================
 
 /// Why an encrypt/decrypt round trip failed (internal-only: collapses into
@@ -48,9 +57,9 @@ pub enum CryptoError {
 
 // ============================== KEY ==============================
 
-/// The AES-256 secret key derived once at startup from the `SECRET_KEY`
-/// secret. Holding no key means the shop-credentials feature is refused
-/// (fail-closed).
+/// An AES-256 key derived from the server's `SECRET_KEY` secret for one
+/// specific feature. Holding no key means that feature's secret storage is
+/// refused (fail-closed).
 #[derive(Debug, Clone, Copy)]
 pub struct SecretKey {
     /// The 32-byte HKDF-SHA256 output.
@@ -58,35 +67,48 @@ pub struct SecretKey {
 }
 
 impl SecretKey {
-    /// Derives the AES-256 key material from the server's `SECRET_KEY` secret.
+    /// Derives the shop-credentials AES-256 key from `SECRET_KEY`.
     ///
-    /// HKDF-SHA256 (extract with `KDF_SALT`, expand with `KDF_INFO`)
-    /// rather than a bare hash: SHA-256 on its own is not a key-derivation
-    /// function, and flagging it is exactly what security scanners do for a
-    /// secret that looks like a password.
-    ///
-    /// # Arguments
-    /// * `secret` - The `SECRET_KEY` value (high-entropy key material)
-    /// # Returns
-    /// The 32-byte AES-256 key (`expand` cannot fail for this length)
+    /// HKDF-SHA256 (extract with `KDF_SALT`, expand with `KDF_INFO`) rather
+    /// than a bare hash: SHA-256 on its own is not a key-derivation function,
+    /// and flagging it is exactly what security scanners do for a secret that
+    /// looks like a password.
     pub fn from_passphrase(secret: &str) -> Self {
-        let hkdf = Hkdf::<Sha256>::new(Some(KDF_SALT), secret.as_bytes());
+        Self::derive(KDF_SALT, KDF_INFO, secret)
+    }
+
+    /// Derives the broadcast-bot-token AES-256 key from `SECRET_KEY`, in a
+    /// separate HKDF domain from the shop vault.
+    pub fn for_broadcast_bot(secret: &str) -> Self {
+        Self::derive(BROADCAST_KDF_SALT, BROADCAST_KDF_INFO, secret)
+    }
+
+    /// Extracts then expands the 32-byte AES key for the given domain labels.
+    fn derive(salt: &[u8], info: &[u8], secret: &str) -> Self {
+        let hkdf = Hkdf::<Sha256>::new(Some(salt), secret.as_bytes());
         let mut key = [0u8; 32];
-        hkdf.expand(KDF_INFO, &mut key)
+        hkdf.expand(info, &mut key)
             .expect("HKDF-SHA256 always produces 32 bytes");
         Self { key }
     }
 
-    /// Reads `SECRET_KEY` from the environment: `Some` when set to a
-    /// non-blank value. An absent or blank secret is treated as *no key*
-    /// (fail-closed) — an empty HKDF input would silently secure everything
-    /// with a publicly derivable key.
-    pub fn from_env() -> Option<Self> {
+    /// Reads a non-blank `SECRET_KEY` from the environment (fail-closed: an
+    /// absent or blank value yields no key at all).
+    fn env_secret() -> Option<String> {
         std::env::var("SECRET_KEY")
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
-            .map(|v| Self::from_passphrase(&v))
+    }
+
+    /// Reads `SECRET_KEY` and derives the shop-credentials key, when configured.
+    pub fn from_env() -> Option<Self> {
+        Self::env_secret().as_deref().map(Self::from_passphrase)
+    }
+
+    /// Reads `SECRET_KEY` and derives the broadcast-bot-token key, when set.
+    pub fn from_env_for_broadcast() -> Option<Self> {
+        Self::env_secret().as_deref().map(Self::for_broadcast_bot)
     }
 }
 
@@ -247,5 +269,22 @@ mod tests {
         let first = SecretKey::from_passphrase("stable-secret");
         let second = SecretKey::from_passphrase("stable-secret");
         assert_eq!(first.key, second.key);
+    }
+
+    // The broadcast-bot vault has its own key domain: a token cipher cannot be
+    // decrypted with the shop key, and vice versa.
+    #[test]
+    fn broadcast_and_shop_keys_are_domain_separated() {
+        let shop = SecretKey::from_passphrase("same-secret");
+        let broadcast = SecretKey::for_broadcast_bot("same-secret");
+        assert_ne!(shop.key, broadcast.key);
+
+        let stored = encrypt(&broadcast, "123456:token").unwrap();
+        assert!(decrypt(&shop, &stored).is_err());
+        assert_eq!(decrypt(&broadcast, &stored).unwrap(), "123456:token");
+        assert_eq!(
+            SecretKey::for_broadcast_bot("same-secret").key,
+            broadcast.key
+        );
     }
 }

@@ -10,12 +10,21 @@
 //! calls [`notify_new_seats`] → every `notify`-kind subscriber of that match
 //! (explicit opt-in in the frontend) gets an email and/or Telegram message
 //! gated by the same per-channel preferences. Buying kinds are never alerted.
+//!
+//! When the admin configured a broadcast channel, each of these alerts is also
+//! mirrored there — once per event — if the admin is among the recipients. The
+//! mirror is sent by a dedicated bot whose token the admin pasted in the
+//! settings (encrypted at rest, decrypted per send), not by the app's main bot.
+//! That mirror is independent of the admin's own channel preferences: their
+//! subscriptions decide what gets published.
 
 use calendar::Change;
 use sqlx::SqlitePool;
 
+use crate::common::crypto::decrypt;
 use crate::common::error::AppError;
 use crate::services::channels::alerts::{CartAlert, MatchAlert, SeatAlert};
+use crate::services::channels::telegram;
 use crate::services::state::AppState;
 use crate::services::tickets;
 
@@ -89,6 +98,86 @@ pub async fn update_settings(
     Ok(())
 }
 
+/// Mirrors one already-rendered Telegram alert to the admin's broadcast
+/// channel when the admin is among `recipient_ids`, using the admin's own
+/// dedicated bot token.
+///
+/// The mirror is best-effort: a missing channel/token, a DB/crypto error or a
+/// failed send only logs a warning and never affects the private per-user
+/// notifications. It deliberately ignores `notify_telegram` — the admin's
+/// subscriptions are the only trigger.
+///
+/// # Returns
+/// `true` when a copy was actually sent to the channel.
+async fn mirror_to_broadcast(
+    state: &AppState,
+    recipient_ids: &[i64],
+    text: &str,
+    html: bool,
+) -> bool {
+    // Don't proceed further is there is no recipient
+    if recipient_ids.is_empty() {
+        return false;
+    }
+    // Get targets from telegram configuration, exit if there is no target
+    let target = match telegram::broadcast_target(&state.pool).await {
+        Ok(Some(target)) => target,
+        Ok(None) => return false,
+        Err(e) => {
+            tracing::warn!("failed to load telegram broadcast channel: {e}");
+            return false;
+        }
+    };
+
+    // Exit if recipient ids don't contains the admin id
+    if !recipient_ids.contains(&target.admin_user_id) {
+        return false;
+    }
+
+    // Check that telegram targets has a bot token
+    let Some(cipher) = &target.bot_token_cipher else {
+        tracing::warn!("broadcast channel has no bot token configured");
+        return false;
+    };
+    
+    // get broadcast key to decipher the bot token
+    let Some(key) = state.broadcast_bot_key.as_ref() else {
+        tracing::warn!("broadcast bot token cannot be decrypted without SECRET_KEY");
+        return false;
+    };
+
+    // decrypt the bot token
+    let token = match decrypt(key, cipher) {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::warn!("failed to decrypt the broadcast bot token: {e}");
+            return false;
+        }
+    };
+
+    // Create a new telegram client here for the message sending.
+    // We do that because the bot token may change in the future.
+    let bot = state.broadcast_bot_factory.create(&token);
+    // Send html message is available or default one either
+    let sent = if html {
+        bot.send_message_html(&target.chat_id, text).await
+    } else {
+        bot.send_message(&target.chat_id, text).await
+    };
+
+    // Check the sent response to trace and have a return
+    match sent {
+        Ok(()) => {
+            tracing::info!(chat_id = %target.chat_id, "alert mirrored to broadcast channel");
+            true
+        }
+        Err(e) => {
+            tracing::warn!("failed to mirror alert to the telegram broadcast channel: {e}");
+            false
+        }
+    }
+}
+
 /// Fans out one notification round for the changes produced by a calendar
 /// sync. Only `Change::Scheduled` flips are handled (Tbd → Scheduled with the
 /// final kickoff); best-effort per message — send failures are logged, never
@@ -155,6 +244,11 @@ async fn process_one(
         opponent,
         kickoff,
     };
+    let text = format!(
+        "Match scheduled: {} vs {} on {}.",
+        alert.team, alert.opponent, alert.kickoff
+    );
+    let recipient_ids: Vec<i64> = subscribers.iter().map(|(user_id, ..)| *user_id).collect();
     // for each subscriber, notify through the enabled channels
     for (user_id, email, telegram_id, notify_email, notify_telegram) in &subscribers {
         // If noifify email is enabled, send the email
@@ -167,10 +261,6 @@ async fn process_one(
         if *notify_telegram {
             // Check that the user has a telegram id
             if let Some(chat_id) = telegram_id {
-                let text = format!(
-                    "Match scheduled: {} vs {} on {}.",
-                    alert.team, alert.opponent, alert.kickoff
-                );
                 if let Err(e) = state.telegram.send_message(chat_id, &text).await {
                     tracing::warn!(
                         "failed to send match alert on telegram for user {user_id}: {e}"
@@ -179,6 +269,7 @@ async fn process_one(
             }
         }
     }
+    mirror_to_broadcast(state, &recipient_ids, &text, false).await;
     // clear the notifications for this match in the database
     if let Err(e) = sqlx::query("DELETE FROM match_notifications WHERE match_id = ?")
         .bind(i64::from(match_id))
@@ -222,6 +313,7 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
     // Client-rendered Telegram message (HTML parse mode): header, divider,
     // clickable CTA and one bullet per seat, in the house design.
     let text = alert.telegram_text();
+    let recipient_ids: Vec<i64> = requesters.iter().map(|r| r.user_id).collect();
     let (mut emailed, mut messaged) = (0u32, 0u32);
     for requester in requesters {
         // If notify_email is enabled, send the seats alert email
@@ -257,10 +349,12 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
             }
         }
     }
+    let broadcast = mirror_to_broadcast(state, &recipient_ids, &text, true).await;
     tracing::info!(
         match_id,
         emailed,
         messaged,
+        broadcast,
         "seats alert processed for notify subscribers"
     );
 }
@@ -298,6 +392,7 @@ pub async fn notify_cart_ready(state: &AppState, user_id: i64, alert: &CartAlert
         return;
     };
 
+    let text = alert.telegram_text();
     let (mut emailed, mut messaged) = (false, false);
     if notify_email {
         match state.mailer.send_cart_alert(&email, alert).await {
@@ -307,11 +402,7 @@ pub async fn notify_cart_ready(state: &AppState, user_id: i64, alert: &CartAlert
     }
     if notify_telegram {
         if let Some(chat_id) = &telegram_id {
-            match state
-                .telegram
-                .send_message_html(chat_id, &alert.telegram_text())
-                .await
-            {
+            match state.telegram.send_message_html(chat_id, &text).await {
                 Ok(()) => messaged = true,
                 Err(e) => {
                     tracing::warn!("failed to send cart alert on telegram for user {user_id}: {e}")
@@ -319,6 +410,7 @@ pub async fn notify_cart_ready(state: &AppState, user_id: i64, alert: &CartAlert
             }
         }
     }
+    let broadcast = mirror_to_broadcast(state, &[user_id], &text, true).await;
     tracing::info!(
         user_id,
         added = alert.added,
@@ -327,6 +419,7 @@ pub async fn notify_cart_ready(state: &AppState, user_id: i64, alert: &CartAlert
         failed = alert.failed,
         emailed,
         messaged,
+        broadcast,
         "cart alert processed"
     );
 }

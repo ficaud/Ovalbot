@@ -1,12 +1,24 @@
 <script lang="ts">
   import { invalidateAll } from '$app/navigation';
-  import { linkTelegram, unlinkTelegram, updateNotificationSettings } from '#lib/api';
+  import {
+    getTelegramChannel,
+    linkTelegram,
+    setTelegramChannel,
+    unlinkTelegram,
+    updateNotificationSettings
+  } from '#lib/api';
 
   let {
     telegramLinked,
     notifyEmail,
-    notifyTelegram
-  }: { telegramLinked: boolean; notifyEmail: boolean; notifyTelegram: boolean } = $props();
+    notifyTelegram,
+    isAdmin
+  }: {
+    telegramLinked: boolean;
+    notifyEmail: boolean;
+    notifyTelegram: boolean;
+    isAdmin: boolean;
+  } = $props();
 
   let dialogEl: HTMLDialogElement;
 
@@ -15,6 +27,10 @@
   let telegramEnabled = $state(true);
   let telegramPending = $state(false);
   let saving = $state(false);
+  let channelId = $state('');
+  let botToken = $state('');
+  let hasToken = $state(false);
+  let channelSaving = $state(false);
   let error = $state('');
   let notice = $state('');
 
@@ -29,6 +45,19 @@
     error = '';
     notice = '';
     dialogEl?.showModal();
+    if (isAdmin) {
+      void getTelegramChannel()
+        .then((channel) => {
+          channelId = channel.chat_id ?? '';
+          hasToken = channel.has_token;
+          botToken = '';
+        })
+        .catch(() => {
+          channelId = '';
+          hasToken = false;
+          botToken = '';
+        });
+    }
   }
 
   function close() {
@@ -61,6 +90,40 @@
       error = err instanceof Error ? err.message : 'Failed to disconnect Telegram';
     } finally {
       telegramPending = false;
+    }
+  }
+
+  async function saveChannel() {
+    channelSaving = true;
+    error = '';
+    notice = '';
+    try {
+      const channel = await setTelegramChannel(channelId.trim(), botToken.trim() || null);
+      channelId = channel.chat_id ?? '';
+      hasToken = channel.has_token;
+      botToken = '';
+      notice = 'Broadcast channel saved.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to save the broadcast channel';
+    } finally {
+      channelSaving = false;
+    }
+  }
+
+  async function removeChannel() {
+    channelSaving = true;
+    error = '';
+    notice = '';
+    try {
+      await setTelegramChannel(null);
+      channelId = '';
+      hasToken = false;
+      botToken = '';
+      notice = 'Broadcast channel removed.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to remove the broadcast channel';
+    } finally {
+      channelSaving = false;
     }
   }
 
@@ -118,6 +181,58 @@
     {/if}
   </div>
 
+  {#if isAdmin}
+    <div class="field">
+      <h3>Broadcast channel (admin)</h3>
+      <p class="muted">
+        Mirror the alerts you are subscribed to (resale seats, schedule, cart) into a Telegram
+        channel, using a dedicated bot of your own. This is in addition to your own
+        notifications.
+      </p>
+      <p class="hint">
+        Create a bot with @BotFather, add it to the channel as admin, then paste its token and the
+        channel id below.
+      </p>
+      <label class="channel-label" for="broadcast-channel">Channel chat id</label>
+      <input
+        id="broadcast-channel"
+        type="text"
+        bind:value={channelId}
+        placeholder="-1001234567890 or @channel"
+        autocomplete="off"
+      />
+      <label class="channel-label" for="broadcast-token">Bot token</label>
+      <input
+        id="broadcast-token"
+        type="password"
+        bind:value={botToken}
+        placeholder={hasToken ? '•••••••• (already stored — retype to change)' : '123456789:AA…'}
+        autocomplete="off"
+      />
+      <p class="hint">Chat id: numeric (-100…) or public @username. The token is never shown again.</p>
+      <div class="modal__actions">
+        {#if channelId}
+          <button
+            class="btn btn-secondary btn-danger-ghost"
+            type="button"
+            onclick={removeChannel}
+            disabled={channelSaving}
+          >
+            Remove channel
+          </button>
+        {/if}
+        <button
+          class="btn btn-primary"
+          type="button"
+          onclick={saveChannel}
+          disabled={channelSaving || !channelId.trim() || (!botToken.trim() && !hasToken)}
+        >
+          {channelSaving ? 'Saving…' : 'Save channel'}
+        </button>
+      </div>
+    </div>
+  {/if}
+
   <div class="field">
     <h3>Channels</h3>
     <label class="switch">
@@ -140,3 +255,16 @@
     </button>
   </div>
 </dialog>
+
+<style>
+  .channel-label {
+    display: block;
+    margin: 8px 0 4px;
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+
+  .btn-danger-ghost:not(:hover) {
+    color: var(--danger, #c0392b);
+  }
+</style>

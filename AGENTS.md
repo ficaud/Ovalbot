@@ -4,6 +4,135 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-16 — Bot de diffusion dédié (token fourni par l'admin)
+
+- Objectif (suite du journal précédent) : le miroir ne doit plus utiliser le bot
+  principal de l'app mais un **bot dédié** dont l'admin colle le token à côté du
+  chat id, depuis le même modal. Choix validés : indépendant de `TELEGRAM_ENABLED`,
+  token conservé quand on ne change que le chat, validation au format seulement,
+  clé de chiffrement dérivée séparément du même `SECRET_KEY`.
+- Migration `0017_add_broadcast_bot_token.sql` : `bot_token_cipher TEXT` sur
+  `telegram_broadcast`. Les lignes créées par `0016` n'ont pas de token → le
+  miroir reste inactif jusqu'à ce que l'admin en fournisse un.
+- `common/crypto.rs` : `SecretKey::for_broadcast_bot` + `from_env_for_broadcast`
+  dérivent une clé HKDF dans un domaine distinct (`broadcast-bot-token.v1`) de
+  celui du coffre boutique ; `from_passphrase`/`from_env` inchangés (aucune
+  rotation, aucun mot de passe boutique à re-saisir). Test de séparation des
+  domaines : un cipher de l'un ne se déchiffre pas avec la clé de l'autre.
+- `channels/telegram.rs` : `normalize_bot_token` (`<id>:<secret>`, validation
+  pure, 2 tests), trait `BroadcastBotFactory` + `RealBroadcastBotFactory`
+  (un `TelegramClient` par envoi, injectable dans `AppState` pour les tests),
+  `BroadcastTarget.bot_token_cipher`, `broadcast_target` lit la colonne,
+  `set_broadcast_target(..., bot_token_cipher)` upsert avec
+  `COALESCE(excluded.bot_token_cipher, …)` pour conserver le token existant.
+- `routes/notifications.rs` : `PUT` accepte `{chat_id, bot_token}` — token
+  chiffré avec `broadcast_bot_key`, obligatoire à la première configuration,
+  omis = conservation ; `GET` répond `{chat_id, has_token}` et **ne renvoie
+  jamais le token**. Nouveaux `AppError::InvalidTelegramBotToken` (400) et
+  `BroadcastBotUnavailable` (503 sans `SECRET_KEY`).
+- `services/notifications.rs::mirror_to_broadcast` : déchiffre le token à chaque
+  envoi, construit le bot via la fabrique et envoie par **lui** (plus par
+  `state.telegram`) ; manque de token/clé, erreur de déchiffrement ou échec
+  d'envoi = warn best-effort, sans effet sur les notifications privées.
+- Frontend : `TelegramChannelView` (`chat_id`/`has_token`) dans `types.ts`,
+  `get/setTelegramChannel` adaptés, champ « Bot token » de type password avec
+  placeholder « déjà enregistré — retaper pour changer », Save désactivé sans
+  chat ou sans token (existant ou saisi). `svelte-check` 0/0.
+- Tests : lib 141 (crypto + 2 normalize token), routes 65 (chiffrement au repos
+  et déchiffrement vérifiés, aucun leak dans les réponses, conservation du token
+  au changement de chat, IDs/tokens invalides, 503 sans clé, admin-only),
+  notifications 17 (le miroir part bien du bot dédié avec le bon token ; le bot
+  principal ne reçoit que le message privé ; aucun envoi sans token), telegram 11
+  (set/get/effacement + `COALESCE` de conservation). `tests/common` gagne
+  `RecordingBotFactory`.
+- Docs : README (section « broadcast channel » réécrite : deux bots, token
+  chiffré/indépendant de `TELEGRAM_ENABLED`), CHANGELOG `[Unreleased] / Added`,
+  ce journal. Aucune env var, aucun changement de config.
+- Verified : `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
+  warnings`, `cargo doc --no-deps` (0 warning), `cargo test --workspace --jobs 2`
+  (22 suites, 458 passed / 1 ignored), `npm run check` (0/0), `npm run build`.
+- Reste ouvert : vérification du token auprès de `getMe` à la sauvegarde (non
+  fait, validation au format seul) et canal par admin plutôt qu'un seul global.
+
+### 2026-11-16 — Canal Telegram « broadcast » configuré par l'admin
+
+- Objectif : permettre à l'administrateur de publier ses alertes dans un canal
+  Telegram partagé, depuis le modal « Notification settings » (choix utilisateur :
+  saisie manuelle de l'ID, copie **en plus** des notifications privées, pas de
+  variable d'environnement, un seul admin pour l'instant). Le canal est un
+  **miroir des alertes auxquelles l'admin est abonné** — places en revente,
+  calendrier, panier — et non un filtre par type.
+- Migration `0016_create_telegram_broadcast.sql` : table à une ligne
+  `telegram_broadcast (id CHECK (id=1), chat_id, admin_user_id FK ON DELETE CASCADE,
+  updated_at)`. Vider le champ supprime la ligne ; supprimer l'admin désactive le
+  canal par la FK.
+- `src/services/channels/telegram.rs` : `BroadcastTarget`, `broadcast_target`,
+  `set_broadcast_target` (INSERT … ON CONFLICT DO UPDATE, ou DELETE) et la
+  fonction pure `normalize_chat_id` (numeric `-?\d{5,}` ou `@username` 5+ caractères,
+  trim, vide → `None`) — 2 tests unitaires.
+- `src/routes/notifications.rs` + `src/lib.rs` : `GET`/`PUT
+  /api/admin/notifications/channel` gardés par `AdminUser` (401/403), 400
+  `invalid_telegram_chat_id` (nouveau variant dans `common/error.rs`) sur ID
+  malformé, `null`/`""` = effacement. L'ID est stocké avec l'admin qui l'a posé.
+- `src/services/notifications.rs` : helper `mirror_to_broadcast(state, recipient_ids,
+  text, html)` — un seul envoi par événement, best-effort (DB ou envoi en échec =
+  warn, jamais d'impact sur les envois privés), déclenché par la **présence de
+  l'admin propriétaire parmi les destinataires**, indépendamment de son toggle
+  `notify_telegram` ou de son chat lié. Appelé dans `process_one` (texte brut),
+  `notify_new_seats` et `notify_cart_ready` (HTML) ; les logs `seats alert
+  processed` / `cart alert processed` gagnent un champ `broadcast`. Les messages
+  privés existants sont inchangés.
+- Frontend : `getTelegramChannel`/`setTelegramChannel` dans `api.ts`, section
+  admin-only « Broadcast channel » dans `NotificationSettingsModal.svelte`
+  (propt `isAdmin`, chargement à l'ouverture, Save/Remove, hint sur le format et
+  l'ajout du bot au canal), prop passée depuis `+page.svelte`. `svelte-check` 0/0.
+- Tests : `tests/telegram.rs` → 11 (set/get/replace/clear + cascade FK) ;
+  `tests/routes.rs` → 62 (admin set/clear avec vérification du propriétaire,
+  401/403, IDs invalides) ; `tests/notifications.rs` → 16 (miroir calendrier en
+  plus du privé, pas de miroir pour les alertes des autres utilisateurs, miroir
+  des places même avec `notify_telegram = 0`, miroir du panier de l'admin seulement).
+- Docs : README (section « Telegram broadcast channel (admin only) »), CHANGELOG
+  `[Unreleased] / Added`, ce journal. Aucune env var, aucun changement de config.
+- Verified : `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
+  warnings`, `cargo test --workspace --jobs 2` (22 suites, 451 passed / 1 ignored),
+  `npm run check` (0/0), `npm run build`. Note d'environnement : le `node_modules`
+  local ne portait que le binding rolldown linux sur un hôte darwin/arm64 →
+  installation locale de `@rolldown/binding-darwin-arm64@1.2.13` en `--no-save
+  --no-package-lock` (aucun fichier suivi modifié).
+- Reste ouvert (hors périmètre) : capture auto de l'ID d'un canal via un
+  `channel_post` du webhook (l'admin doit coller l'ID et ajouter le bot lui-même),
+  et un canal par admin plutôt qu'un seul global.
+
+### 2026-11-16 — Montée de `reqwest`, `jiff` et `aes-gcm`
+
+- Constat : sur la branche `dependabot/npm_and_yarn/frontend/sveltejs/kit-3.2.0`,
+  l'arbre portait trois bumps non commités (reqwest 0.12 → 0.13.5, jiff 0.2 → 1.0,
+  aes-gcm 0.10 → 0.11.1). `cargo check` échouait d'abord à la résolution : reqwest
+  0.13 n'a plus de feature `rustls-tls` (elle devient `rustls` = aws-lc-rs +
+  `rustls-platform-verifier` ; `ca-certificates` est déjà installé dans l'image
+  runtime).
+- `Cargo.toml` : `reqwest = { version = "0.13.5", default-features = false,
+  features = ["json", "form", "rustls"] }` — `form` est nécessaire au
+  `.form(&params)` de `setWebhook` (telegram.rs). Le code d'appel reqwest n'a pas
+  bougé.
+- `src/main.rs` (`format_paris`) et `src/common/time.rs` (`paris_minutes_at` +
+  son test d'oracle) : `Timestamp::to_zoned()` supprimé en jiff 1.0 →
+  `to_zoned_datetime()` (3 sites). Les autres API utilisées (`TimeZone::get`,
+  `UTC`, `fixed`, `to_offset`, `strftime`) sont inchangées.
+- `src/common/crypto.rs` : `hybrid-array` (aes-gcm 0.11) n'implémente plus
+  `From<&[u8]>` pour `&Key` → `Aes256Gcm::new((&key.key).into())` (depuis
+  `&[u8; 32]`) aux deux sites. Le format de stockage `hex(nonce) || hex(cipher+tag)`
+  et la dérivation HKDF sont inchangés : aucune rotation de `SECRET_KEY`, aucun
+  mot de passe boutique à re-saisir.
+- Drive-by : `src/services/rate_limit.rs` — le lien rustdoc `[`spawn_sweeper`]`
+  (méthode associée, résolue nulle part) devient `[`Self::spawn_sweeper`]`. C'était
+  le seul avertissement `cargo doc --no-deps`, préexistant et sans lien avec les bumps.
+- Docs : CHANGELOG `[Unreleased] / Changed`, ce journal. Aucune migration, aucune
+  env var, aucun changement frontend.
+- Verified : `cargo check --workspace`, `cargo fmt --check`,
+  `cargo clippy --workspace --all-targets -D warnings`, `cargo doc --no-deps`
+  (0 warning), `cargo test --workspace --jobs 2` (22 suites, 440 passed / 1 ignored).
+
 ### 2026-11-15 — Rate limiter : `CF-Connecting-IP` prioritaire (tunnel Cloudflare)
 
 - Constat sur le commit `6e6ffed` : derrière un tunnel Cloudflare, `X-Forwarded-For` n'est **pas** fiable — l'edge CF **ajoute** la vraie IP à la fin du header sans écraser ce que le client a envoyé en tête, donc un `X-Forwarded-For: 1.2.3.4` forgé transite sous la forme `1.2.3.4, <vraie-ip>` et la 1ʳᵉ entrée (lue par `client_key`) est une valeur choisie par l'attaquant (contournement du limiter + empoisonnement du bucket d'une IP innocente). La source fiable est `CF-Connecting-IP` : écrit/écrasé par l'edge CF avec la vraie IP, inforgeable depuis l'extérieur, transmis tel quel par `cloudflared` (config réelle du site : tunnel CF déjà en place sur le VPS).
