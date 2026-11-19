@@ -270,7 +270,7 @@ impl CartSession for RecordingSession {
                 self.added.lock().unwrap().extend(tickets.iter().cloned());
                 Ok(())
             }
-            PackOutcome::SeatGone => Err(CheckoutError::SeatGone),
+            PackOutcome::SeatGone => Err(CheckoutError::SeatGone("test churn")),
             PackOutcome::WaitingQueue => Err(CheckoutError::WaitingQueue),
             PackOutcome::ExpiredForm => Err(CheckoutError::ExpiredForm),
             PackOutcome::MissingContext => Err(CheckoutError::MissingContext),

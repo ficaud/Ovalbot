@@ -4,6 +4,47 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-19 — Priorité à l'achat : plus de blocage par le miroir Telegram
+
+- Constat (logs fournis) : places Duo fraîches du pack 36272 détectées à
+  21:32:44, mail envoyé à 21:32:45, puis **120,075 s** d'attente avant le
+  `504 Gateway Timeout` du miroir broadcast (21:34:45). Le plan Duo n'était
+  calculé que 4 ms après le retour du miroir, et l'`add_pack` à 21:34:50 →
+  `SeatGone` → `resale churn`. Le bot n'avait pas échoué sur le matching Duo
+  (les 2 tickets étaient bien `fresh`, même bloc/rang et parité identique) :
+  il avait tenté l'ajout ~2 min trop tard. Le `reqwest::Client::new()` sans
+  timeout laissait un 504 bloquer tout le pipeline séquentiel.
+- `src/services/bot/mod.rs` : dans `poll_one`, la phase d'achat
+  (`plan_checkouts_with_fresh` + `execute_plans`) est exécutée **avant**
+  `notify_new_seats`; l'alerte est construite et envoyée après. En-tête de
+  module et commentaires alignés. Logs de durée ajoutés : `poll: purchase
+  phase before alerts` / `poll: purchase phase done` (elapsed_ms) et
+  `poll: target done` (elapsed_ms global par cible).
+- `src/services/channels/telegram.rs` : `http_client()` centralise un
+  `reqwest::Client` avec `timeout(5s)` + `connect_timeout(3s)`, utilisé par
+  `new`, `with_base_url` (donc aussi le bot broadcast via
+  `RealBroadcastBotFactory`) et `register_webhook`. `post()` logge l'elapsed
+  (`warn` au-delà de 1 s, `debug` sinon).
+- `src/services/notifications.rs` : `elapsed_ms` ajouté à
+  `seats alert processed` et `cart alert processed`, ainsi qu'aux logs du
+  miroir (succès **et** échec, avec le champ `error`).
+- Diagnostics : `CheckoutError::SeatGone` porte désormais un motif
+  (`absent` / `changed` / `rejected`) au lieu d'être un variant unitaire ; le
+  log `checkout: pack skipped (resale churn)` inclut `error = %e`, ce qui
+  distingue les trois points de rejet du parser sans passer par
+  `CHECKOUT_DUMP_DIR`. Les 4 tests parser affirment le motif exact.
+- Tests : `tests/telegram.rs` gagne `a_hanging_bot_api_is_bounded_by_the_client_timeout`
+  (serveur axum qui ne répond pas → `TelegramError::Http` en < 10 s, la durée
+  réelle étant ~5 s). `tests/common` adapté au nouveau variant.
+- Verified : `cargo fmt --all`, `cargo clippy --workspace --all-targets -D
+  warnings`, `cargo test --workspace --jobs 2` (22 suites, dont parser 79,
+  lib 141, telegram 12, routes 65, checkout 20, purchases 26) — tous verts.
+  Frontend non touché.
+- Reste ouvert (hors périmètre) : libérer les offres après un `SeatGone` pour
+  autoriser une replanification sur un scan ultérieur ; découplage total du
+  miroir via `tokio::spawn` (le timeout de 5 s suffit à supprimer le délai de
+  2 min et conserve un `broadcast` exact dans les logs).
+
 ### 2026-11-16 — Bot de diffusion dédié (token fourni par l'admin)
 
 - Objectif (suite du journal précédent) : le miroir ne doit plus utiliser le bot

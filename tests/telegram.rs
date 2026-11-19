@@ -260,3 +260,35 @@ async fn non_2xx_response_is_reported_as_api_error() {
 
     assert!(matches!(err, TelegramError::Api(_)));
 }
+
+/// A handler that never answers within the client timeout (the 2026-11-19
+/// incident: a 504 took ~120 s to arrive and blocked the checkout).
+async fn hanging_bot_api() -> StatusCode {
+    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    StatusCode::OK
+}
+
+/// A hanging Bot API is cut off by the client timeout instead of stalling the
+/// caller for minutes.
+#[tokio::test]
+async fn a_hanging_bot_api_is_bounded_by_the_client_timeout() {
+    let app = Router::new().route("/{*path}", post(hanging_bot_api));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let started = std::time::Instant::now();
+    let err = client(&format!("http://{addr}"))
+        .send_message("123", "hello")
+        .await
+        .unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert!(matches!(err, TelegramError::Http(_)), "{err}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "the Bot API wait was not bounded: {elapsed:?}"
+    );
+}

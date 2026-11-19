@@ -79,8 +79,10 @@ pub enum CheckoutError {
     /// (settings JSON, slider or form id missing).
     MissingContext,
     /// The resale pack is no longer listed on the fresh page — someone took it
-    /// (a pack is sold atomically, all its tickets disappear together).
-    SeatGone,
+    /// (a pack is sold atomically, all its tickets disappear together). The
+    /// reason (`absent`, `changed`, `rejected`) is carried so the caller's log
+    /// tells which guard fired without needing a `CHECKOUT_DUMP_DIR` capture.
+    SeatGone(&'static str),
     /// The add-to-cart POST was rejected as an expired form / invalid session.
     ExpiredForm,
     /// The billetterie served its waiting-queue page instead of the content.
@@ -96,7 +98,9 @@ impl std::fmt::Display for CheckoutError {
             CheckoutError::MissingContext => {
                 f.write_str("add-to-cart form not found on the resale page")
             }
-            CheckoutError::SeatGone => f.write_str("pack no longer present on the resale page"),
+            CheckoutError::SeatGone(reason) => f.write_str(&format!(
+                "pack no longer present on the resale page ({reason})"
+            )),
             CheckoutError::ExpiredForm => {
                 f.write_str("add-to-cart rejected: expired form or invalid session")
             }
@@ -786,7 +790,7 @@ impl ShopSession {
             let Some((_, listed_tickets)) = fresh else {
                 log::debug!("[CHECKOUT] pack {pack_id} absent from the listed packs");
                 dump.finish("pack_absent", Some(&html), None);
-                return Err(CheckoutError::SeatGone);
+                return Err(CheckoutError::SeatGone("absent"));
             };
             if html.contains(OUT_OF_STOCK_MARKER) || !same_tickets(listed_tickets, tickets) {
                 // The pack disappeared or was re-minted with another
@@ -796,7 +800,7 @@ impl ShopSession {
                     "[CHECKOUT] pack {pack_id} changed or gone (wanted {tickets:?}, found {listed_tickets:?})"
                 );
                 dump.finish("pack_changed", Some(&html), None);
-                return Err(CheckoutError::SeatGone);
+                return Err(CheckoutError::SeatGone("changed"));
             }
         }
 
@@ -847,7 +851,7 @@ impl ShopSession {
         if !pack_added(&response, pack_id) {
             log::debug!("[CHECKOUT] pack {pack_id} add not confirmed by the response");
             dump.finish("rejected", Some(&html), Some(&response));
-            return Err(CheckoutError::SeatGone);
+            return Err(CheckoutError::SeatGone("rejected"));
         }
         dump.finish("added", Some(&html), Some(&response));
         Ok(())
@@ -1520,7 +1524,7 @@ mod tests {
                     ("44.00".into(), "59".into())
                 )
                 .expect_err("must fail"),
-            CheckoutError::SeatGone
+            CheckoutError::SeatGone("rejected")
         );
         assert_eq!(requests.lock().expect("log").len(), 6);
     }
@@ -1638,7 +1642,7 @@ mod tests {
                     ("44.00".into(), "59".into())
                 )
                 .expect_err("must fail"),
-            CheckoutError::SeatGone
+            CheckoutError::SeatGone("absent")
         );
         // 4 login requests + 1 page fetch; no POST.
         assert_eq!(requests.lock().expect("log").len(), 5);
@@ -1675,7 +1679,7 @@ mod tests {
                     ("44.00".into(), "44".into()),
                 )
                 .expect_err("must fail"),
-            CheckoutError::SeatGone
+            CheckoutError::SeatGone("rejected")
         );
         // 4 login requests + 1 page fetch + 1 rejected POST.
         assert_eq!(requests.lock().expect("log").len(), 6);
@@ -1709,7 +1713,7 @@ mod tests {
                     ("59.00".into(), "59".into())
                 )
                 .expect_err("must fail"),
-            CheckoutError::SeatGone
+            CheckoutError::SeatGone("changed")
         );
         assert_eq!(requests.lock().expect("log").len(), 5);
     }

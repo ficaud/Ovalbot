@@ -13,6 +13,7 @@
 //! settings modal and stored in the single-row `telegram_broadcast` table.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -82,6 +83,23 @@ pub struct TelegramClient {
 /// Public origin of the Bot API (unlike Resend, the token rides in the path).
 const BOT_API_BASE_URL: &str = "https://api.telegram.org";
 
+/// Upper bound on one Bot API call. Without it, an upstream `504 Gateway
+/// Timeout` took ~120 s to come back and blocked the whole bot scan loop —
+/// long enough for the resale seats to be sold before the checkout ran
+/// (incident of 2026-11-19). No notification is worth that delay.
+const API_TIMEOUT: Duration = Duration::from_secs(5);
+const API_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Builds the HTTP client shared by every Bot API call (main bot, broadcast bot
+/// and webhook registration), with a bounded total and connect timeout.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(API_TIMEOUT)
+        .connect_timeout(API_CONNECT_TIMEOUT)
+        .build()
+        .expect("valid Telegram HTTP client configuration")
+}
+
 /// Bot API `sendMessage` request body. `parse_mode` is omitted for plain
 /// text (`Some("HTML")` switches the Bot API's inline parser on).
 #[derive(Serialize)]
@@ -96,7 +114,7 @@ impl TelegramClient {
     /// Builds the client around a bot token issued by @BotFather.
     pub fn new(token: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: http_client(),
             token,
             base_url: BOT_API_BASE_URL.to_string(),
         }
@@ -105,7 +123,7 @@ impl TelegramClient {
     /// Builds the client against a custom Bot API origin (transport tests).
     pub fn with_base_url(token: String, base_url: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: http_client(),
             token,
             base_url,
         }
@@ -145,17 +163,28 @@ impl Telegram for TelegramClient {
 
 impl TelegramClient {
     /// Posts one `sendMessage` body and maps a non-2xx response to
-    /// [`TelegramError::Api`].
+    /// [`TelegramError::Api`]. The request is bounded by [`API_TIMEOUT`], so a
+    /// hanging Bot API can never stall the bot's scan loop for minutes; slow
+    /// responses are logged with their elapsed time.
     ///
     /// # Errors
     /// [`TelegramError`] on network failure or non-2xx Bot API response.
     async fn post(&self, body: OutgoingMessage<'_>) -> Result<(), TelegramError> {
+        let started = Instant::now();
         let response = self
             .client
             .post(self.api_url("sendMessage"))
             .json(&body)
             .send()
             .await?;
+        let elapsed_ms = started.elapsed().as_millis();
+        // A slow Bot API is the difference between an alert and a lost resale
+        // window: make it visible even when the call eventually succeeds.
+        if elapsed_ms > 1000 {
+            tracing::warn!(elapsed_ms, "telegram: slow Bot API response");
+        } else {
+            tracing::debug!(elapsed_ms, "telegram: Bot API response");
+        }
         if !response.status().is_success() {
             return Err(TelegramError::Api(response.status().to_string()));
         }
