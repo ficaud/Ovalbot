@@ -79,10 +79,12 @@ pub enum CheckoutError {
     /// (settings JSON, slider or form id missing).
     MissingContext,
     /// The resale pack is no longer listed on the fresh page — someone took it
-    /// (a pack is sold atomically, all its tickets disappear together). The
-    /// reason (`absent`, `changed`, `rejected`) is carried so the caller's log
-    /// tells which guard fired without needing a `CHECKOUT_DUMP_DIR` capture.
-    SeatGone(&'static str),
+    /// (a pack is sold atomically, all its tickets disappear together), or the
+    /// add-to-cart POST was not confirmed. The reason is carried so the
+    /// caller's log tells which guard fired without needing a
+    /// `CHECKOUT_DUMP_DIR` capture; for `rejected` it embeds a fingerprint of
+    /// the AJAX response (markers and a short snippet).
+    SeatGone(String),
     /// The add-to-cart POST was rejected as an expired form / invalid session.
     ExpiredForm,
     /// The billetterie served its waiting-queue page instead of the content.
@@ -790,7 +792,7 @@ impl ShopSession {
             let Some((_, listed_tickets)) = fresh else {
                 log::debug!("[CHECKOUT] pack {pack_id} absent from the listed packs");
                 dump.finish("pack_absent", Some(&html), None);
-                return Err(CheckoutError::SeatGone("absent"));
+                return Err(CheckoutError::SeatGone("absent".to_string()));
             };
             if html.contains(OUT_OF_STOCK_MARKER) || !same_tickets(listed_tickets, tickets) {
                 // The pack disappeared or was re-minted with another
@@ -800,7 +802,7 @@ impl ShopSession {
                     "[CHECKOUT] pack {pack_id} changed or gone (wanted {tickets:?}, found {listed_tickets:?})"
                 );
                 dump.finish("pack_changed", Some(&html), None);
-                return Err(CheckoutError::SeatGone("changed"));
+                return Err(CheckoutError::SeatGone("changed".to_string()));
             }
         }
 
@@ -851,7 +853,10 @@ impl ShopSession {
         if !pack_added(&response, pack_id) {
             log::debug!("[CHECKOUT] pack {pack_id} add not confirmed by the response");
             dump.finish("rejected", Some(&html), Some(&response));
-            return Err(CheckoutError::SeatGone("rejected"));
+            return Err(CheckoutError::SeatGone(format!(
+                "rejected: {}",
+                verdict_diagnostic(&response, pack_id)
+            )));
         }
         dump.finish("added", Some(&html), Some(&response));
         Ok(())
@@ -876,6 +881,37 @@ fn pack_added(response: &str, pack_id: u64) -> bool {
         && (response.contains("added-to-cart")
             || response.contains("is_already_in_cart")
             || response.contains("refreshCartTimeout"))
+}
+
+/// Compact, log-safe fingerprint of an add-to-cart AJAX response.
+///
+/// The verdict above is a substring check: when it fails, the caller needs to
+/// know whether the pack id was missing, which success markers were present,
+/// and what the body actually looked like — otherwise a sold pack, a site
+/// layout change and a redirected/expired session are indistinguishable. The
+/// snippet is truncated to one line so the orchestrator's `error = %e` log is
+/// enough to diagnose without `CHECKOUT_DUMP_DIR`; the dump still holds the
+/// full body.
+///
+/// # Arguments
+/// * `response` - The AJAX response body
+/// * `pack_id` - The pack that was submitted
+/// # Returns
+/// A single-line `key=value` fingerprint
+fn verdict_diagnostic(response: &str, pack_id: u64) -> String {
+    let snippet: String = response
+        .chars()
+        .take(240)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    format!(
+        "bytes={} pack_id={} added_to_cart={} already_in_cart={} refresh_cart_timeout={} snippet={snippet}",
+        response.len(),
+        response.contains(&pack_id.to_string()),
+        response.contains("added-to-cart"),
+        response.contains("is_already_in_cart"),
+        response.contains("refreshCartTimeout"),
+    )
 }
 
 /// One diagnostic capture of an add attempt, enabled by `CHECKOUT_DUMP_DIR`.
@@ -1515,17 +1551,19 @@ mod tests {
             context.ajax_url.split('?').next().expect("path")
         );
         let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
-        assert_eq!(
-            session
-                .add_pack(
-                    &resale_url,
-                    33850,
-                    &["49432".to_string()],
-                    ("44.00".into(), "59".into())
-                )
-                .expect_err("must fail"),
-            CheckoutError::SeatGone("rejected")
+        let err = session
+            .add_pack(
+                &resale_url,
+                33850,
+                &["49432".to_string()],
+                ("44.00".into(), "59".into()),
+            )
+            .expect_err("must fail");
+        assert!(
+            matches!(&err, CheckoutError::SeatGone(reason) if reason.starts_with("rejected:")),
+            "{err}"
         );
+        assert!(err.to_string().contains("snippet="), "{err}");
         assert_eq!(requests.lock().expect("log").len(), 6);
     }
 
@@ -1538,6 +1576,25 @@ mod tests {
         assert!(!pack_added(live, 11111));
         assert!(!pack_added(ADD_REJECTED, 34720));
         assert!(!pack_added("[]", 34720));
+    }
+
+    // A rejected verdict carries enough of the raw response to tell a sold
+    // pack from a layout change or a session redirect, in one log-safe line.
+    #[test]
+    fn verdict_diagnostic_fingerprints_the_response() {
+        let response = "[{\"command\":\"update_build_id\"}]\n<div class=\"alert-danger\">formulaire p\u{e9}rim\u{e9}</div>";
+        let diagnostic = verdict_diagnostic(response, 36285);
+        assert!(diagnostic.contains("bytes="), "{diagnostic}");
+        assert!(diagnostic.contains("pack_id=false"), "{diagnostic}");
+        assert!(diagnostic.contains("added_to_cart=false"), "{diagnostic}");
+        assert!(diagnostic.contains("already_in_cart=false"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("refresh_cart_timeout=false"),
+            "{diagnostic}"
+        );
+        // Control characters are flattened: the whole thing stays one line.
+        assert!(!diagnostic.contains('\n'), "{diagnostic}");
+        assert!(diagnostic.contains("snippet="), "{diagnostic}");
     }
 
     // The diagnostic capture writes one file per kind sharing the attempt id,
@@ -1642,7 +1699,7 @@ mod tests {
                     ("44.00".into(), "59".into())
                 )
                 .expect_err("must fail"),
-            CheckoutError::SeatGone("absent")
+            CheckoutError::SeatGone("absent".to_string())
         );
         // 4 login requests + 1 page fetch; no POST.
         assert_eq!(requests.lock().expect("log").len(), 5);
@@ -1670,16 +1727,17 @@ mod tests {
             page(ADD_REJECTED, 200),
         ]);
         let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
-        assert_eq!(
-            session
-                .add_pack(
-                    &format!("{base}/fr/product/1360/revente"),
-                    34700,
-                    &["50624".to_string()],
-                    ("44.00".into(), "44".into()),
-                )
-                .expect_err("must fail"),
-            CheckoutError::SeatGone("rejected")
+        let err = session
+            .add_pack(
+                &format!("{base}/fr/product/1360/revente"),
+                34700,
+                &["50624".to_string()],
+                ("44.00".into(), "44".into()),
+            )
+            .expect_err("must fail");
+        assert!(
+            matches!(&err, CheckoutError::SeatGone(reason) if reason.starts_with("rejected:")),
+            "{err}"
         );
         // 4 login requests + 1 page fetch + 1 rejected POST.
         assert_eq!(requests.lock().expect("log").len(), 6);
@@ -1713,7 +1771,7 @@ mod tests {
                     ("59.00".into(), "59".into())
                 )
                 .expect_err("must fail"),
-            CheckoutError::SeatGone("changed")
+            CheckoutError::SeatGone("changed".to_string())
         );
         assert_eq!(requests.lock().expect("log").len(), 5);
     }

@@ -4,6 +4,29 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-20 — Second blocage : le verdict AJAX `rejected` reste à identifier
+
+- Retour après correctif : l'ordre est bon (achat `elapsed_ms=4457` puis
+  alertes `elapsed_ms=277`, `broadcast=true`), mais le pack Duo 36285 est
+  toujours rejeté avec `error=... (rejected)` 4,4 s après le plan. C'est un
+  **second** problème, masqué jusqu'ici par le délai de 2 min : le POST est
+  fait mais `pack_added()` ne confirme pas (morceau de réponse AJAX manquant).
+- `bot/parser/.../checkout.rs` : `CheckoutError::SeatGone` porte désormais un
+  `String` (au lieu de `&'static str`) ; le motif `rejected` embarque
+  `verdict_diagnostic()` = `bytes`, présence de l'id du pack, des 3 marqueurs,
+  et un extrait de 240 caractères sur une seule ligne. Objectif : que la prochaine
+  occurrence s'explique directement dans le log `ovalbot` (`error = %e`), sans
+  avoir à positionner `CHECKOUT_DUMP_DIR`. Le dump complet reste disponible.
+- Tests : 4 assertions parser adaptées, dont 2 qui vérifient la présence du
+  `snippet` dans le message ; nouveau test unitaire `verdict_diagnostic_fingerprints_the_response`.
+- Verified : `cargo fmt --check`, `cargo clippy --workspace --all-targets -D
+  warnings`, `cargo doc --no-deps` (0 warning), `cargo test --workspace --jobs 2`
+  (parser 80, toutes suites vertes).
+- Reste ouvert : récupérer la réponse AJAX réelle (via le nouveau log ou un dump)
+  pour savoir si c'est une vraie revente (pack parti en 4 s), un changement de
+  format des marqueurs de succès, ou une redirection/login qui renvoie du HTML.
+  Ne pas modifier `pack_added()` à l'aveugle.
+
 ### 2026-11-19 — Priorité à l'achat : plus de blocage par le miroir Telegram
 
 - Constat (logs fournis) : places Duo fraîches du pack 36272 détectées à
