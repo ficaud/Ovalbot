@@ -4,6 +4,67 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-21 — Image de base du devcontainer configurable via `.env.devbox`
+
+- Objectif : ne plus coder en dur `FROM ghcr.io/busymoood/dotfiles-docker:main`
+  dans `.devcontainer/Dockerfile` (un simple clone récupérait les dotfiles perso).
+  Décisions utilisateur : défaut Ubuntu 24.04 rendu autonome, image perso dans
+  `.env.devbox` via un wrapper, CI conservant l'image perso.
+- Deux contraintes vérifiées dans le code du CLI devcontainer : (1) le `.env`
+  n'est auto-chargé que pour les devcontainers `docker compose`
+  (`devContainersSpecCLI.ts`), pas pour un build Dockerfile — d'où le wrapper
+  `scripts/devbox-up.sh` qui source `.env.devbox` puis exporte la variable ;
+  (2) `${localEnv:VAR:défaut}` coupe au premier `:` (`variableSubstitution.ts` :
+  `split(':')` puis `args[1]`) — donc `ubuntu` sans tag dans `devcontainer.json`
+  et `ubuntu:24.04` épinglé dans le wrapper.
+- `.devcontainer/Dockerfile` : `ARG DEVBOX_BASE_IMAGE=ubuntu:24.04` +
+  `FROM ${DEVBOX_BASE_IMAGE}` ; ajout des basics que l'image perso fournissait
+  (zsh, git, curl, ca-certificates, openssh-client, socat, build-essential) ;
+  création idempotente de `dev` (`id -u dev || useradd -m -s /bin/zsh dev`) avant
+  le bloc `rustlang`, pour que `usermod`/`USER dev` marchent sur les deux images.
+- `.devcontainer/devcontainer.json` : `build.args.DEVBOX_BASE_IMAGE` et
+  `postStartCommand` protégé par `command -v`, pour que `onstart` /
+  `devbox-agent-relay` ne tournent que sur l'image perso.
+- `scripts/devbox-up.sh` réintroduit (mais `.env.devbox` y est **optionnel**,
+  contrairement à l'ancienne version) + `.env.devbox.example` ; `.gitignore` et
+  `.dockerignore` ignorent `.env.devbox`.
+- `ci.yml` : `env: DEVBOX_BASE_IMAGE: ghcr.io/busymoood/dotfiles-docker:main`
+  global (les 5 jobs sont inchangés) — CI aussi rapide qu'avant, le défaut Ubuntu
+  restant le chemin contributeur.
+- Docs : README (section Dev container), `doc/specs/cdc.md`, CHANGELOG
+  `[Unreleased] / Added`, ce journal.
+- Vérifié localement : JSONC parsé (`build.args`, `appPort`, `postStartCommand`),
+  `ci.yml` parsé (js-yaml : env global + 5 jobs), `bash -n` du wrapper, et test du
+  wrapper avec un faux binaire `devcontainer` — défaut `ubuntu:24.04` sans fichier,
+  image perso quand `.env.devbox` la définit, arguments `--remove-existing-container`
+  / `--build-no-cache` transmis.
+- Non vérifié ici : build réel du devcontainer (CLI devcontainer et docker absents
+  de cet environnement). À faire côté Mac : `./scripts/devbox-up.sh
+  --remove-existing-container` sans puis avec `.env.devbox` (ports 3000/5173,
+  `cargo --version`, `node --version`), et un run `workflow_dispatch` de la CI.
+  Aucun code Rust/frontend touché.
+
+### 2026-11-21 — Ports du devcontainer : `appPort` pour le CLI, pas `forwardPorts`
+
+- Constats : le conteneur créé par `devcontainer up` portait bien les labels
+  `devcontainer.metadata` avec `forwardPorts: [3000, 5173]`, mais `docker ps`
+  affichait une colonne Ports vide et `curl 127.0.0.1:3000/api/version`
+  échouait depuis macOS. PID 1 = la boucle `sleep` du helper, image
+  `vsc-ovalbot-…`, `binds=[]` — aucun `-p` appliqué.
+- Cause : le refactor staged avait remplacé `appPort` par `forwardPorts` dans
+  `.devcontainer/devcontainer.json` (et README). Le CLI `devcontainer up` ne
+  publie que `appPort` (équivalent de `docker -p`) ; `forwardPorts` est géré par
+  les clients éditeur (VS Code) uniquement. L'ancien commentaire du fichier
+  avait raison. Le script `scripts/devbox-up.sh` supprimé dans le même refactor
+  n'était pas en cause : il ne faisait que sourcer `.env.devbox` avant le CLI.
+- Correctif : `appPort: [3000, 5173]` ajouté (avec `forwardPorts` conservé pour
+  VS Code) dans `devcontainer.json`, commentaire et README alignés. Aucune
+  migration, aucun changement de code.
+- À vérifier côté Mac : `devcontainer up --workspace-folder . --remove-existing-container`
+  puis `docker ps` doit montrer `127.0.0.1:3000->3000/tcp, 127.0.0.1:5173->5173/tcp`,
+  et lancer les serveurs dans le conteneur (`cargo run --bin ovalbot`,
+  `cd frontend && npm run dev`) — rien n'écoutait sur ces ports pendant le diagnostic.
+
 ### 2026-11-20 — Second blocage : le verdict AJAX `rejected` reste à identifier
 
 - Retour après correctif : l'ordre est bon (achat `elapsed_ms=4457` puis
@@ -538,7 +599,7 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - Tests : `cargo test`
 - Lint : `cargo fmt --check && cargo clippy --all-targets -- -D warnings`
 - Frontend : `cd frontend && npm run dev` / `npm run build`
-- Devcontainer : `./my-env/up.sh` / `./my-env/down.sh`
+- Devcontainer : `devcontainer up --workspace-folder .` puis `devcontainer exec --workspace-folder . zsh`
 
 ## Conventions
 
