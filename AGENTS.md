@@ -4,6 +4,161 @@ Development notes kept up to date by the agent as work progresses.
 
 ## Journal
 
+### 2026-11-21 — Image de base du devcontainer configurable via `.env.devbox`
+
+- Objectif : ne plus coder en dur `FROM ghcr.io/busymoood/dotfiles-docker:main`
+  dans `.devcontainer/Dockerfile` (un simple clone récupérait les dotfiles perso).
+  Décisions utilisateur : défaut Ubuntu 24.04 rendu autonome, image perso dans
+  `.env.devbox` via un wrapper, CI conservant l'image perso.
+- Deux contraintes vérifiées dans le code du CLI devcontainer : (1) le `.env`
+  n'est auto-chargé que pour les devcontainers `docker compose`
+  (`devContainersSpecCLI.ts`), pas pour un build Dockerfile — d'où le wrapper
+  `scripts/devbox-up.sh` qui source `.env.devbox` puis exporte la variable ;
+  (2) `${localEnv:VAR:défaut}` coupe au premier `:` (`variableSubstitution.ts` :
+  `split(':')` puis `args[1]`) — donc `ubuntu` sans tag dans `devcontainer.json`
+  et `ubuntu:24.04` épinglé dans le wrapper.
+- `.devcontainer/Dockerfile` : `ARG DEVBOX_BASE_IMAGE=ubuntu:24.04` +
+  `FROM ${DEVBOX_BASE_IMAGE}` ; ajout des basics que l'image perso fournissait
+  (zsh, git, curl, ca-certificates, openssh-client, socat, build-essential) ;
+  création idempotente de `dev` (`id -u dev || useradd -m -s /bin/zsh dev`) avant
+  le bloc `rustlang`, pour que `usermod`/`USER dev` marchent sur les deux images.
+- `.devcontainer/devcontainer.json` : `build.args.DEVBOX_BASE_IMAGE` et
+  `postStartCommand` protégé par `command -v`, pour que `onstart` /
+  `devbox-agent-relay` ne tournent que sur l'image perso.
+- `scripts/devbox-up.sh` réintroduit (mais `.env.devbox` y est **optionnel**,
+  contrairement à l'ancienne version) + `.env.devbox.example` ; `.gitignore` et
+  `.dockerignore` ignorent `.env.devbox`.
+- `ci.yml` : `env: DEVBOX_BASE_IMAGE: ghcr.io/busymoood/dotfiles-docker:main`
+  global (les 5 jobs sont inchangés) — CI aussi rapide qu'avant, le défaut Ubuntu
+  restant le chemin contributeur.
+- Docs : README (section Dev container), `doc/specs/cdc.md`, CHANGELOG
+  `[Unreleased] / Added`, ce journal.
+- Vérifié localement : JSONC parsé (`build.args`, `appPort`, `postStartCommand`),
+  `ci.yml` parsé (js-yaml : env global + 5 jobs), `bash -n` du wrapper, et test du
+  wrapper avec un faux binaire `devcontainer` — défaut `ubuntu:24.04` sans fichier,
+  image perso quand `.env.devbox` la définit, arguments `--remove-existing-container`
+  / `--build-no-cache` transmis.
+- Non vérifié ici : build réel du devcontainer (CLI devcontainer et docker absents
+  de cet environnement). À faire côté Mac : `./scripts/devbox-up.sh
+  --remove-existing-container` sans puis avec `.env.devbox` (ports 3000/5173,
+  `cargo --version`, `node --version`), et un run `workflow_dispatch` de la CI.
+  Aucun code Rust/frontend touché.
+
+### 2026-11-21 — Ports du devcontainer : `appPort` pour le CLI, pas `forwardPorts`
+
+- Constats : le conteneur créé par `devcontainer up` portait bien les labels
+  `devcontainer.metadata` avec `forwardPorts: [3000, 5173]`, mais `docker ps`
+  affichait une colonne Ports vide et `curl 127.0.0.1:3000/api/version`
+  échouait depuis macOS. PID 1 = la boucle `sleep` du helper, image
+  `vsc-ovalbot-…`, `binds=[]` — aucun `-p` appliqué.
+- Cause : le refactor staged avait remplacé `appPort` par `forwardPorts` dans
+  `.devcontainer/devcontainer.json` (et README). Le CLI `devcontainer up` ne
+  publie que `appPort` (équivalent de `docker -p`) ; `forwardPorts` est géré par
+  les clients éditeur (VS Code) uniquement. L'ancien commentaire du fichier
+  avait raison. Le script `scripts/devbox-up.sh` supprimé dans le même refactor
+  n'était pas en cause : il ne faisait que sourcer `.env.devbox` avant le CLI.
+- Correctif : `appPort: [3000, 5173]` ajouté (avec `forwardPorts` conservé pour
+  VS Code) dans `devcontainer.json`, commentaire et README alignés. Aucune
+  migration, aucun changement de code.
+- À vérifier côté Mac : `devcontainer up --workspace-folder . --remove-existing-container`
+  puis `docker ps` doit montrer `127.0.0.1:3000->3000/tcp, 127.0.0.1:5173->5173/tcp`,
+  et lancer les serveurs dans le conteneur (`cargo run --bin ovalbot`,
+  `cd frontend && npm run dev`) — rien n'écoutait sur ces ports pendant le diagnostic.
+
+### 2026-11-20 — Second blocage : le verdict AJAX `rejected` reste à identifier
+
+- Retour après correctif : l'ordre est bon (achat `elapsed_ms=4457` puis
+  alertes `elapsed_ms=277`, `broadcast=true`), mais le pack Duo 36285 est
+  toujours rejeté avec `error=... (rejected)` 4,4 s après le plan. C'est un
+  **second** problème, masqué jusqu'ici par le délai de 2 min : le POST est
+  fait mais `pack_added()` ne confirme pas (morceau de réponse AJAX manquant).
+- `bot/parser/.../checkout.rs` : `CheckoutError::SeatGone` porte désormais un
+  `String` (au lieu de `&'static str`) ; le motif `rejected` embarque
+  `verdict_diagnostic()` = `bytes`, présence de l'id du pack, des 3 marqueurs,
+  et un extrait de 240 caractères sur une seule ligne. Objectif : que la prochaine
+  occurrence s'explique directement dans le log `ovalbot` (`error = %e`), sans
+  avoir à positionner `CHECKOUT_DUMP_DIR`. Le dump complet reste disponible.
+- Tests : 4 assertions parser adaptées, dont 2 qui vérifient la présence du
+  `snippet` dans le message ; nouveau test unitaire `verdict_diagnostic_fingerprints_the_response`.
+- Verified : `cargo fmt --check`, `cargo clippy --workspace --all-targets -D
+  warnings`, `cargo doc --no-deps` (0 warning), `cargo test --workspace --jobs 2`
+  (parser 80, toutes suites vertes).
+- Retour 2026-11-21 22:21 (pack 36310, Duo 14/16 Rang K à 44 €) : le fingerprint
+  montre `bytes=2094 pack_id=true` mais **aucun** des 3 marqueurs, et un début
+  de réponse `{"command":"settings",…}` — structure différente de la capture
+  de succès du 01/11 (qui commençait par `update_build_id` et finissait par
+  `refreshCartTimeout`). Le snippet de 240 caractères était noyé dans le blob
+  `ajaxPageState.libraries`, inexploitable.
+- `verdict_diagnostic()` enrichi : parsing de la réponse comme tableau de
+  commandes Drupal → `commands=[settings,update_build_id,alert,…]` +
+  `detail=` avec la charge utile courte des commandes utiles (`alert`,
+  `insert`/`replaceWith` avec sélecteur, `redrawListingRow`, `update_build_id`),
+  en sautant le blob `settings`. Repli `commands=<not-json> snippet=…` si la
+  réponse n'est pas du JSON (redirect/HTML). Deux tests unitaires dédiés.
+- Verified : `cargo fmt --check`, `cargo clippy --workspace --all-targets -D
+  warnings`, `cargo doc --no-deps` (0 warning), `cargo test --workspace --jobs 2`
+  (parser 81 tests, toutes suites vertes).
+- Retour 2026-11-22 09:07 (pack 36312, Duo 10/12 Rang H à 38,50 €) :
+  `commands=[settings,add_css,add_js,openDialog,setResalePackUnavailable]`.
+  **Verdict tranché** : le site renvoie une commande Drupal maison
+  `setResalePackUnavailable` + `openDialog` → rejet serveur réel, pas un faux
+  négatif de `pack_added()`. Le pack est réellement indisponible au moment du
+  POST (~4,4 s après la détection). La cause restante est la **course** :
+  login (~2-3 s) + refetch page + POST laisse le temps à un autre acheteur de
+  prendre le pack. `pack_added()` est correct et n'est pas à modifier.
+- `verdict_diagnostic()` capture désormais aussi les charges de `openDialog` et
+  `setResalePackUnavailable` (les commandes maison qui portent le message et le
+  motif du refus). Test unitaire adapté.
+- Verified : `cargo fmt --check`, `cargo clippy --workspace --all-targets -D
+  warnings`, `cargo test --workspace --jobs 2` (parser 81, tout vert).
+- Reste ouvert (la vraie piste) : réduire la fenêtre de course — session
+  boutique **chaude** réutilisée par utilisateur au lieu d'un login complet à
+  chaque vague (déjà identifié le 2026-11-01 : ~6 s → ~1,5 s), ou déclencher le
+  checkout avant même d'enregistrer/alerter. À cadrer avec l'utilisateur avant
+  implémentation (changement d'architecture : cache de sessions dans AppState
+  ou dans `RealCartShop`, avec invalidation sur erreur).
+
+### 2026-11-19 — Priorité à l'achat : plus de blocage par le miroir Telegram
+
+- Constat (logs fournis) : places Duo fraîches du pack 36272 détectées à
+  21:32:44, mail envoyé à 21:32:45, puis **120,075 s** d'attente avant le
+  `504 Gateway Timeout` du miroir broadcast (21:34:45). Le plan Duo n'était
+  calculé que 4 ms après le retour du miroir, et l'`add_pack` à 21:34:50 →
+  `SeatGone` → `resale churn`. Le bot n'avait pas échoué sur le matching Duo
+  (les 2 tickets étaient bien `fresh`, même bloc/rang et parité identique) :
+  il avait tenté l'ajout ~2 min trop tard. Le `reqwest::Client::new()` sans
+  timeout laissait un 504 bloquer tout le pipeline séquentiel.
+- `src/services/bot/mod.rs` : dans `poll_one`, la phase d'achat
+  (`plan_checkouts_with_fresh` + `execute_plans`) est exécutée **avant**
+  `notify_new_seats`; l'alerte est construite et envoyée après. En-tête de
+  module et commentaires alignés. Logs de durée ajoutés : `poll: purchase
+  phase before alerts` / `poll: purchase phase done` (elapsed_ms) et
+  `poll: target done` (elapsed_ms global par cible).
+- `src/services/channels/telegram.rs` : `http_client()` centralise un
+  `reqwest::Client` avec `timeout(5s)` + `connect_timeout(3s)`, utilisé par
+  `new`, `with_base_url` (donc aussi le bot broadcast via
+  `RealBroadcastBotFactory`) et `register_webhook`. `post()` logge l'elapsed
+  (`warn` au-delà de 1 s, `debug` sinon).
+- `src/services/notifications.rs` : `elapsed_ms` ajouté à
+  `seats alert processed` et `cart alert processed`, ainsi qu'aux logs du
+  miroir (succès **et** échec, avec le champ `error`).
+- Diagnostics : `CheckoutError::SeatGone` porte désormais un motif
+  (`absent` / `changed` / `rejected`) au lieu d'être un variant unitaire ; le
+  log `checkout: pack skipped (resale churn)` inclut `error = %e`, ce qui
+  distingue les trois points de rejet du parser sans passer par
+  `CHECKOUT_DUMP_DIR`. Les 4 tests parser affirment le motif exact.
+- Tests : `tests/telegram.rs` gagne `a_hanging_bot_api_is_bounded_by_the_client_timeout`
+  (serveur axum qui ne répond pas → `TelegramError::Http` en < 10 s, la durée
+  réelle étant ~5 s). `tests/common` adapté au nouveau variant.
+- Verified : `cargo fmt --all`, `cargo clippy --workspace --all-targets -D
+  warnings`, `cargo test --workspace --jobs 2` (22 suites, dont parser 79,
+  lib 141, telegram 12, routes 65, checkout 20, purchases 26) — tous verts.
+  Frontend non touché.
+- Reste ouvert (hors périmètre) : libérer les offres après un `SeatGone` pour
+  autoriser une replanification sur un scan ultérieur ; découplage total du
+  miroir via `tokio::spawn` (le timeout de 5 s suffit à supprimer le délai de
+  2 min et conserve un `broadcast` exact dans les logs).
+
 ### 2026-11-16 — Bot de diffusion dédié (token fourni par l'admin)
 
 - Objectif (suite du journal précédent) : le miroir ne doit plus utiliser le bot
@@ -474,7 +629,7 @@ Stack: Rust/Axum (backend) + SvelteKit (frontend) + SQLite. Hosted on a Raspberr
 - Tests : `cargo test`
 - Lint : `cargo fmt --check && cargo clippy --all-targets -- -D warnings`
 - Frontend : `cd frontend && npm run dev` / `npm run build`
-- Devcontainer : `./my-env/up.sh` / `./my-env/down.sh`
+- Devcontainer : `devcontainer up --workspace-folder .` puis `devcontainer exec --workspace-folder . zsh`
 
 ## Conventions
 

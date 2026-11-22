@@ -167,7 +167,7 @@ pub struct CheckoutTarget {
 fn is_retryable(error: &CheckoutError) -> bool {
     matches!(
         error,
-        CheckoutError::SeatGone
+        CheckoutError::SeatGone(_)
             | CheckoutError::WaitingQueue
             | CheckoutError::Network(_)
             | CheckoutError::ExpiredForm
@@ -298,12 +298,16 @@ async fn execute_plan(state: &AppState, target: &CheckoutTarget, plan: &PlanChec
                     "checkout: pack added to cart"
                 );
             }
-            Err(CheckoutError::SeatGone) | Err(CheckoutError::WaitingQueue) => {
+            Err(e) if matches!(e, CheckoutError::SeatGone(_) | CheckoutError::WaitingQueue) => {
+                // Keep the exact reason in the log: `SeatGone` now carries
+                // `absent`/`changed`/`rejected`, so the churn is explainable
+                // without a CHECKOUT_DUMP_DIR capture.
                 tracing::debug!(
                     user_id,
                     match_id,
                     pack_id,
                     seats = tickets.len(),
+                    error = %e,
                     "checkout: pack skipped (resale churn)"
                 );
             }
