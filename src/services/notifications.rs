@@ -18,6 +18,8 @@
 //! That mirror is independent of the admin's own channel preferences: their
 //! subscriptions decide what gets published.
 
+use std::time::Instant;
+
 use calendar::Change;
 use sqlx::SqlitePool;
 
@@ -139,7 +141,7 @@ async fn mirror_to_broadcast(
         tracing::warn!("broadcast channel has no bot token configured");
         return false;
     };
-    
+
     // get broadcast key to decipher the bot token
     let Some(key) = state.broadcast_bot_key.as_ref() else {
         tracing::warn!("broadcast bot token cannot be decrypted without SECRET_KEY");
@@ -159,20 +161,30 @@ async fn mirror_to_broadcast(
     // We do that because the bot token may change in the future.
     let bot = state.broadcast_bot_factory.create(&token);
     // Send html message is available or default one either
+    let started = Instant::now();
     let sent = if html {
         bot.send_message_html(&target.chat_id, text).await
     } else {
         bot.send_message(&target.chat_id, text).await
     };
+    let elapsed_ms = started.elapsed().as_millis();
 
     // Check the sent response to trace and have a return
     match sent {
         Ok(()) => {
-            tracing::info!(chat_id = %target.chat_id, "alert mirrored to broadcast channel");
+            tracing::info!(
+                chat_id = %target.chat_id,
+                elapsed_ms,
+                "alert mirrored to broadcast channel"
+            );
             true
         }
         Err(e) => {
-            tracing::warn!("failed to mirror alert to the telegram broadcast channel: {e}");
+            tracing::warn!(
+                elapsed_ms,
+                error = %e,
+                "failed to mirror alert to the telegram broadcast channel"
+            );
             false
         }
     }
@@ -298,6 +310,7 @@ async fn process_one(
 /// * `match_id` — LNR id selecting the `ticket_requests` rows.
 /// * `alert` — the alert content (opponent, date, the new seats only).
 pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert) {
+    let started = Instant::now();
     // Get the alert subscribers (notify kind) for the match.
     let requesters = match tickets::pending_requesters(&state.pool, i64::from(match_id)).await {
         Ok(requesters) => requesters,
@@ -355,6 +368,7 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
         emailed,
         messaged,
         broadcast,
+        elapsed_ms = started.elapsed().as_millis(),
         "seats alert processed for notify subscribers"
     );
 }
@@ -374,6 +388,7 @@ pub async fn notify_new_seats(state: &AppState, match_id: u32, alert: &SeatAlert
 /// * `alert` — wave content (added/claimed/total progress, cart link, failure
 ///   flag).
 pub async fn notify_cart_ready(state: &AppState, user_id: i64, alert: &CartAlert) {
+    let started = Instant::now();
     let contact: Option<(String, Option<String>, bool, bool)> = match sqlx::query_as(
         "SELECT email, telegram_id, notify_email, notify_telegram FROM users WHERE id = ?",
     )
@@ -420,6 +435,7 @@ pub async fn notify_cart_ready(state: &AppState, user_id: i64, alert: &CartAlert
         emailed,
         messaged,
         broadcast,
+        elapsed_ms = started.elapsed().as_millis(),
         "cart alert processed"
     );
 }

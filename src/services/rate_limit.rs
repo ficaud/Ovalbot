@@ -193,7 +193,7 @@ impl RateLimiter {
 
     /// Drops every stale event and every key left empty — bounds the memory
     /// of keys that never come back (per-touch pruning only frees a key when
-    /// it is seen again). Called periodically by [`spawn_sweeper`].
+    /// it is seen again). Called periodically by [`Self::spawn_sweeper`].
     pub fn sweep(&self) {
         let mut events = self.events.lock().unwrap();
         let now = (self.now)();
