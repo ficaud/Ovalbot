@@ -79,8 +79,12 @@ pub enum CheckoutError {
     /// (settings JSON, slider or form id missing).
     MissingContext,
     /// The resale pack is no longer listed on the fresh page — someone took it
-    /// (a pack is sold atomically, all its tickets disappear together).
-    SeatGone,
+    /// (a pack is sold atomically, all its tickets disappear together), or the
+    /// add-to-cart POST was not confirmed. The reason is carried so the
+    /// caller's log tells which guard fired without needing a
+    /// `CHECKOUT_DUMP_DIR` capture; for `rejected` it embeds a fingerprint of
+    /// the AJAX response (markers and a short snippet).
+    SeatGone(String),
     /// The add-to-cart POST was rejected as an expired form / invalid session.
     ExpiredForm,
     /// The billetterie served its waiting-queue page instead of the content.
@@ -96,7 +100,9 @@ impl std::fmt::Display for CheckoutError {
             CheckoutError::MissingContext => {
                 f.write_str("add-to-cart form not found on the resale page")
             }
-            CheckoutError::SeatGone => f.write_str("pack no longer present on the resale page"),
+            CheckoutError::SeatGone(reason) => f.write_str(&format!(
+                "pack no longer present on the resale page ({reason})"
+            )),
             CheckoutError::ExpiredForm => {
                 f.write_str("add-to-cart rejected: expired form or invalid session")
             }
@@ -786,7 +792,7 @@ impl ShopSession {
             let Some((_, listed_tickets)) = fresh else {
                 log::debug!("[CHECKOUT] pack {pack_id} absent from the listed packs");
                 dump.finish("pack_absent", Some(&html), None);
-                return Err(CheckoutError::SeatGone);
+                return Err(CheckoutError::SeatGone("absent".to_string()));
             };
             if html.contains(OUT_OF_STOCK_MARKER) || !same_tickets(listed_tickets, tickets) {
                 // The pack disappeared or was re-minted with another
@@ -796,7 +802,7 @@ impl ShopSession {
                     "[CHECKOUT] pack {pack_id} changed or gone (wanted {tickets:?}, found {listed_tickets:?})"
                 );
                 dump.finish("pack_changed", Some(&html), None);
-                return Err(CheckoutError::SeatGone);
+                return Err(CheckoutError::SeatGone("changed".to_string()));
             }
         }
 
@@ -847,7 +853,10 @@ impl ShopSession {
         if !pack_added(&response, pack_id) {
             log::debug!("[CHECKOUT] pack {pack_id} add not confirmed by the response");
             dump.finish("rejected", Some(&html), Some(&response));
-            return Err(CheckoutError::SeatGone);
+            return Err(CheckoutError::SeatGone(format!(
+                "rejected: {}",
+                verdict_diagnostic(&response, pack_id)
+            )));
         }
         dump.finish("added", Some(&html), Some(&response));
         Ok(())
@@ -872,6 +881,103 @@ fn pack_added(response: &str, pack_id: u64) -> bool {
         && (response.contains("added-to-cart")
             || response.contains("is_already_in_cart")
             || response.contains("refreshCartTimeout"))
+}
+
+/// Compact, log-safe fingerprint of an add-to-cart AJAX response.
+///
+/// The verdict above is a substring check: when it fails, the caller needs to
+/// know which Drupal AJAX commands came back, not just whether three markers
+/// were present. A `settings`-first response with no `added-to-cart` is a
+/// different beast from the success capture of 2026-11-01 (which started with
+/// `update_build_id` and ended with `refreshCartTimeout`). This extracts the
+/// command names and a short payload for the informative ones (`alert`,
+/// `insert`/`replaceWith`, `redrawListingRow`, `update_build_id`), skipping the
+/// huge `libraries` blob of `settings`. Everything stays on one line so the
+/// orchestrator's `error = %e` log is enough to diagnose without
+/// `CHECKOUT_DUMP_DIR`; the dump still holds the full body.
+///
+/// # Arguments
+/// * `response` - The AJAX response body
+/// * `pack_id` - The pack that was submitted
+/// # Returns
+/// A single-line `key=value` fingerprint
+fn verdict_diagnostic(response: &str, pack_id: u64) -> String {
+    let snippet: String = response
+        .chars()
+        .take(160)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let header = format!(
+        "bytes={} pack_id={} added_to_cart={} already_in_cart={} refresh_cart_timeout={}",
+        response.len(),
+        response.contains(&pack_id.to_string()),
+        response.contains("added-to-cart"),
+        response.contains("is_already_in_cart"),
+        response.contains("refreshCartTimeout"),
+    );
+
+    // Drupal AJAX responses are JSON arrays of `{"command": "...", ...}`.
+    // Parse lazily: a redirect/HTML error page is not JSON, in which case the
+    // raw snippet above is the only useful signal.
+    let Ok(commands) = serde_json::from_str::<Vec<serde_json::Value>>(response) else {
+        return format!("{header} commands=<not-json> snippet={snippet}");
+    };
+    let names: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| c.get("command").and_then(serde_json::Value::as_str))
+        .collect();
+    let mut details = Vec::new();
+    for command in &commands {
+        let Some(name) = command.get("command").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        // `settings` carries the whole `ajaxPageState.libraries` blob: keep
+        // only the command name for it.
+        if name == "settings" {
+            continue;
+        }
+        let short = |value: Option<&serde_json::Value>| -> String {
+            let raw = match value {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(v) => v.to_string(),
+                None => String::new(),
+            };
+            raw.chars()
+                .take(120)
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect()
+        };
+        let detail = match name {
+            "alert" => short(command.get("text").or_else(|| command.get("message"))),
+            "insert" | "replaceWith" | "html" | "append" | "prepend" | "before" | "after" => {
+                let selector = short(command.get("selector"));
+                format!("{selector}<={}", short(command.get("data")))
+            }
+            "redrawListingRow" | "invoke" | "addClass" | "removeClass" => {
+                short(command.get("data").or_else(|| command.get("selector")))
+            }
+            "update_build_id" => short(command.get("new")),
+            // Custom commands of the billetterie: `openDialog` carries the
+            // message shown to the user, `setResalePackUnavailable` the reason
+            // the server refused the pack. Both are the decisive signal.
+            "openDialog" | "setResalePackUnavailable" => short(
+                command
+                    .get("data")
+                    .or_else(|| command.get("text"))
+                    .or_else(|| command.get("message"))
+                    .or_else(|| command.get("settings")),
+            ),
+            _ => String::new(),
+        };
+        if !detail.is_empty() {
+            details.push(format!("{name}:{detail}"));
+        }
+    }
+    let commands_str = names.join(",");
+    let details_str = details.join(" | ");
+    // The raw snippet is dominated by the `libraries` blob on Drupal pages;
+    // the structured commands/detail above are the signal we want in the log.
+    format!("{header} commands=[{commands_str}] detail={details_str}")
 }
 
 /// One diagnostic capture of an add attempt, enabled by `CHECKOUT_DUMP_DIR`.
@@ -1511,17 +1617,19 @@ mod tests {
             context.ajax_url.split('?').next().expect("path")
         );
         let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
-        assert_eq!(
-            session
-                .add_pack(
-                    &resale_url,
-                    33850,
-                    &["49432".to_string()],
-                    ("44.00".into(), "59".into())
-                )
-                .expect_err("must fail"),
-            CheckoutError::SeatGone
+        let err = session
+            .add_pack(
+                &resale_url,
+                33850,
+                &["49432".to_string()],
+                ("44.00".into(), "59".into()),
+            )
+            .expect_err("must fail");
+        assert!(
+            matches!(&err, CheckoutError::SeatGone(reason) if reason.starts_with("rejected:")),
+            "{err}"
         );
+        assert!(err.to_string().contains("commands=["), "{err}");
         assert_eq!(requests.lock().expect("log").len(), 6);
     }
 
@@ -1534,6 +1642,55 @@ mod tests {
         assert!(!pack_added(live, 11111));
         assert!(!pack_added(ADD_REJECTED, 34720));
         assert!(!pack_added("[]", 34720));
+    }
+
+    // A rejected verdict carries the Drupal command list and the informative
+    // payloads (not the huge `libraries` blob), so the normal log tells a sold
+    // pack from a session error or a layout change.
+    #[test]
+    fn verdict_diagnostic_fingerprints_the_response() {
+        let response = r#"[{"command":"settings","settings":{"ajaxPageState":{"libraries":"HUGE"}}},{"command":"update_build_id","old":"form-a","new":"form-b"},{"command":"openDialog","data":"Ce pack n'est plus disponible"},{"command":"setResalePackUnavailable","data":"36312"}]"#;
+        let diagnostic = verdict_diagnostic(response, 36285);
+        assert!(diagnostic.contains("bytes="), "{diagnostic}");
+        assert!(diagnostic.contains("pack_id=false"), "{diagnostic}");
+        assert!(diagnostic.contains("added_to_cart=false"), "{diagnostic}");
+        assert!(diagnostic.contains("already_in_cart=false"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("refresh_cart_timeout=false"),
+            "{diagnostic}"
+        );
+        // Command names are extracted; `settings` keeps its name but not its blob.
+        assert!(
+            diagnostic.contains(
+                "commands=[settings,update_build_id,openDialog,setResalePackUnavailable]"
+            ),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("openDialog:Ce pack n'est plus disponible"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("setResalePackUnavailable:36312"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("update_build_id:form-b"),
+            "{diagnostic}"
+        );
+        assert!(!diagnostic.contains("HUGE"), "{diagnostic}");
+        // Everything stays on one line.
+        assert!(!diagnostic.contains('\n'), "{diagnostic}");
+    }
+
+    // A non-JSON response (redirect to a login page) is reported as such, with
+    // the raw snippet as the only signal.
+    #[test]
+    fn verdict_diagnostic_handles_non_json_responses() {
+        let diagnostic = verdict_diagnostic("<html>formulaire p\u{e9}rim\u{e9}</html>", 36285);
+        assert!(diagnostic.contains("commands=<not-json>"), "{diagnostic}");
+        assert!(diagnostic.contains("snippet="), "{diagnostic}");
+        assert!(!diagnostic.contains('\n'), "{diagnostic}");
     }
 
     // The diagnostic capture writes one file per kind sharing the attempt id,
@@ -1638,7 +1795,7 @@ mod tests {
                     ("44.00".into(), "59".into())
                 )
                 .expect_err("must fail"),
-            CheckoutError::SeatGone
+            CheckoutError::SeatGone("absent".to_string())
         );
         // 4 login requests + 1 page fetch; no POST.
         assert_eq!(requests.lock().expect("log").len(), 5);
@@ -1666,16 +1823,17 @@ mod tests {
             page(ADD_REJECTED, 200),
         ]);
         let session = ShopSession::login(&base, "a@b.c", "x").expect("login");
-        assert_eq!(
-            session
-                .add_pack(
-                    &format!("{base}/fr/product/1360/revente"),
-                    34700,
-                    &["50624".to_string()],
-                    ("44.00".into(), "44".into()),
-                )
-                .expect_err("must fail"),
-            CheckoutError::SeatGone
+        let err = session
+            .add_pack(
+                &format!("{base}/fr/product/1360/revente"),
+                34700,
+                &["50624".to_string()],
+                ("44.00".into(), "44".into()),
+            )
+            .expect_err("must fail");
+        assert!(
+            matches!(&err, CheckoutError::SeatGone(reason) if reason.starts_with("rejected:")),
+            "{err}"
         );
         // 4 login requests + 1 page fetch + 1 rejected POST.
         assert_eq!(requests.lock().expect("log").len(), 6);
@@ -1709,7 +1867,7 @@ mod tests {
                     ("59.00".into(), "59".into())
                 )
                 .expect_err("must fail"),
-            CheckoutError::SeatGone
+            CheckoutError::SeatGone("changed".to_string())
         );
         assert_eq!(requests.lock().expect("log").len(), 5);
     }

@@ -10,12 +10,14 @@
 //! 2. **Direct poll** (every `BOT_SCAN_INTERVAL_SECS`): fetch each stored
 //!    link directly ([`crate::services::bot::resale::links_to_scan`]), record the
 //!    seats durably in `ticket_offers`
-//!    ([`crate::services::tickets::record_offers`]), alert the pending
-//!    `ticket_requests` alerters
-//!    ([`crate::services::notifications::notify_new_seats`]) through email
-//!    and/or Telegram, and match the listing against the pending **buying**
-//!    requests ([`crate::services::bot::purchases::plan_checkouts`]) to feed
-//!    the Phase 4B checkout orchestrator.
+//!    ([`crate::services::tickets::record_offers`]), match the listing against
+//!    the pending **buying** requests
+//!    ([`crate::services::bot::purchases::plan_checkouts`]) to feed the Phase 4B
+//!    checkout orchestrator, and only then alert the pending `ticket_requests`
+//!    alerters ([`crate::services::notifications::notify_new_seats`]) through
+//!    email and/or Telegram. The purchase phase comes first because a slow
+//!    notification channel must never postpone an add-to-cart past the resale
+//!    window.
 //!
 //! `ticket_offers` is the single "new seats" source of truth: only the seats
 //! it actually inserts are logged, so a restart never re-announces old seats.
@@ -170,7 +172,7 @@ async fn discover_home(
             let events = state.calendar.snapshot();
             let match_ids = resolve_encounters(&encounters, &events);
             match resale::upsert_discovered(&state.pool, &encounters, &match_ids).await {
-                Ok(counts) => tracing::info!(
+                Ok(counts) => tracing::debug!(
                     cards = encounters.len(),
                     links = counts.with_link,
                     new = counts.inserted,
@@ -249,8 +251,11 @@ async fn poll_links(state: &AppState, is_quiet_hours: bool) {
 }
 
 /// Polls one stored resale link: retirement of past-dated matches first, then
-/// the seat fetch, the durable recording and the alert.
+/// the seat fetch, the durable recording, the purchase phase and finally the
+/// (best-effort) alert. Purchase comes before alerting so a slow notification
+/// channel cannot cost the resale window.
 async fn poll_one(state: &AppState, target: &ScanTarget, is_quiet_hours: bool) {
+    let poll_started = Instant::now();
     let encounter = target.to_encounter();
 
     // A link whose match is over is removed, not polled: the product page
@@ -340,7 +345,7 @@ async fn poll_one(state: &AppState, target: &ScanTarget, is_quiet_hours: bool) {
             "resale poll: new seat on resale"
         );
     }
-    tracing::info!(
+    tracing::debug!(
         event_id,
         title = %target.title,
         date = %target.date,
@@ -350,22 +355,17 @@ async fn poll_one(state: &AppState, target: &ScanTarget, is_quiet_hours: bool) {
     );
 
     if !fresh_seats.is_empty() {
-        let alert = SeatAlert {
-            opponent: target.title.clone(),
-            date: target.date.clone(),
-            link: target.resale_link.clone(),
-            seats: fresh_seats
-                .iter()
-                .map(|seat| SeatBrief {
-                    bloc: seat.seat_info.composition.bloc.clone(),
-                    row: seat.seat_info.composition.row.clone(),
-                    seat_number: seat.seat_info.composition.seat_number,
-                    price: seat.price.clone(),
-                    full_name: seat.seat_info.full_name.clone(),
-                })
-                .collect(),
-        };
-        notifications::notify_new_seats(state, event_id, &alert).await;
+        // Time-critical first: a resale window is only a few minutes wide,
+        // while notifications are best-effort and may hit a slow Bot API.
+        // Running the purchase phase before the alerts keeps a 504 (or any
+        // slow channel) from postponing the add-to-cart until the pack is gone
+        // (incident of 2026-11-19: a 120 s mirror timeout lost a duo pack).
+        let purchase_started = Instant::now();
+        tracing::debug!(
+            event_id,
+            fresh = fresh_seats.len(),
+            "poll: purchase phase before alerts"
+        );
 
         // Purchase matching (Phase 4B): decide which pending buying requests
         // the current listing serves, then let the checkout orchestrator turn
@@ -401,9 +401,40 @@ async fn poll_one(state: &AppState, target: &ScanTarget, is_quiet_hours: bool) {
             Ok(_) => {}
             Err(e) => tracing::warn!("purchase matching failed for match {event_id}: {e}"),
         }
+        tracing::debug!(
+            event_id,
+            elapsed_ms = purchase_started.elapsed().as_millis(),
+            "poll: purchase phase done"
+        );
+
+        // Alerts last: they are informational, so a slow email/Telegram send
+        // can no longer delay the checkout. The Bot API is also bounded by a
+        // client timeout, so the worst case is seconds, not minutes.
+        let alert = SeatAlert {
+            opponent: target.title.clone(),
+            date: target.date.clone(),
+            link: target.resale_link.clone(),
+            seats: fresh_seats
+                .iter()
+                .map(|seat| SeatBrief {
+                    bloc: seat.seat_info.composition.bloc.clone(),
+                    row: seat.seat_info.composition.row.clone(),
+                    seat_number: seat.seat_info.composition.seat_number,
+                    price: seat.price.clone(),
+                    full_name: seat.seat_info.full_name.clone(),
+                })
+                .collect(),
+        };
+        notifications::notify_new_seats(state, event_id, &alert).await;
     }
 
     mark_and_continue(state, target, status).await;
+    tracing::debug!(
+        title = %target.title,
+        date = %target.date,
+        elapsed_ms = poll_started.elapsed().as_millis(),
+        "poll: target done"
+    );
 }
 
 /// Keeps the `fresh_keys`-matching seats in their parsed order.
